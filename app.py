@@ -15,7 +15,6 @@ footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# पाइन स्क्रिप्ट के सटीक पैरामीटर
 BOX_SIZE = 150.0
 ST_FACTOR = 3.0
 TP1_BRICKS = 0.85
@@ -132,7 +131,6 @@ def background_worker(state):
 
                 trade = state["active_trade"]
 
-                # 1. नया ट्रेड सिग्नल खोलें
                 if trade is None:
                     if st_flip_buy or (buy_pct >= 60 and imbalance >= 0.35 and st_trend == 1):
                         t1_pts = BOX_SIZE * TP1_BRICKS
@@ -165,50 +163,47 @@ def background_worker(state):
                             "time": ist_time
                         }
                 else:
-                    # 2. एक्टिव ट्रेड का TP1, TP2 और ट्रेलिंग SL मैनेज करें
-                    t_type = trade["type"]
-                    entry = trade["entry"]
-                    tp1 = trade["tp1"]
-                    tp2 = trade["tp2"]
-                    sl = trade["sl"]
+                    t_type = trade.get("type", "LONG")
+                    entry = trade.get("entry", price)
+                    tp1 = trade.get("tp1", price + 100)
+                    tp2 = trade.get("tp2", price + 200)
+                    sl = trade.get("sl", price - 100)
 
                     if t_type == "LONG":
-                        trade["max_fav"] = max(trade["max_fav"], price)
+                        trade["max_fav"] = max(trade.get("max_fav", price), price)
                     else:
-                        trade["max_fav"] = min(trade["max_fav"], price)
+                        trade["max_fav"] = min(trade.get("max_fav", price), price)
 
                     pnl = (price - entry) if t_type == "LONG" else (entry - price)
 
-                    # TP1 चेक करें
-                    if not trade["tp1_hit"]:
+                    if not trade.get("tp1_hit", False):
                         if (t_type == "LONG" and price >= tp1) or (t_type == "SHORT" and price <= tp1):
                             trade["tp1_hit"] = True
-                            trade["sl"] = entry  # ब्रेक-इवन सुरक्षा
+                            trade["sl"] = entry
 
-                    # TP2 चेक करें
-                    if trade["tp1_hit"] and not trade["tp2_hit"]:
+                    if trade.get("tp1_hit", False) and not trade.get("tp2_hit", False):
                         if (t_type == "LONG" and price >= tp2) or (t_type == "SHORT" and price <= tp2):
                             trade["tp2_hit"] = True
 
-                    # यदि TP2 हिट हो गया है, तो ट्रेलिंग चालू करें
-                    if trade["tp2_hit"]:
+                    if trade.get("tp2_hit", False):
                         trail_dist = BOX_SIZE * TRAIL_GAP_BRICKS
                         if t_type == "LONG":
                             new_trail = r_close - trail_dist
-                            trade["sl"] = max(trade["sl"], new_trail)
+                            trade["sl"] = max(trade.get("sl", entry), new_trail)
                         else:
                             new_trail = r_close + trail_dist
-                            trade["sl"] = min(trade["sl"], new_trail)
+                            trade["sl"] = min(trade.get("sl", entry), new_trail)
 
-                    is_sl_hit = (t_type == "LONG" and price <= trade["sl"]) or (t_type == "SHORT" and price >= trade["sl"])
+                    current_sl = trade.get("sl", entry)
+                    is_sl_hit = (t_type == "LONG" and price <= current_sl) or (t_type == "SHORT" and price >= current_sl)
                     is_st_reversed = (t_type == "LONG" and st_trend == -1) or (t_type == "SHORT" and st_trend == 1)
 
                     if is_sl_hit or is_st_reversed:
-                        final_pnl = (trade["sl"] - entry) if t_type == "LONG" else (entry - trade["sl"])
+                        final_pnl = (current_sl - entry) if t_type == "LONG" else (entry - current_sl)
                         if is_st_reversed and not is_sl_hit:
                             final_pnl = pnl
 
-                        status_txt = "🎯 TP2 + TRAIL CLOSED" if trade["tp2_hit"] else ("✅ TP1 LOCKED" if trade["tp1_hit"] else "🛑 STOP LOSS HIT")
+                        status_txt = "🎯 TP2 + TRAIL CLOSED" if trade.get("tp2_hit", False) else ("✅ TP1 LOCKED" if trade.get("tp1_hit", False) else "🛑 STOP LOSS HIT")
                         result_color = "#166534" if final_pnl >= 0 else "#991b1b"
 
                         state["wins" if final_pnl >= 0 else "losses"] += 1
@@ -265,15 +260,15 @@ while True:
     trade = state["active_trade"]
 
     if trade is not None:
-        t_type = trade["type"]
-        entry = trade["entry"]
-        tp1 = trade["tp1"]
-        tp2 = trade["tp2"]
-        sl = trade["sl"]
+        t_type = trade.get("type", "LONG")
+        entry = trade.get("entry", price)
+        tp1 = trade.get("tp1", price + 100)
+        tp2 = trade.get("tp2", price + 200)
+        sl = trade.get("sl", price - 100)
         pnl = (price - entry) if t_type == "LONG" else (entry - price)
         pnl_color = "#22c55e" if pnl >= 0 else "#ef4444"
         badge_bg = "#16a34a" if t_type == "LONG" else "#dc2626"
-        status_label = "🚀 TRAILING RUNNER" if trade["tp2_hit"] else ("🔒 TP1 LOCKED (Protected)" if trade["tp1_hit"] else f"🚀 ACTIVE {t_type}")
+        status_label = "🚀 TRAILING RUNNER" if trade.get("tp2_hit", False) else ("🔒 TP1 LOCKED (Protected)" if trade.get("tp1_hit", False) else f"🚀 ACTIVE {t_type}")
 
         trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:16px; margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
