@@ -172,7 +172,6 @@ def background_worker(state):
                     tp2 = trade["tp2"]
                     sl = trade["sl"]
 
-                    # मैक्सिमम अनुकूल कीमत अपडेट करें
                     if t_type == "LONG":
                         trade["max_fav"] = max(trade["max_fav"], price)
                     else:
@@ -184,15 +183,14 @@ def background_worker(state):
                     if not trade["tp1_hit"]:
                         if (t_type == "LONG" and price >= tp1) or (t_type == "SHORT" and price <= tp1):
                             trade["tp1_hit"] = True
-                            # पाइन स्क्रिप्ट के अनुसार TP1 के बाद SL को एंट्री प्राइस पर प्रोटेक्ट कर दें
-                            trade["sl"] = entry
+                            trade["sl"] = entry  # ब्रेक-इवन सुरक्षा
 
-                    # TP2 और ट्रेलिंग चेक करें
+                    # TP2 चेक करें
                     if trade["tp1_hit"] and not trade["tp2_hit"]:
                         if (t_type == "LONG" and price >= tp2) or (t_type == "SHORT" and price <= tp2):
                             trade["tp2_hit"] = True
 
-                    # यदि TP2 हिट हो गया है, तो रैंकों ब्रिक के हिसाब से ट्रेलिंग चालू करें
+                    # यदि TP2 हिट हो गया है, तो ट्रेलिंग चालू करें
                     if trade["tp2_hit"]:
                         trail_dist = BOX_SIZE * TRAIL_GAP_BRICKS
                         if t_type == "LONG":
@@ -202,15 +200,13 @@ def background_worker(state):
                             new_trail = r_close + trail_dist
                             trade["sl"] = min(trade["sl"], new_trail)
 
-                    # स्टॉप लॉस या ट्रेलिंग हिट की जांच
                     is_sl_hit = (t_type == "LONG" and price <= trade["sl"]) or (t_type == "SHORT" and price >= trade["sl"])
-                    # यदि सुपरट्रेंड विपरीत दिशा में पलट जाए
                     is_st_reversed = (t_type == "LONG" and st_trend == -1) or (t_type == "SHORT" and st_trend == 1)
 
                     if is_sl_hit or is_st_reversed:
                         final_pnl = (trade["sl"] - entry) if t_type == "LONG" else (entry - trade["sl"])
                         if is_st_reversed and not is_sl_hit:
-                            final_pnl = pnl # अगर सुपरट्रेंड पलटा तो करंट क्लोज पर काटें
+                            final_pnl = pnl
 
                         status_txt = "🎯 TP2 + TRAIL CLOSED" if trade["tp2_hit"] else ("✅ TP1 LOCKED" if trade["tp1_hit"] else "🛑 STOP LOSS HIT")
                         result_color = "#166534" if final_pnl >= 0 else "#991b1b"
