@@ -304,9 +304,25 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
 .terminal-grid {{ display: grid; grid-template-columns: 1fr; gap: 20px; }}
 @media (min-width: 900px) {{ .terminal-grid {{ grid-template-columns: 1.1fr 0.9fr; }} }}
 </style>
+<script>
+  // बिना स्क्रीन ब्लिंक किए बैकग्राउंड से हर 3 सेकंड में नया डेटा लोड करना
+  setInterval(function() {{
+      fetch(window.location.href)
+        .then(response => response.text())
+        .then(html => {{
+            // केवल बॉडी या टर्मिनल कंटेंट को चुपचाप अपडेट करना
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, 'text/html');
+            var newTerminal = doc.getElementById('terminal-box');
+            if (newTerminal) {{
+                document.getElementById('terminal-box').innerHTML = newTerminal.innerHTML;
+            }}
+        }}).catch(err => console.log('Auto-update active'));
+  }, 3000);
+</script>
 </head>
 <body>
-<div style="background:#0f172a; color:#f8fafc; padding:24px; border-radius:18px; box-shadow:0 8px 30px rgba(0,0,0,0.6); border:1px solid #1e293b;">
+<div id="terminal-box" style="background:#0f172a; color:#f8fafc; padding:24px; border-radius:18px; box-shadow:0 8px 30px rgba(0,0,0,0.6); border:1px solid #1e293b;">
     <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:14px; margin-bottom:18px;">
         <div>
             <div style="font-size:13px; color:#38bdf8; font-weight:600; letter-spacing:0.5px;">⚡ AI-RENKO SUPERTREND PRO TERMINAL</div>
@@ -383,3 +399,7 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
 """
 
 components.html(full_html, height=580, scrolling=True)
+
+# बिना स्क्रीन ब्लिंक किए सर्वर डेटा सिंक बनाए रखने के लिए छोटा लूप
+time.sleep(3)
+st.rerun()
