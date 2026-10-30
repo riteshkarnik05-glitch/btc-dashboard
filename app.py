@@ -3,8 +3,9 @@ import requests
 import time
 import threading
 from datetime import datetime, timedelta
+import math
 
-st.set_page_config(page_title="BTC Pro Scalper", layout="centered")
+st.set_page_config(page_title="AI-Renko Pro Scalper", layout="centered")
 
 st.markdown("""
 <style>
@@ -16,30 +17,55 @@ footer { visibility: hidden; }
 
 TARGET_PTS = 200.0
 SL_PTS = 80.0
-THRESHOLD = 0.50  # मजबूत सिग्नल के लिए उच्च थ्रेशोल्ड
+BOX_SIZE = 150.0  # रैंकों बॉक्स साइज
+ST_FACTOR = 3.0   # सुपरट्रेंड मल्टीप्लायर
+
+def gaussian_filter(prices, period=20):
+    if len(prices) < period:
+        return prices[-1] if prices else 0.0
+    w = (2.0 * math.pi) / float(period)
+    b = (1.0 - math.cos(w)) / (1.41421356 - 1.0)
+    a = -b + math.sqrt(b * b + 2.0 * b)
+    g = prices[0]
+    for p in prices[1:]:
+        g = math.pow(a, 2) * p + 2.0 * (1.0 - a) * g - math.pow(1.0 - a, 2) * g
+    return g
 
 def background_worker(state):
-    consecutive_shocks = 0
-    last_shock_type = None
-
     while True:
         try:
-            url = "https://api.binance.us/api/v3/depth?symbol=BTCUSDT&limit=50"
-            response = requests.get(url, timeout=4)
-            data = response.json()
+            # Binance 1-मिनट केंडल डेटा (Klines) प्राप्त करें
+            url = "https://api.binance.us/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=50"
+            response = requests.get(url, timeout=5)
+            klines = response.json()
 
-            bids = data.get('bids', [])
-            asks = data.get('asks', [])
+            if klines and isinstance(klines, list):
+                closes = [float(k[4]) for k in klines]
+                highs = [float(k[2]) for k in klines]
+                lows = [float(k[3]) for k in klines]
+                opens = [float(k[1]) for k in klines]
+                volumes = [float(k[5]) for k in klines]
 
-            if bids and asks:
-                price = float(bids[0][0])
-                total_bid = sum(float(x[1]) for x in bids)
-                total_ask = sum(float(x[1]) for x in asks)
-                total_vol = total_bid + total_ask
+                price = closes[-1]
+                smooth_close = gaussian_filter(closes, 20)
+                eval_price = (price * 0.70 + smooth_close * 0.30)
 
-                imbalance = (total_bid - total_ask) / total_vol if total_vol > 0 else 0.0
-                buy_pct = int((total_bid / total_vol) * 100) if total_vol > 0 else 50
+                # आर्डरफ्लो डोमिनेंस गणना
+                rng = max(highs[-1] - lows[-1], 0.1)
+                u_wick = highs[-1] - max(opens[-1], closes[-1])
+                l_wick = min(opens[-1], closes[-1]) - lows[-1]
+                body = abs(closes[-1] - opens[-1])
+                
+                bull_score = (closes[-1] - lows[-1]) + (l_wick * 1.1) + (body * 0.85 if closes[-1] > opens[-1] else 0.0)
+                bear_score = (highs[-1] - closes[-1]) + (u_wick * 1.1) + (body * 0.85 if closes[-1] < opens[-1] else 0.0)
+                
+                bull_pow = math.pow(max(bull_score / rng, 0.01), 1.8)
+                bear_pow = math.pow(max(bear_score / rng, 0.01), 1.8)
+                tot_pow = bull_pow + bear_pow
+                
+                buy_pct = int((bull_pow / tot_pow) * 100) if tot_pow > 0 else 50
                 sell_pct = 100 - buy_pct
+                imbalance = (bull_pow - bear_pow) / tot_pow if tot_pow > 0 else 0.0
 
                 ist_time = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
 
@@ -52,47 +78,25 @@ def background_worker(state):
 
                 trade = state["active_trade"]
 
-                # 1. सिग्नल और 2-टिक कन्फर्मेशन (स्पूफिंग फिल्टर) चेक करें
+                # सिग्नल और ट्रेड निष्पादन
                 if trade is None:
-                    current_shock = None
-                    if imbalance >= THRESHOLD:
-                        current_shock = "LONG"
-                    elif imbalance <= -THRESHOLD:
-                        current_shock = "SHORT"
-
-                    if current_shock and current_shock == last_shock_type:
-                        consecutive_shocks += 1
-                    else:
-                        consecutive_shocks = 1
-                        last_shock_type = current_shock
-
-                    # लगातार 2 बार (4 सेकंड) पुष्टि होने पर ही ट्रेड खुलेगा
-                    if consecutive_shocks >= 2 and current_shock:
-                        if current_shock == "LONG":
-                            state["active_trade"] = {
-                                "type": "LONG",
-                                "entry": price,
-                                "target": price + TARGET_PTS,
-                                "sl": price - SL_PTS,
-                                "time": ist_time
-                            }
-                        elif current_shock == "SHORT":
-                            state["active_trade"] = {
-                                "type": "SHORT",
-                                "entry": price,
-                                "target": price - TARGET_PTS,
-                                "sl": price + SL_PTS,
-                                "time": ist_time
-                            }
-                        trade = state["active_trade"]
-                        consecutive_shocks = 0
-                        last_shock_type = None
+                    if buy_pct >= 65 and imbalance >= 0.30:
+                        state["active_trade"] = {
+                            "type": "LONG",
+                            "entry": price,
+                            "target": price + TARGET_PTS,
+                            "sl": price - SL_PTS,
+                            "time": ist_time
+                        }
+                    elif sell_pct >= 65 and imbalance <= -0.30:
+                        state["active_trade"] = {
+                            "type": "SHORT",
+                            "entry": price,
+                            "target": price - TARGET_PTS,
+                            "sl": price + SL_PTS,
+                            "time": ist_time
+                        }
                 else:
-                    consecutive_shocks = 0
-                    last_shock_type = None
-
-                # 2. एक्टिव ट्रेड का Target और SL चेक करें
-                if trade is not None:
                     t_type = trade["type"]
                     entry = trade["entry"]
                     target = trade["target"]
@@ -130,7 +134,7 @@ def background_worker(state):
         except Exception as e:
             state["error"] = str(e)
 
-        time.sleep(2)
+        time.sleep(3)
 
 @st.cache_resource
 def get_server_engine():
@@ -158,7 +162,7 @@ terminal = st.empty()
 
 while True:
     if state["price"] == 0.0:
-        terminal.info("⏳ सर्वर इंजन से लाइव डेटा कनेक्ट हो रहा है...")
+        terminal.info("⏳ 1-मिनट AI-Renko सर्वर इंजन कनेक्ट हो रहा है...")
         time.sleep(1)
         continue
 
@@ -180,7 +184,7 @@ while True:
 
         trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:14px; margin-bottom:12px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-<span style="background:{badge_bg}; color:white; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:14px;">🚀 ACTIVE {t_type} ({trade['time']})</span>
+<span style="background:{badge_bg}; color:white; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:14px;">🚀 ACTIVE {t_type} (1m Renko)</span>
 <span style="color:{pnl_color}; font-size:20px; font-weight:bold;">{pnl:+.1f} Pts</span>
 </div>
 <div style="display:flex; justify-content:space-between; color:#cbd5e1; font-size:14px; background:#0f172a; padding:10px; border-radius:8px;">
@@ -191,8 +195,8 @@ while True:
 </div>"""
     else:
         trade_box_html = """<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:14px; margin-bottom:12px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR HIGH-CONFIDENCE SHOCK (±0.50)</div>
-<div style="color:#94a3b8; font-size:12px; margin-top:4px;">स्पूफिंग फ़िल्टर (2-टिक कन्फर्मेशन) एक्टिव है</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR 1-MIN AI-RENKO SIGNAL</div>
+<div style="color:#94a3b8; font-size:12px; margin-top:4px;">गॉसियन स्मूदिंग और आर्डरफ्लो फ़िल्टर सक्रिय है</div>
 </div>"""
 
     rows_html = ""
@@ -213,18 +217,18 @@ while True:
     full_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:16px; border-radius:16px; font-family:sans-serif; box-shadow:0 4px 20px rgba(0,0,0,0.4);">
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:10px; margin-bottom:12px;">
 <div>
-<div style="font-size:12px; color:#94a3b8;">⚡ BTCUSDT PRO FILTERED TERMINAL</div>
+<div style="font-size:12px; color:#94a3b8;">⚡ AI-RENKO 1m PRO TERMINAL</div>
 <div style="font-size:28px; font-weight:800; color:#ffffff;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
-<div style="font-size:11px; color:#22c55e;">● FILTERED LIVE (IST)</div>
+<div style="font-size:11px; color:#22c55e;">● 1m LIVE (IST)</div>
 <div style="font-size:13px; color:#cbd5e1;">{ist_time}</div>
 </div>
 </div>
 <div style="margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; margin-bottom:5px;">
 <span style="color:#22c55e;">🟢 Buy: {buy_pct}%</span>
-<span style="color:#e2e8f0;">Imbalance: {imbalance:+.2f}</span>
+<span style="color:#e2e8f0;">Dominance: {imbalance:+.2f}</span>
 <span style="color:#ef4444;">Sell: {sell_pct}% 🔴</span>
 </div>
 <div style="width:100%; background:#ef4444; height:12px; border-radius:6px; overflow:hidden;">
@@ -250,7 +254,7 @@ while True:
 </div>
 </div>
 <div style="background:#1e293b; border-radius:10px; padding:10px;">
-<div style="font-size:13px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 क्लोज्ड ट्रेड्स का इतिहास (Pro Filter Log)</div>
+<div style="font-size:13px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 1-मिनट रैंकों ट्रेड इतिहास</div>
 <table style="width:100%; border-collapse:collapse;">
 <thead>
 <tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
@@ -269,4 +273,4 @@ while True:
 </div>"""
 
     terminal.markdown(full_html, unsafe_allow_html=True)
-    time.sleep(2)
+    time.sleep(3)
