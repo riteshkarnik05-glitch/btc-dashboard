@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timedelta
 import math
 
-st.set_page_config(page_title="AI-Renko Pro Scalper", layout="centered")
+st.set_page_config(page_title="AI-Renko Pro Terminal", layout="centered")
 
 st.markdown("""
 <style>
@@ -15,27 +15,37 @@ footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-TARGET_PTS = 200.0
-SL_PTS = 80.0
-BOX_SIZE = 150.0  # रैंकों बॉक्स साइज
+# पाइन स्क्रिप्ट के अनुसार सेटिंग्स
+BOX_SIZE = 150.0  # रैंकों बॉक्स साइज़
 ST_FACTOR = 3.0   # सुपरट्रेंड मल्टीप्लायर
+TP1_BRICKS = 0.85
+TP2_BRICKS = 2.2
+SL_BRICKS = 1.4
 
-def gaussian_filter(prices, period=20):
-    if len(prices) < period:
-        return prices[-1] if prices else 0.0
-    w = (2.0 * math.pi) / float(period)
+def gaussian_filter(src_list, len_val=20):
+    if len(src_list) < len_val:
+        return src_list[-1] if src_list else 0.0
+    w = (2.0 * math.pi) / float(len_val)
     b = (1.0 - math.cos(w)) / (1.41421356 - 1.0)
     a = -b + math.sqrt(b * b + 2.0 * b)
-    g = prices[0]
-    for p in prices[1:]:
-        g = math.pow(a, 2) * p + 2.0 * (1.0 - a) * g - math.pow(1.0 - a, 2) * g
+    g = src_list[0]
+    for s in src_list[1:]:
+        g = math.pow(a, 2) * s + 2.0 * (1.0 - a) * g - math.pow(1.0 - a, 2) * g
     return g
 
 def background_worker(state):
+    # रैंकों और सुपरट्रेंड स्टेट्स
+    brick_top = 0.0
+    brick_bot = 0.0
+    brick_dir = 1
+    st_trend = 1
+    support_band = 0.0
+    resistance_band = 0.0
+    initialized = False
+
     while True:
         try:
-            # Binance 1-मिनट केंडल डेटा (Klines) प्राप्त करें
-            url = "https://api.binance.us/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=50"
+            url = "https://api.binance.us/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=100"
             response = requests.get(url, timeout=5)
             klines = response.json()
 
@@ -50,22 +60,72 @@ def background_worker(state):
                 smooth_close = gaussian_filter(closes, 20)
                 eval_price = (price * 0.70 + smooth_close * 0.30)
 
-                # आर्डरफ्लो डोमिनेंस गणना
+                # 3-Bar Orderflow Dominance (पाइन स्क्रिप्ट लॉजिक)
                 rng = max(highs[-1] - lows[-1], 0.1)
                 u_wick = highs[-1] - max(opens[-1], closes[-1])
                 l_wick = min(opens[-1], closes[-1]) - lows[-1]
                 body = abs(closes[-1] - opens[-1])
-                
+
                 bull_score = (closes[-1] - lows[-1]) + (l_wick * 1.1) + (body * 0.85 if closes[-1] > opens[-1] else 0.0)
                 bear_score = (highs[-1] - closes[-1]) + (u_wick * 1.1) + (body * 0.85 if closes[-1] < opens[-1] else 0.0)
-                
+
                 bull_pow = math.pow(max(bull_score / rng, 0.01), 1.8)
                 bear_pow = math.pow(max(bear_score / rng, 0.01), 1.8)
                 tot_pow = bull_pow + bear_pow
-                
+
                 buy_pct = int((bull_pow / tot_pow) * 100) if tot_pow > 0 else 50
                 sell_pct = 100 - buy_pct
                 imbalance = (bull_pow - bear_pow) / tot_pow if tot_pow > 0 else 0.0
+
+                # रैंकों ब्रिक इंजन
+                if not initialized:
+                    brick_top = eval_price
+                    brick_bot = eval_price - BOX_SIZE
+                    brick_dir = 1
+                    support_band = brick_top - (BOX_SIZE * ST_FACTOR)
+                    resistance_band = brick_top + (BOX_SIZE * ST_FACTOR)
+                    initialized = True
+
+                if eval_price >= brick_top + BOX_SIZE:
+                    steps = int(math.floor((eval_price - brick_top) / BOX_SIZE))
+                    brick_top += (steps * BOX_SIZE)
+                    brick_bot = brick_top - BOX_SIZE
+                    brick_dir = 1
+                elif eval_price <= brick_bot - BOX_SIZE:
+                    steps = int(math.floor((brick_bot - eval_price) / BOX_SIZE))
+                    brick_bot -= (steps * BOX_SIZE)
+                    brick_top = brick_bot + BOX_SIZE
+                    brick_dir = -1
+
+                r_close = brick_top if brick_dir == 1 else brick_bot
+
+                # सुपरट्रेंड इंजन
+                band_dist = BOX_SIZE * ST_FACTOR
+                raw_supp = r_close - band_dist
+                raw_res = r_close + band_dist
+
+                prev_trend = st_trend
+                if st_trend == 1:
+                    support_band = raw_supp if (brick_dir == 1 and raw_supp > support_band) else support_band
+                else:
+                    support_band = raw_supp
+
+                if st_trend == -1:
+                    resistance_band = raw_res if (brick_dir == -1 and raw_res < resistance_band) else resistance_band
+                else:
+                    resistance_band = raw_res
+
+                st_line = support_band if st_trend == 1 else resistance_band
+
+                if prev_trend == -1 and brick_dir == 1 and r_close > resistance_band:
+                    st_trend = 1
+                    support_band = r_close - band_dist
+                elif prev_trend == 1 and brick_dir == -1 and r_close < support_band:
+                    st_trend = -1
+                    resistance_band = r_close + band_dist
+
+                st_flip_buy = (st_trend == 1 and prev_trend == -1)
+                st_flip_sell = (st_trend == -1 and prev_trend == 1)
 
                 ist_time = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
 
@@ -78,22 +138,26 @@ def background_worker(state):
 
                 trade = state["active_trade"]
 
-                # सिग्नल और ट्रेड निष्पादन
+                # ट्रेड सिग्नल और TP / SL निष्पादन
                 if trade is None:
-                    if buy_pct >= 65 and imbalance >= 0.30:
+                    if st_flip_buy or (buy_pct >= 60 and imbalance >= 0.35 and st_trend == 1):
+                        locked_tp1 = BOX_SIZE * TP1_BRICKS
+                        locked_sl = BOX_SIZE * SL_BRICKS
                         state["active_trade"] = {
                             "type": "LONG",
                             "entry": price,
-                            "target": price + TARGET_PTS,
-                            "sl": price - SL_PTS,
+                            "target": price + locked_tp1,
+                            "sl": price - locked_sl,
                             "time": ist_time
                         }
-                    elif sell_pct >= 65 and imbalance <= -0.30:
+                    elif st_flip_sell or (sell_pct >= 60 and imbalance <= -0.35 and st_trend == -1):
+                        locked_tp1 = BOX_SIZE * TP1_BRICKS
+                        locked_sl = BOX_SIZE * SL_BRICKS
                         state["active_trade"] = {
                             "type": "SHORT",
                             "entry": price,
-                            "target": price - TARGET_PTS,
-                            "sl": price + SL_PTS,
+                            "target": price - locked_tp1,
+                            "sl": price + locked_sl,
                             "time": ist_time
                         }
                 else:
@@ -162,7 +226,7 @@ terminal = st.empty()
 
 while True:
     if state["price"] == 0.0:
-        terminal.info("⏳ 1-मिनट AI-Renko सर्वर इंजन कनेक्ट हो रहा है...")
+        terminal.info("⏳ AI-Renko Supertrend सर्वर इंजन कनेक्ट हो रहा है...")
         time.sleep(1)
         continue
 
@@ -184,19 +248,19 @@ while True:
 
         trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:14px; margin-bottom:12px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-<span style="background:{badge_bg}; color:white; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:14px;">🚀 ACTIVE {t_type} (1m Renko)</span>
+<span style="background:{badge_bg}; color:white; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:14px;">🚀 ACTIVE {t_type} (AI-Renko)</span>
 <span style="color:{pnl_color}; font-size:20px; font-weight:bold;">{pnl:+.1f} Pts</span>
 </div>
 <div style="display:flex; justify-content:space-between; color:#cbd5e1; font-size:14px; background:#0f172a; padding:10px; border-radius:8px;">
 <div>Entry<br><b style="color:#ffffff;">{entry:,.1f}</b></div>
-<div>Target (+200)<br><b style="color:#22c55e;">{target:,.1f}</b></div>
-<div>SL (-80)<br><b style="color:#ef4444;">{sl:,.1f}</b></div>
+<div>Target (TP1)<br><b style="color:#22c55e;">{target:,.1f}</b></div>
+<div>SL<br><b style="color:#ef4444;">{sl:,.1f}</b></div>
 </div>
 </div>"""
     else:
         trade_box_html = """<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:14px; margin-bottom:12px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR 1-MIN AI-RENKO SIGNAL</div>
-<div style="color:#94a3b8; font-size:12px; margin-top:4px;">गॉसियन स्मूदिंग और आर्डरफ्लो फ़िल्टर सक्रिय है</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR AI-RENKO / ST FLIP</div>
+<div style="color:#94a3b8; font-size:12px; margin-top:4px;">गॉसियन स्मूदिंग और सुपरट्रेंड इंजन सक्रिय है</div>
 </div>"""
 
     rows_html = ""
@@ -217,11 +281,11 @@ while True:
     full_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:16px; border-radius:16px; font-family:sans-serif; box-shadow:0 4px 20px rgba(0,0,0,0.4);">
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:10px; margin-bottom:12px;">
 <div>
-<div style="font-size:12px; color:#94a3b8;">⚡ AI-RENKO 1m PRO TERMINAL</div>
+<div style="font-size:12px; color:#94a3b8;">⚡ AI-RENKO SUPERTREND TERMINAL</div>
 <div style="font-size:28px; font-weight:800; color:#ffffff;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
-<div style="font-size:11px; color:#22c55e;">● 1m LIVE (IST)</div>
+<div style="font-size:11px; color:#22c55e;">● 24x7 LIVE (IST)</div>
 <div style="font-size:13px; color:#cbd5e1;">{ist_time}</div>
 </div>
 </div>
@@ -254,7 +318,7 @@ while True:
 </div>
 </div>
 <div style="background:#1e293b; border-radius:10px; padding:10px;">
-<div style="font-size:13px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 1-मिनट रैंकों ट्रेड इतिहास</div>
+<div style="font-size:13px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 AI-Renko ट्रेड इतिहास लॉग</div>
 <table style="width:100%; border-collapse:collapse;">
 <thead>
 <tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
