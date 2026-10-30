@@ -226,7 +226,6 @@ def get_server_engine():
         "history": [],
         "active_trade": None,
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है",
-        "last_result_color": "#334155",
         "wins": 0,
         "losses": 0,
         "net_pnl": 0.0
@@ -236,6 +235,11 @@ def get_server_engine():
     return state
 
 state = get_server_engine()
+
+if state["price"] == 0.0:
+    st.info("⏳ AI-Renko Supertrend सर्वर इंजन कनेक्ट हो रहा है...")
+    time.sleep(1)
+    st.rerun()
 
 price = state["price"]
 imbalance = state["imbalance"]
@@ -300,12 +304,6 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
 .terminal-grid {{ display: grid; grid-template-columns: 1fr; gap: 20px; }}
 @media (min-width: 900px) {{ .terminal-grid {{ grid-template-columns: 1.1fr 0.9fr; }} }}
 </style>
-<script>
-  // बिना पेज ब्लिंक किए हर 3 सेकंड में ऑटो-रिफ्रेश
-  setTimeout(function(){{
-     window.location.reload(1);
-  }}, 3000);
-</script>
 </head>
 <body>
 <div style="background:#0f172a; color:#f8fafc; padding:24px; border-radius:18px; box-shadow:0 8px 30px rgba(0,0,0,0.6); border:1px solid #1e293b;">
