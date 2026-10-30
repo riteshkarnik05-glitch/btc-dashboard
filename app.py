@@ -16,11 +16,15 @@ footer { visibility: hidden; }
 
 TARGET_PTS = 200.0
 SL_PTS = 80.0
+THRESHOLD = 0.50  # मजबूत सिग्नल के लिए उच्च थ्रेशोल्ड
 
 def background_worker(state):
+    consecutive_shocks = 0
+    last_shock_type = None
+
     while True:
         try:
-            url = "https://api.binance.us/api/v3/depth?symbol=BTCUSDT&limit=20"
+            url = "https://api.binance.us/api/v3/depth?symbol=BTCUSDT&limit=50"
             response = requests.get(url, timeout=4)
             data = response.json()
 
@@ -48,26 +52,44 @@ def background_worker(state):
 
                 trade = state["active_trade"]
 
-                # 1. नया सिग्नल चेक करें
+                # 1. सिग्नल और 2-टिक कन्फर्मेशन (स्पूफिंग फिल्टर) चेक करें
                 if trade is None:
-                    if imbalance >= 0.35:
-                        state["active_trade"] = {
-                            "type": "LONG",
-                            "entry": price,
-                            "target": price + TARGET_PTS,
-                            "sl": price - SL_PTS,
-                            "time": ist_time
-                        }
+                    current_shock = None
+                    if imbalance >= THRESHOLD:
+                        current_shock = "LONG"
+                    elif imbalance <= -THRESHOLD:
+                        current_shock = "SHORT"
+
+                    if current_shock and current_shock == last_shock_type:
+                        consecutive_shocks += 1
+                    else:
+                        consecutive_shocks = 1
+                        last_shock_type = current_shock
+
+                    # लगातार 2 बार (4 सेकंड) पुष्टि होने पर ही ट्रेड खुलेगा
+                    if consecutive_shocks >= 2 and current_shock:
+                        if current_shock == "LONG":
+                            state["active_trade"] = {
+                                "type": "LONG",
+                                "entry": price,
+                                "target": price + TARGET_PTS,
+                                "sl": price - SL_PTS,
+                                "time": ist_time
+                            }
+                        elif current_shock == "SHORT":
+                            state["active_trade"] = {
+                                "type": "SHORT",
+                                "entry": price,
+                                "target": price - TARGET_PTS,
+                                "sl": price + SL_PTS,
+                                "time": ist_time
+                            }
                         trade = state["active_trade"]
-                    elif imbalance <= -0.35:
-                        state["active_trade"] = {
-                            "type": "SHORT",
-                            "entry": price,
-                            "target": price - TARGET_PTS,
-                            "sl": price + SL_PTS,
-                            "time": ist_time
-                        }
-                        trade = state["active_trade"]
+                        consecutive_shocks = 0
+                        last_shock_type = None
+                else:
+                    consecutive_shocks = 0
+                    last_shock_type = None
 
                 # 2. एक्टिव ट्रेड का Target और SL चेक करें
                 if trade is not None:
@@ -110,7 +132,6 @@ def background_worker(state):
 
         time.sleep(2)
 
-# सर्वर मेमोरी जो रिफ्रेश या मोबाइल बंद होने पर भी डेटा सुरक्षित रखती है
 @st.cache_resource
 def get_server_engine():
     state = {
@@ -170,8 +191,8 @@ while True:
 </div>"""
     else:
         trade_box_html = """<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:14px; margin-bottom:12px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR NEXT ORDERBOOK SHOCK (±0.35)</div>
-<div style="color:#94a3b8; font-size:12px; margin-top:4px;">सर्वर 24x7 बैकग्राउंड में सिग्नल ट्रैक कर रहा है</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR HIGH-CONFIDENCE SHOCK (±0.50)</div>
+<div style="color:#94a3b8; font-size:12px; margin-top:4px;">स्पूफिंग फ़िल्टर (2-टिक कन्फर्मेशन) एक्टिव है</div>
 </div>"""
 
     rows_html = ""
@@ -192,11 +213,11 @@ while True:
     full_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:16px; border-radius:16px; font-family:sans-serif; box-shadow:0 4px 20px rgba(0,0,0,0.4);">
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:10px; margin-bottom:12px;">
 <div>
-<div style="font-size:12px; color:#94a3b8;">⚡ BTCUSDT 24x7 SERVER TERMINAL</div>
+<div style="font-size:12px; color:#94a3b8;">⚡ BTCUSDT PRO FILTERED TERMINAL</div>
 <div style="font-size:28px; font-weight:800; color:#ffffff;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
-<div style="font-size:11px; color:#22c55e;">● SERVER LIVE (IST)</div>
+<div style="font-size:11px; color:#22c55e;">● FILTERED LIVE (IST)</div>
 <div style="font-size:13px; color:#cbd5e1;">{ist_time}</div>
 </div>
 </div>
@@ -229,7 +250,7 @@ while True:
 </div>
 </div>
 <div style="background:#1e293b; border-radius:10px; padding:10px;">
-<div style="font-size:13px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 क्लोज्ड ट्रेड्स का इतिहास (24x7 Server Log)</div>
+<div style="font-size:13px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 क्लोज्ड ट्रेड्स का इतिहास (Pro Filter Log)</div>
 <table style="width:100%; border-collapse:collapse;">
 <thead>
 <tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
