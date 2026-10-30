@@ -7,14 +7,6 @@ import math
 
 st.set_page_config(page_title="AI-Renko Pro Terminal", layout="wide")
 
-st.markdown("""
-<style>
-.block-container { padding-top: 1rem; padding-bottom: 1rem; max-width: 100% !important; }
-header { visibility: hidden; }
-footer { visibility: hidden; }
-</style>
-""", unsafe_allow_html=True)
-
 BOX_SIZE = 150.0
 ST_FACTOR = 3.0
 TP1_BRICKS = 0.85
@@ -203,7 +195,7 @@ def background_worker(state):
                         if is_st_reversed and not is_sl_hit:
                             final_pnl = pnl
 
-                        status_txt = "🎯 TP2 + TRAIL CLOSED" if trade.get("tp2_hit", False) else ("✅ TP1 LOCKED" if trade.get("tp1_hit", False) else "🛑 STOP LOSS HIT")
+                        status_txt = "🎯 TP2 + TRAIL" if trade.get("tp2_hit", False) else ("✅ TP1 LOCKED" if trade.get("tp1_hit", False) else "🛑 SL HIT")
                         result_color = "#166534" if final_pnl >= 0 else "#991b1b"
 
                         state["wins" if final_pnl >= 0 else "losses"] += 1
@@ -212,9 +204,9 @@ def background_worker(state):
                         state["last_result_color"] = result_color
                         state["history"].insert(0, {
                             "time": ist_time, "type": t_type, "entry": entry,
-                            "exit": price, "status": status_txt, "pnl": f"{final_pnl:+.1f}", "color": "#22c55e" if final_pnl >= 0 else "#ef4444"
+                            "exit": price, "status": status_txt, "pnl": f"{final_pnl:+.1f}"
                         })
-                        state["history"] = state["history"][:25]
+                        state["history"] = state["history"][:20]
                         state["active_trade"] = None
 
         except Exception as e:
@@ -244,21 +236,36 @@ def get_server_engine():
     return state
 
 state = get_server_engine()
-terminal = st.empty()
 
-while True:
-    if state["price"] == 0.0:
-        terminal.info("⏳ AI-Renko Supertrend सर्वर इंजन कनेक्ट हो रहा है...")
-        time.sleep(1)
-        continue
+st.title("⚡ AI-Renko Supertrend Pro Terminal")
 
-    price = state["price"]
-    imbalance = state["imbalance"]
-    buy_pct = state["buy_pct"]
-    sell_pct = state["sell_pct"]
-    ist_time = state["ist_time"]
-    trade = state["active_trade"]
+if state["price"] == 0.0:
+    st.info("⏳ सर्वर इंजन से लाइव डेटा कनेक्ट हो रहा है...")
+    time.sleep(1)
+    st.rerun()
 
+price = state["price"]
+buy_pct = state["buy_pct"]
+sell_pct = state["sell_pct"]
+imbalance = state["imbalance"]
+ist_time = state["ist_time"]
+trade = state["active_trade"]
+
+col_p1, col_p2 = st.columns([2, 1])
+with col_p1:
+    st.metric(label="💰 लाइव BTC प्राइस", value=f"${price:,.2f}")
+with col_p2:
+    st.write(f"**समय (IST):** {ist_time}")
+
+st.write(f"🟢 Buy: {buy_pct}% | 🔴 Sell: {sell_pct}% (Dominance: {imbalance:+.2f})")
+st.progress(buy_pct / 100)
+
+st.divider()
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("🚀 एक्टिव ट्रेड स्टेटस")
     if trade is not None:
         t_type = trade.get("type", "LONG")
         entry = trade.get("entry", price)
@@ -266,128 +273,30 @@ while True:
         tp2 = trade.get("tp2", price + 200)
         sl = trade.get("sl", price - 100)
         pnl = (price - entry) if t_type == "LONG" else (entry - price)
-        pnl_color = "#22c55e" if pnl >= 0 else "#ef4444"
-        badge_bg = "#16a34a" if t_type == "LONG" else "#dc2626"
-        status_label = "🚀 TRAILING RUNNER" if trade.get("tp2_hit", False) else ("🔒 TP1 LOCKED (Protected)" if trade.get("tp1_hit", False) else f"🚀 ACTIVE {t_type}")
-
-        trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:16px; margin-bottom:14px;">
-<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="background:{badge_bg}; color:white; padding:6px 12px; border-radius:6px; font-weight:bold; font-size:15px;">{status_label}</span>
-<span style="color:{pnl_color}; font-size:22px; font-weight:bold;">{pnl:+.1f} Pts</span>
-</div>
-<div style="display:flex; justify-content:space-between; color:#cbd5e1; font-size:14px; background:#0f172a; padding:12px; border-radius:8px;">
-<div>Entry<br><b style="color:#ffffff;">{entry:,.1f}</b></div>
-<div>TP1 (127.5p)<br><b style="color:#22c55e;">{tp1:,.1f}</b></div>
-<div>TP2 (330p)<br><b style="color:#38bdf8;">{tp2:,.1f}</b></div>
-<div>Trailing SL<br><b style="color:#ef4444;">{sl:,.1f}</b></div>
-</div>
-</div>"""
+        
+        status_label = "TRAILING RUNNER" if trade.get("tp2_hit", False) else ("TP1 LOCKED" if trade.get("tp1_hit", False) else f"ACTIVE {t_type}")
+        
+        st.success(f"**स्टेटस:** {status_label} | **PnL:** {pnl:+.1f} Pts")
+        st.write(f"• **Entry:** {entry:,.1f}")
+        st.write(f"• **TP1:** {tp1:,.1f} | **TP2:** {tp2:,.1f}")
+        st.write(f"• **Trailing SL:** {sl:,.1f}")
     else:
-        trade_box_html = """<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:16px;">🔍 WAITING FOR AI-RENKO / ST FLIP</div>
-<div style="color:#94a3b8; font-size:13px; margin-top:4px;">TP1, TP2 और ट्रेलिंग इंजन सक्रिय है</div>
-</div>"""
+        st.info("🔍 मार्केट स्टेटस: WAITING FOR AI-RENKO / ST FLIP")
 
-    rows_html = ""
+    st.markdown(f"**पिछला परिणाम:** {state['last_result']}")
+
+    c_w, c_l, c_n = st.columns(3)
+    c_w.metric("🎯 Target Hit", state["wins"])
+    c_l.metric("🛑 SL Hit", state["losses"])
+    c_n.metric("📊 Net PnL", f"{state['net_pnl']:+.1f}")
+
+with col2:
+    st.subheader("📜 ट्रेड इतिहास लॉग")
     if not state["history"]:
-        rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई ट्रेड पूरा नहीं हुआ है</td></tr>"""
+        st.write("अभी तक कोई ट्रेड पूरा नहीं हुआ है")
     else:
         for h in state["history"]:
-            rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:14px;">
-<td style="padding:10px 6px; color:#94a3b8;">{h['time']}</td>
-<td style="padding:10px 6px; font-weight:bold; color:#f8fafc;">{h['type']}</td>
-<td style="padding:10px 6px; color:#cbd5e1;">{h['entry']:,.0f} → {h['exit']:,.0f}</td>
-<td style="padding:10px 6px; color:{h['color']}; font-weight:bold;">{h['status']}</td>
-<td style="padding:10px 6px; color:{h['color']}; font-weight:bold; text-align:right;">{h['pnl']}</td>
-</tr>"""
+            st.text(f"[{h['time']}] {h['type']} | {h['entry']:,.0f} → {h['exit']:,.0f} | {h['status']} | {h['pnl']} Pts")
 
-    net_color = "#22c55e" if state["net_pnl"] >= 0 else "#ef4444"
-
-    full_html = f"""
-<style>
-.terminal-grid {{
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 20px;
-}}
-@media (min-width: 900px) {{
-    .terminal-grid {{
-        grid-template-columns: 1fr 1fr;
-    }}
-}}
-</style>
-
-<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; font-family:sans-serif; box-shadow:0 4px 25px rgba(0,0,0,0.5);">
-    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px;">
-        <div>
-            <div style="font-size:13px; color:#94a3b8;">⚡ AI-RENKO SUPERTREND PRO TERMINAL</div>
-            <div style="font-size:32px; font-weight:800; color:#ffffff;">${price:,.2f}</div>
-        </div>
-        <div style="text-align:right;">
-            <div style="font-size:12px; color:#22c55e;">● 24x7 RESPONSIVE LIVE (IST)</div>
-            <div style="font-size:14px; color:#cbd5e1;">{ist_time}</div>
-        </div>
-    </div>
-
-    <div class="terminal-grid">
-        <div>
-            <div style="margin-bottom:16px;">
-                <div style="display:flex; justify-content:space-between; font-size:14px; font-weight:bold; margin-bottom:6px;">
-                    <span style="color:#22c55e;">🟢 Buy: {buy_pct}%</span>
-                    <span style="color:#e2e8f0;">Dominance: {imbalance:+.2f}</span>
-                    <span style="color:#ef4444;">Sell: {sell_pct}% 🔴</span>
-                </div>
-                <div style="width:100%; background:#ef4444; height:14px; border-radius:7px; overflow:hidden;">
-                    <div style="width:{buy_pct}%; background:#22c55e; height:100%;"></div>
-                </div>
-            </div>
-
-            {trade_box_html}
-
-            <div style="background:{state['last_result_color']}; color:#ffffff; padding:10px 14px; border-radius:8px; font-size:14px; font-weight:bold; text-align:center; margin-bottom:14px;">
-                पिछला परिणाम: {state['last_result']}
-            </div>
-
-            <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:14px; text-align:center;">
-                <div style="background:#1e293b; padding:10px; border-radius:8px;">
-                    <div style="font-size:12px; color:#94a3b8;">🎯 TARGET HIT</div>
-                    <div style="font-size:20px; font-weight:bold; color:#22c55e;">{state['wins']}</div>
-                </div>
-                <div style="background:#1e293b; padding:10px; border-radius:8px;">
-                    <div style="font-size:12px; color:#94a3b8;">🛑 SL HIT</div>
-                    <div style="font-size:20px; font-weight:bold; color:#ef4444;">{state['losses']}</div>
-                </div>
-                <div style="background:#1e293b; padding:10px; border-radius:8px;">
-                    <div style="font-size:12px; color:#94a3b8;">📊 NET PnL</div>
-                    <div style="font-size:20px; font-weight:bold; color:{net_color};">{state['net_pnl']:+.1f}</div>
-                </div>
-            </div>
-        </div>
-
-        <div>
-            <div style="background:#1e293b; border-radius:12px; padding:14px; height:100%;">
-                <div style="font-size:14px; font-weight:bold; color:#cbd5e1; margin-bottom:8px;">📜 AI-Renko ट्रेड इतिहास लॉग</div>
-                <div style="max-height: 380px; overflow-y: auto;">
-                    <table style="width:100%; border-collapse:collapse;">
-                        <thead>
-                            <tr style="border-bottom:1px solid #475569; font-size:12px; color:#94a3b8; text-align:left;">
-                                <th style="padding:6px;">समय</th>
-                                <th style="padding:6px;">ट्रेड</th>
-                                <th style="padding:6px;">Entry → Exit</th>
-                                <th style="padding:6px;">स्टेटस</th>
-                                <th style="padding:6px; text-align:right;">PnL</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {rows_html}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-"""
-
-    terminal.markdown(full_html, unsafe_allow_html=True)
-    time.sleep(3)
+time.sleep(3)
+st.rerun()
