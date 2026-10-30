@@ -5,7 +5,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="BTC Scalp Dashboard", layout="centered")
 
-st.title("⚡ BTC Orderbook Shock & Signal Dashboard")
+st.title("⚡ BTC Dashboard")
 
 # सेशन स्टेट में डेटा स्टोर करने के लिए
 if 'signal_log' not in st.session_state:
