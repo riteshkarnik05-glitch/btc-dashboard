@@ -237,11 +237,6 @@ def get_server_engine():
 
 state = get_server_engine()
 
-if state["price"] == 0.0:
-    st.info("⏳ AI-Renko Supertrend सर्वर इंजन कनेक्ट हो रहा है...")
-    time.sleep(1)
-    st.rerun()
-
 price = state["price"]
 imbalance = state["imbalance"]
 buy_pct = state["buy_pct"]
@@ -305,6 +300,12 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
 .terminal-grid {{ display: grid; grid-template-columns: 1fr; gap: 20px; }}
 @media (min-width: 900px) {{ .terminal-grid {{ grid-template-columns: 1.1fr 0.9fr; }} }}
 </style>
+<script>
+  // बिना पेज ब्लिंक किए हर 3 सेकंड में ऑटो-रिफ्रेश
+  setTimeout(function(){{
+     window.location.reload(1);
+  }}, 3000);
+</script>
 </head>
 <body>
 <div style="background:#0f172a; color:#f8fafc; padding:24px; border-radius:18px; box-shadow:0 8px 30px rgba(0,0,0,0.6); border:1px solid #1e293b;">
@@ -384,5 +385,3 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
 """
 
 components.html(full_html, height=580, scrolling=True)
-time.sleep(3)
-st.rerun()
