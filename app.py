@@ -4,6 +4,7 @@ import time
 import threading
 from datetime import datetime, timedelta
 import math
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="AI-Renko Pro Terminal", layout="wide")
 
@@ -202,9 +203,9 @@ def background_worker(state):
                         state["last_result"] = f"{status_txt} ({t_type} | {final_pnl:+.1f} Pts)"
                         state["history"].insert(0, {
                             "time": ist_time, "type": t_type, "entry": entry,
-                            "exit": price, "status": status_txt, "pnl": f"{final_pnl:+.1f}"
+                            "exit": price, "status": status_txt, "pnl": f"{final_pnl:+.1f}", "color": "#22c55e" if final_pnl >= 0 else "#ef4444"
                         })
-                        state["history"] = state["history"][:20]
+                        state["history"] = state["history"][:25]
                         state["active_trade"] = None
 
         except Exception as e:
@@ -225,8 +226,7 @@ def get_server_engine():
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है",
         "wins": 0,
         "losses": 0,
-        "net_pnl": 0.0,
-        "error": None
+        "net_pnl": 0.0
     }
     thread = threading.Thread(target=background_worker, args=(state,), daemon=True)
     thread.start()
@@ -234,77 +234,154 @@ def get_server_engine():
 
 state = get_server_engine()
 
-st.title("⚡ AI-Renko Supertrend Pro Terminal")
-
 if state["price"] == 0.0:
-    st.info("⏳ सर्वर इंजन से लाइव डेटा कनेक्ट हो रहा है...")
+    st.info("⏳ AI-Renko Supertrend सर्वर इंजन कनेक्ट हो रहा है...")
     time.sleep(1)
     st.rerun()
 
 price = state["price"]
+imbalance = state["imbalance"]
 buy_pct = state["buy_pct"]
 sell_pct = state["sell_pct"]
-imbalance = state["imbalance"]
 ist_time = state["ist_time"]
 trade = state["active_trade"]
 
-# शीर्ष मेट्रिक्स कार्ड
-with st.container(border=True):
-    col_m1, col_m2 = st.columns([2, 1])
-    with col_m1:
-        st.metric(label="💰 लाइव BTC प्राइस (USDT)", value=f"${price:,.2f}")
-    with col_m2:
-        st.metric(label="⏰ भारतीय समय (IST)", value=ist_time)
+if trade is not None:
+    t_type = trade.get("type", "LONG")
+    entry = trade.get("entry", price)
+    tp1 = trade.get("tp1", price + 100)
+    tp2 = trade.get("tp2", price + 200)
+    sl = trade.get("sl", price - 100)
+    pnl = (price - entry) if t_type == "LONG" else (entry - price)
+    pnl_color = "#22c55e" if pnl >= 0 else "#ef4444"
+    badge_bg = "#16a34a" if t_type == "LONG" else "#dc2626"
+    status_label = "🚀 TRAILING RUNNER" if trade.get("tp2_hit", False) else ("🔒 TP1 LOCKED (Protected)" if trade.get("tp1_hit", False) else f"🚀 ACTIVE {t_type}")
 
-    st.write(f"**बायर/सेलर प्रेशर:** 🟢 Buy: {buy_pct}% | 🔴 Sell: {sell_pct}% (Dominance: {imbalance:+.2f})")
-    st.progress(buy_pct / 100)
+    trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:16px; margin-bottom:14px;">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+<span style="background:{badge_bg}; color:white; padding:6px 12px; border-radius:6px; font-weight:bold; font-size:15px;">{status_label}</span>
+<span style="color:{pnl_color}; font-size:22px; font-weight:bold;">{pnl:+.1f} Pts</span>
+</div>
+<div style="display:flex; justify-content:space-between; color:#cbd5e1; font-size:14px; background:#0f172a; padding:12px; border-radius:8px; text-align:center;">
+<div>Entry<br><b style="color:#ffffff; font-size:15px;">{entry:,.1f}</b></div>
+<div>TP1 (127.5p)<br><b style="color:#22c55e; font-size:15px;">{tp1:,.1f}</b></div>
+<div>TP2 (330p)<br><b style="color:#38bdf8; font-size:15px;">{tp2:,.1f}</b></div>
+<div>Trailing SL<br><b style="color:#ef4444; font-size:15px;">{sl:,.1f}</b></div>
+</div>
+</div>"""
+else:
+    trade_box_html = """<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
+<div style="color:#38bdf8; font-weight:bold; font-size:16px;">🔍 WAITING FOR AI-RENKO / ST FLIP</div>
+<div style="color:#94a3b8; font-size:13px; margin-top:4px;">TP1, TP2 और ट्रेलिंग इंजन सक्रिय है</div>
+</div>"""
 
-st.divider()
+rows_html = ""
+if not state["history"]:
+    rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी तक कोई ट्रेड पूरा नहीं हुआ है</td></tr>"""
+else:
+    for h in state["history"]:
+        h_color = h.get('color', '#22c55e')
+        rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:13px;">
+<td style="padding:10px 8px; color:#94a3b8;">{h['time']}</td>
+<td style="padding:10px 8px; font-weight:bold; color:#f8fafc;">{h['type']}</td>
+<td style="padding:10px 8px; color:#cbd5e1; font-weight:600;">{h['entry']:,.1f} → {h['exit']:,.1f}</td>
+<td style="padding:10px 8px; color:{h_color}; font-weight:bold;">{h['status']}</td>
+<td style="padding:10px 8px; color:{h_color}; font-weight:bold; text-align:right;">{h['pnl']} Pts</td>
+</tr>"""
 
-# दो मुख्य कॉलम (एक्टिव ट्रेड और इतिहास)
-col_left, col_right = st.columns(2, gap="medium")
+net_color = "#22c55e" if state["net_pnl"] >= 0 else "#ef4444"
 
-with col_left:
-    with st.container(border=True):
-        st.markdown("### 🚀 एक्टिव ट्रेड स्टेटस")
-        if trade is not None:
-            t_type = trade.get("type", "LONG")
-            entry = trade.get("entry", price)
-            tp1 = trade.get("tp1", price + 100)
-            tp2 = trade.get("tp2", price + 200)
-            sl = trade.get("sl", price - 100)
-            pnl = (price - entry) if t_type == "LONG" else (entry - price)
-            
-            status_label = "🚀 TRAILING RUNNER" if trade.get("tp2_hit", False) else ("🔒 TP1 LOCKED" if trade.get("tp1_hit", False) else f"🚀 ACTIVE {t_type}")
-            
-            st.success(f"**{status_label}** | PnL: **{pnl:+.1f} Pts**")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Entry", f"{entry:,.1f}")
-            c2.metric("TP1", f"{tp1:,.1f}")
-            c3.metric("TP2", f"{tp2:,.1f}")
-            c4.metric("Trailing SL", f"{sl:,.1f}")
-        else:
-            st.info("🔍 मार्केट स्टेटस: WAITING FOR AI-RENKO / ST FLIP (±0.35)")
+full_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 10px; }}
+.terminal-grid {{ display: grid; grid-template-columns: 1fr; gap: 20px; }}
+@media (min-width: 900px) {{ .terminal-grid {{ grid-template-columns: 1.1fr 0.9fr; }} }}
+</style>
+</head>
+<body>
+<div style="background:#0f172a; color:#f8fafc; padding:24px; border-radius:18px; box-shadow:0 8px 30px rgba(0,0,0,0.6); border:1px solid #1e293b;">
+    <!-- टॉप हेडर -->
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:14px; margin-bottom:18px;">
+        <div>
+            <div style="font-size:13px; color:#38bdf8; font-weight:600; letter-spacing:0.5px;">⚡ AI-RENKO SUPERTREND PRO TERMINAL</div>
+            <div style="font-size:36px; font-weight:800; color:#ffffff; margin-top:2px;">${price:,.2f}</div>
+        </div>
+        <div style="text-align:right;">
+            <div style="font-size:12px; color:#22c55e; font-weight:600;">● 24x7 RESPONSIVE LIVE</div>
+            <div style="font-size:14px; color:#cbd5e1; margin-top:2px;">{ist_time} (IST)</div>
+        </div>
+    </div>
 
-        st.markdown(f"**पिछला परिणाम:** {state['last_result']}")
+    <!-- ग्रिड लेआउट -->
+    <div class="terminal-grid">
+        <!-- बायां कॉलम: प्रेशर, एक्टिव ट्रेड और स्कोरबोर्ड -->
+        <div>
+            <div style="margin-bottom:18px; background:#1e293b; padding:14px; border-radius:12px;">
+                <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; margin-bottom:6px;">
+                    <span style="color:#22c55e;">🟢 Buy: {buy_pct}%</span>
+                    <span style="color:#e2e8f0;">Dominance: {imbalance:+.2f}</span>
+                    <span style="color:#ef4444;">Sell: {sell_pct}% 🔴</span>
+                </div>
+                <div style="width:100%; background:#ef4444; height:12px; border-radius:6px; overflow:hidden;">
+                    <div style="width:{buy_pct}%; background:#22c55e; height:100%;"></div>
+                </div>
+            </div>
 
-    with st.container(border=True):
-        st.markdown("### 📊 स्कोरबोर्ड")
-        sc1, sc2, sc3 = st.columns(3)
-        sc1.metric("🎯 Target Hit", state["wins"])
-        sc2.metric("🛑 SL Hit", state["losses"])
-        sc3.metric("📊 Net PnL", f"{state['net_pnl']:+.1f} Pts")
+            {trade_box_html}
 
-with col_right:
-    with st.container(border=True):
-        st.markdown("### 📜 ट्रेड इतिहास लॉग")
-        if not state["history"]:
-            st.write("अभी तक कोई ट्रेड पूरा नहीं हुआ है")
-        else:
-            for h in state["history"]:
-                color_icon = "🟢" if "+" in h['pnl'] else "🔴"
-                st.markdown(f"{color_icon} **{h['time']}** | `{h['type']}` | {h['entry']:,.0f} → {h['exit']:,.0f} | **{h['status']}** | `{h['pnl']} Pts`")
+            <div style="background:{state['last_result_color']}; color:#ffffff; padding:12px 16px; border-radius:10px; font-size:14px; font-weight:bold; text-align:center; margin-bottom:16px; box-shadow:0 2px 10px rgba(0,0,0,0.3);">
+                पिछला परिणाम: {state['last_result']}
+            </div>
 
+            <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; text-align:center;">
+                <div style="background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
+                    <div style="font-size:11px; color:#94a3b8; font-weight:600;">🎯 TARGET HIT</div>
+                    <div style="font-size:22px; font-weight:bold; color:#22c55e; margin-top:4px;">{state['wins']}</div>
+                </div>
+                <div style="background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
+                    <div style="font-size:11px; color:#94a3b8; font-weight:600;">🛑 SL HIT</div>
+                    <div style="font-size:22px; font-weight:bold; color:#ef4444; margin-top:4px;">{state['losses']}</div>
+                </div>
+                <div style="background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
+                    <div style="font-size:11px; color:#94a3b8; font-weight:600;">📊 NET PnL</div>
+                    <div style="font-size:22px; font-weight:bold; color:{net_color}; margin-top:4px;">{state['net_pnl']:+.1f}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- दायां कॉलम: ट्रेड इतिहास लॉग -->
+        <div>
+            <div style="background:#1e293b; border-radius:12px; padding:16px; border:1px solid #334155; height:100%; box-sizing:border-box;">
+                <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:12px; display:flex; align-items:center; gap:6px;">
+                    📜 AI-Renko ट्रेड इतिहास लॉग
+                </div>
+                <div style="max-height: 380px; overflow-y: auto;">
+                    <table style="width:100%; border-collapse:collapse;">
+                        <thead>
+                            <tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
+                                <th style="padding:6px;">समय</th>
+                                <th style="padding:6px;">ट्रेड</th>
+                                <th style="padding:6px;">Entry → Exit</th>
+                                <th style="padding:6px;">स्टेटस</th>
+                                <th style="padding:6px; text-align:right;">PnL</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows_html}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+"""
+
+components.html(full_html, height=580, scrolling=True)
 time.sleep(3)
 st.rerun()
