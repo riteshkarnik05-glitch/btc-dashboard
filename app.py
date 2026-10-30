@@ -248,60 +248,63 @@ imbalance = state["imbalance"]
 ist_time = state["ist_time"]
 trade = state["active_trade"]
 
-# शीर्ष मेट्रिक्स बार
-col_m1, col_m2 = st.columns([2, 1])
-with col_m1:
-    st.metric(label="💰 लाइव BTC प्राइस (USDT)", value=f"${price:,.2f}")
-with col_m2:
-    st.metric(label="⏰ भारतीय समय (IST)", value=ist_time)
+# शीर्ष मेट्रिक्स कार्ड
+with st.container(border=True):
+    col_m1, col_m2 = st.columns([2, 1])
+    with col_m1:
+        st.metric(label="💰 लाइव BTC प्राइस (USDT)", value=f"${price:,.2f}")
+    with col_m2:
+        st.metric(label="⏰ भारतीय समय (IST)", value=ist_time)
 
-# प्रेशर बार
-st.write(f"**बायर/सेलर प्रेशर:** 🟢 Buy: {buy_pct}% | 🔴 Sell: {sell_pct}% (Dominance: {imbalance:+.2f})")
-st.progress(buy_pct / 100)
+    st.write(f"**बायर/सेलर प्रेशर:** 🟢 Buy: {buy_pct}% | 🔴 Sell: {sell_pct}% (Dominance: {imbalance:+.2f})")
+    st.progress(buy_pct / 100)
 
 st.divider()
 
-# दो कॉलम लेआउट (प्रोफेशनल टर्मिनल व्यू)
+# दो मुख्य कॉलम (एक्टिव ट्रेड और इतिहास)
 col_left, col_right = st.columns(2, gap="medium")
 
 with col_left:
-    st.markdown("### 🚀 एक्टिव ट्रेड स्टेटस")
-    if trade is not None:
-        t_type = trade.get("type", "LONG")
-        entry = trade.get("entry", price)
-        tp1 = trade.get("tp1", price + 100)
-        tp2 = trade.get("tp2", price + 200)
-        sl = trade.get("sl", price - 100)
-        pnl = (price - entry) if t_type == "LONG" else (entry - price)
-        
-        status_label = "🚀 TRAILING RUNNER" if trade.get("tp2_hit", False) else ("🔒 TP1 LOCKED (Protected)" if trade.get("tp1_hit", False) else f"🚀 ACTIVE {t_type}")
-        
-        st.success(f"**{status_label}** | PnL: **{pnl:+.1f} Pts**")
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Entry", f"{entry:,.1f}")
-        c2.metric("TP1", f"{tp1:,.1f}")
-        c3.metric("TP2", f"{tp2:,.1f}")
-        c4.metric("Trailing SL", f"{sl:,.1f}")
-    else:
-        st.info("🔍 मार्केट स्टेटस: WAITING FOR AI-RENKO / ST FLIP (±0.35)")
+    with st.container(border=True):
+        st.markdown("### 🚀 एक्टिव ट्रेड स्टेटस")
+        if trade is not None:
+            t_type = trade.get("type", "LONG")
+            entry = trade.get("entry", price)
+            tp1 = trade.get("tp1", price + 100)
+            tp2 = trade.get("tp2", price + 200)
+            sl = trade.get("sl", price - 100)
+            pnl = (price - entry) if t_type == "LONG" else (entry - price)
+            
+            status_label = "🚀 TRAILING RUNNER" if trade.get("tp2_hit", False) else ("🔒 TP1 LOCKED" if trade.get("tp1_hit", False) else f"🚀 ACTIVE {t_type}")
+            
+            st.success(f"**{status_label}** | PnL: **{pnl:+.1f} Pts**")
+            
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Entry", f"{entry:,.1f}")
+            c2.metric("TP1", f"{tp1:,.1f}")
+            c3.metric("TP2", f"{tp2:,.1f}")
+            c4.metric("Trailing SL", f"{sl:,.1f}")
+        else:
+            st.info("🔍 मार्केट स्टेटस: WAITING FOR AI-RENKO / ST FLIP (±0.35)")
 
-    st.markdown(f"**पिछला परिणाम:** {state['last_result']}")
+        st.markdown(f"**पिछला परिणाम:** {state['last_result']}")
 
-    st.markdown("### 📊 स्कोरबोर्ड")
-    sc1, sc2, sc3 = st.columns(3)
-    sc1.metric("🎯 Target Hit", state["wins"])
-    sc2.metric("🛑 SL Hit", state["losses"])
-    sc3.metric("📊 Net PnL", f"{state['net_pnl']:+.1f} Pts")
+    with st.container(border=True):
+        st.markdown("### 📊 स्कोरबोर्ड")
+        sc1, sc2, sc3 = st.columns(3)
+        sc1.metric("🎯 Target Hit", state["wins"])
+        sc2.metric("🛑 SL Hit", state["losses"])
+        sc3.metric("📊 Net PnL", f"{state['net_pnl']:+.1f} Pts")
 
 with col_right:
-    st.markdown("### 📜 ट्रेड इतिहास लॉग")
-    if not state["history"]:
-        st.write("अभी तक कोई ट्रेड पूरा नहीं हुआ है")
-    else:
-        for h in state["history"]:
-            color_icon = "🟢" if "+" in h['pnl'] else "🔴"
-            st.markdown(f"{color_icon} **{h['time']}** | `{h['type']}` | {h['entry']:,.0f} → {h['exit']:,.0f} | **{h['status']}** | `{h['pnl']} Pts`")
+    with st.container(border=True):
+        st.markdown("### 📜 ट्रेड इतिहास लॉग")
+        if not state["history"]:
+            st.write("अभी तक कोई ट्रेड पूरा नहीं हुआ है")
+        else:
+            for h in state["history"]:
+                color_icon = "🟢" if "+" in h['pnl'] else "🔴"
+                st.markdown(f"{color_icon} **{h['time']}** | `{h['type']}` | {h['entry']:,.0f} → {h['exit']:,.0f} | **{h['status']}** | `{h['pnl']} Pts`")
 
 time.sleep(3)
 st.rerun()
