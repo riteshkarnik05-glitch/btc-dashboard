@@ -295,29 +295,29 @@ else:
 
 net_color = "#22c55e" if state["net_pnl"] >= 0 else "#ef4444"
 
-full_html = f"""
+# यहाँ f-string की जगह साधारण string (ताकि जावास्क्रिप्ट के करली ब्रेसिज़ से टकराव न हो) का उपयोग किया गया है
+full_html = """
 <!DOCTYPE html>
 <html>
 <head>
 <style>
-body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 10px; }}
-.terminal-grid {{ display: grid; grid-template-columns: 1fr; gap: 20px; }}
-@media (min-width: 900px) {{ .terminal-grid {{ grid-template-columns: 1.1fr 0.9fr; }} }}
+body { background-color: #0e1117; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 10px; }
+.terminal-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+@media (min-width: 900px) { .terminal-grid { grid-template-columns: 1.1fr 0.9fr; } }
 </style>
 <script>
   // बिना स्क्रीन ब्लिंक किए बैकग्राउंड से हर 3 सेकंड में नया डेटा लोड करना
-  setInterval(function() {{
+  setInterval(function() {
       fetch(window.location.href)
         .then(response => response.text())
-        .then(html => {{
-            // केवल बॉडी या टर्मिनल कंटेंट को चुपचाप अपडेट करना
+        .then(html => {
             var parser = new DOMParser();
             var doc = parser.parseFromString(html, 'text/html');
             var newTerminal = doc.getElementById('terminal-box');
-            if (newTerminal) {{
+            if (newTerminal) {
                 document.getElementById('terminal-box').innerHTML = newTerminal.innerHTML;
-            }}
-        }}).catch(err => console.log('Auto-update active'));
+            }
+        }).catch(err => console.log('Auto-update active'));
   }, 3000);
 </script>
 </head>
@@ -326,11 +326,11 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
     <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:14px; margin-bottom:18px;">
         <div>
             <div style="font-size:13px; color:#38bdf8; font-weight:600; letter-spacing:0.5px;">⚡ AI-RENKO SUPERTREND PRO TERMINAL</div>
-            <div style="font-size:36px; font-weight:800; color:#ffffff; margin-top:2px;">${price:,.2f}</div>
+            <div style="font-size:36px; font-weight:800; color:#ffffff; margin-top:2px;">$PRICE_VAL</div>
         </div>
         <div style="text-align:right;">
             <div style="font-size:12px; color:#22c55e; font-weight:600;">● 24x7 RESPONSIVE LIVE</div>
-            <div style="font-size:14px; color:#cbd5e1; margin-top:2px;">{ist_time} (IST)</div>
+            <div style="font-size:14px; color:#cbd5e1; margin-top:2px;">TIME_VAL (IST)</div>
         </div>
     </div>
 
@@ -338,33 +338,33 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
         <div>
             <div style="margin-bottom:18px; background:#1e293b; padding:14px; border-radius:12px;">
                 <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; margin-bottom:6px;">
-                    <span style="color:#22c55e;">🟢 Buy: {buy_pct}%</span>
-                    <span style="color:#e2e8f0;">Dominance: {imbalance:+.2f}</span>
-                    <span style="color:#ef4444;">Sell: {sell_pct}% 🔴</span>
+                    <span style="color:#22c55e;">🟢 Buy: BUY_PCT%</span>
+                    <span style="color:#e2e8f0;">Dominance: IMBALANCE_VAL</span>
+                    <span style="color:#ef4444;">Sell: SELL_PCT% 🔴</span>
                 </div>
                 <div style="width:100%; background:#ef4444; height:12px; border-radius:6px; overflow:hidden;">
-                    <div style="width:{buy_pct}%; background:#22c55e; height:100%;"></div>
+                    <div style="width:BUY_PCT%; background:#22c55e; height:100%;"></div>
                 </div>
             </div>
 
-            {trade_box_html}
+            TRADE_BOX_HTML_PLACEHOLDER
 
-            <div style="background:{last_result_color}; color:#ffffff; padding:12px 16px; border-radius:10px; font-size:14px; font-weight:bold; text-align:center; margin-bottom:16px; box-shadow:0 2px 10px rgba(0,0,0,0.3);">
-                पिछला परिणाम: {last_result_text}
+            <div style="background:LAST_COLOR; color:#ffffff; padding:12px 16px; border-radius:10px; font-size:14px; font-weight:bold; text-align:center; margin-bottom:16px; box-shadow:0 2px 10px rgba(0,0,0,0.3);">
+                पिछला परिणाम: LAST_RESULT_TEXT
             </div>
 
             <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; text-align:center;">
                 <div style="background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
                     <div style="font-size:11px; color:#94a3b8; font-weight:600;">🎯 TARGET HIT</div>
-                    <div style="font-size:22px; font-weight:bold; color:#22c55e; margin-top:4px;">{state['wins']}</div>
+                    <div style="font-size:22px; font-weight:bold; color:#22c55e; margin-top:4px;">WINS_VAL</div>
                 </div>
                 <div style="background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
                     <div style="font-size:11px; color:#94a3b8; font-weight:600;">🛑 SL HIT</div>
-                    <div style="font-size:22px; font-weight:bold; color:#ef4444; margin-top:4px;">{state['losses']}</div>
+                    <div style="font-size:22px; font-weight:bold; color:#ef4444; margin-top:4px;">LOSSES_VAL</div>
                 </div>
                 <div style="background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
                     <div style="font-size:11px; color:#94a3b8; font-weight:600;">📊 NET PnL</div>
-                    <div style="font-size:22px; font-weight:bold; color:{net_color}; margin-top:4px;">{state['net_pnl']:+.1f}</div>
+                    <div style="font-size:22px; font-weight:bold; color:NET_COLOR; margin-top:4px;">NET_PNL_VAL</div>
                 </div>
             </div>
         </div>
@@ -386,7 +386,7 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
                             </tr>
                         </thead>
                         <tbody>
-                            {rows_html}
+                            ROWS_HTML_PLACEHOLDER
                         </tbody>
                     </table>
                 </div>
@@ -397,6 +397,21 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
 </body>
 </html>
 """
+
+# वैरिएबल वैल्यूज को सुरक्षित तरीके से रिप्लेस करना
+full_html = full_html.replace("$PRICE_VAL", f"{price:,.2f}")
+full_html = full_html.replace("TIME_VAL", ist_time)
+full_html = full_html.replace("BUY_PCT", str(buy_pct))
+full_html = full_html.replace("SELL_PCT", str(sell_pct))
+full_html = full_html.replace("IMBALANCE_VAL", f"{imbalance:+.2f}")
+full_html = full_html.replace("TRADE_BOX_HTML_PLACEHOLDER", trade_box_html)
+full_html = full_html.replace("LAST_COLOR", last_result_color)
+full_html = full_html.replace("LAST_RESULT_TEXT", last_result_text)
+full_html = full_html.replace("WINS_VAL", str(state["wins"]))
+full_html = full_html.replace("LOSSES_VAL", str(state["losses"]))
+full_html = full_html.replace("NET_COLOR", net_color)
+full_html = full_html.replace("NET_PNL_VAL", f"{state['net_pnl']:+.1f}")
+full_html = full_html.replace("ROWS_HTML_PLACEHOLDER", rows_html)
 
 components.html(full_html, height=580, scrolling=True)
 
