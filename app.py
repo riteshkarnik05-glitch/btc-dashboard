@@ -197,10 +197,12 @@ def background_worker(state):
                             final_pnl = pnl
 
                         status_txt = "🎯 TP2 + TRAIL" if trade.get("tp2_hit", False) else ("✅ TP1 LOCKED" if trade.get("tp1_hit", False) else "🛑 SL HIT")
-                        
+                        result_color = "#166534" if final_pnl >= 0 else "#991b1b"
+
                         state["wins" if final_pnl >= 0 else "losses"] += 1
                         state["net_pnl"] += final_pnl
                         state["last_result"] = f"{status_txt} ({t_type} | {final_pnl:+.1f} Pts)"
+                        state["last_result_color"] = result_color
                         state["history"].insert(0, {
                             "time": ist_time, "type": t_type, "entry": entry,
                             "exit": price, "status": status_txt, "pnl": f"{final_pnl:+.1f}", "color": "#22c55e" if final_pnl >= 0 else "#ef4444"
@@ -224,6 +226,7 @@ def get_server_engine():
         "history": [],
         "active_trade": None,
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है",
+        "last_result_color": "#334155",
         "wins": 0,
         "losses": 0,
         "net_pnl": 0.0
@@ -245,6 +248,8 @@ buy_pct = state["buy_pct"]
 sell_pct = state["sell_pct"]
 ist_time = state["ist_time"]
 trade = state["active_trade"]
+last_result_color = state.get("last_result_color", "#334155")
+last_result_text = state.get("last_result", "अभी कोई ट्रेड क्लोज नहीं हुआ है")
 
 if trade is not None:
     t_type = trade.get("type", "LONG")
@@ -303,7 +308,6 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
 </head>
 <body>
 <div style="background:#0f172a; color:#f8fafc; padding:24px; border-radius:18px; box-shadow:0 8px 30px rgba(0,0,0,0.6); border:1px solid #1e293b;">
-    <!-- टॉप हेडर -->
     <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:14px; margin-bottom:18px;">
         <div>
             <div style="font-size:13px; color:#38bdf8; font-weight:600; letter-spacing:0.5px;">⚡ AI-RENKO SUPERTREND PRO TERMINAL</div>
@@ -315,9 +319,7 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
         </div>
     </div>
 
-    <!-- ग्रिड लेआउट -->
     <div class="terminal-grid">
-        <!-- बायां कॉलम: प्रेशर, एक्टिव ट्रेड और स्कोरबोर्ड -->
         <div>
             <div style="margin-bottom:18px; background:#1e293b; padding:14px; border-radius:12px;">
                 <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; margin-bottom:6px;">
@@ -332,8 +334,8 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
 
             {trade_box_html}
 
-            <div style="background:{state['last_result_color']}; color:#ffffff; padding:12px 16px; border-radius:10px; font-size:14px; font-weight:bold; text-align:center; margin-bottom:16px; box-shadow:0 2px 10px rgba(0,0,0,0.3);">
-                पिछला परिणाम: {state['last_result']}
+            <div style="background:{last_result_color}; color:#ffffff; padding:12px 16px; border-radius:10px; font-size:14px; font-weight:bold; text-align:center; margin-bottom:16px; box-shadow:0 2px 10px rgba(0,0,0,0.3);">
+                पिछला परिणाम: {last_result_text}
             </div>
 
             <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; text-align:center;">
@@ -352,7 +354,6 @@ body {{ background-color: #0e1117; color: #f8fafc; font-family: -apple-system, B
             </div>
         </div>
 
-        <!-- दायां कॉलम: ट्रेड इतिहास लॉग -->
         <div>
             <div style="background:#1e293b; border-radius:12px; padding:16px; border:1px solid #334155; height:100%; box-sizing:border-box;">
                 <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:12px; display:flex; align-items:center; gap:6px;">
