@@ -2,17 +2,21 @@ import streamlit as st
 import requests
 import time
 import threading
+import json
 from datetime import datetime, timedelta
 import math
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra AI-Renko PRO (10-Qty Locked)", layout="wide")
+st.set_page_config(page_title="AI-Renko Pro & Multi-Chart Terminal", layout="wide")
 
 st.markdown("""<style>
-.stApp { background-color: #0b0f19; color: #f8fafc; }
-.block-container { padding-top: 0.8rem !important; padding-bottom: 0.8rem !important; max-width: 100% !important; }
+.stApp { background-color: #0b0e14; color: #f8fafc; }
+.block-container { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; max-width: 100% !important; }
 header, footer, #MainMenu { visibility: hidden; }
 .t-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
 @media (min-width: 960px) { .t-grid { grid-template-columns: 1.15fr 0.85fr; } }
+button[data-baseweb="tab"] { font-size: 15px !important; font-weight: 700 !important; color: #94a3b8 !important; }
+button[data-baseweb="tab"][aria-selected="true"] { color: #38bdf8 !important; border-bottom-color: #38bdf8 !important; }
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
@@ -49,8 +53,45 @@ ANTI_WICK_SL         = True
 BROK_PER_QTY         = 1.5
 MINTICK              = 0.1
 
+YF_SYMBOLS           = ["^NSEI", "^NSEBANK", "^BSESN", "RELIANCE.NS", "HDFCBANK.NS", "TCS.NS"]
+YF_INTERVALS         = {"1m": "1d", "5m": "5d", "15m": "5d", "1h": "1mo", "1d": "6mo"}
+
 def fmt_pts(pts):
     return f"{pts:,.1f}"
+
+def fetch_yf_chart(symbol, interval="5m"):
+    rng = YF_INTERVALS.get(interval, "5d")
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={rng}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        r = requests.get(url, headers=headers, timeout=6)
+        if r.status_code == 200:
+            res = r.json().get("chart", {}).get("result", [])
+            if res:
+                meta = res[0].get("meta", {})
+                ts = res[0].get("timestamp", [])
+                q = res[0].get("indicators", {}).get("quote", [{}])[0]
+                opens = q.get("open", [])
+                highs = q.get("high", [])
+                lows = q.get("low", [])
+                closes = q.get("close", [])
+                vols = q.get("volume", [])
+                candles = []
+                for i in range(len(ts)):
+                    if i < len(closes) and closes[i] is not None and opens[i] is not None:
+                        candles.append({
+                            "time": int(ts[i]) + 19800,
+                            "open": round(float(opens[i]), 2),
+                            "high": round(float(highs[i]), 2),
+                            "low": round(float(lows[i]), 2),
+                            "close": round(float(closes[i]), 2),
+                            "volume": float(vols[i]) if (i < len(vols) and vols[i] is not None) else 0.0
+                        })
+                prev_close = meta.get("chartPreviousClose") or (candles[0]["open"] if candles else 0.0)
+                return {"candles": candles[-300:], "prevClose": float(prev_close)}
+    except Exception:
+        pass
+    return None
 
 def calc_daily_atr5(klines_1d):
     if not klines_1d or len(klines_1d) < ATR_PERIOD + 2:
@@ -75,7 +116,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# STATEFUL INCREMENTAL BAR PROCESSOR (NEVER RE-SIMULATES PAST BARS!)
+# STATEFUL INCREMENTAL BAR PROCESSOR (PERMANENT LOCK)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -91,7 +132,6 @@ def process_single_closed_bar(eng, kline):
 
     idx = eng["bar_count"]
 
-    # 1. Incremental ATR(14)
     if idx == 0:
         tr = h - l
         eng["atr14"] = tr
@@ -104,14 +144,12 @@ def process_single_closed_bar(eng, kline):
         else:
             eng["atr14"] = (eng["atr14"] * 13.0 + tr) / 14.0
 
-    # 2. Incremental EMA(21)
     if idx == 0:
         eng["ema21"] = c
     else:
         k_ema = 2.0 / 22.0
         eng["ema21"] = c * k_ema + eng["ema21"] * (1.0 - k_ema)
 
-    # 3. Incremental RSI(14)
     if idx == 0:
         eng["rsi14"] = 50.0
     else:
@@ -135,7 +173,6 @@ def process_single_closed_bar(eng, kline):
             rs = eng["rma_up"] / eng["rma_dn"]
             eng["rsi14"] = 100.0 - (100.0 / (1.0 + rs))
 
-    # 4. Incremental 2-Pole Gaussian Filter
     w = (2.0 * math.pi) / float(GAUSS_PERIOD)
     b = (1.0 - math.cos(w)) / (1.41421356 - 1.0)
     a = -b + math.sqrt(b * b + 2.0 * b)
@@ -148,7 +185,6 @@ def process_single_closed_bar(eng, kline):
     eng["g2"] = eng["g1"]
     eng["g1"] = g_val
 
-    # 5. Incremental 3-Bar Volume-Weighted Orderflow
     rng = max(h - l, MINTICK)
     u_wick = h - max(o, c)
     l_wick = min(o, c) - l
@@ -174,7 +210,6 @@ def process_single_closed_bar(eng, kline):
     eng["buy_dom_pct"] = buy_dom_pct
     eng["sell_dom_pct"] = sell_dom_pct
 
-    # 6. Box Size Calculation
     safe_range = eng["macro_range"] if (eng["macro_range"] and eng["macro_range"] > 0) else (eng["atr14"] * 10.0)
     calc_auto_box = safe_range / RANGE_DIVISOR
     box_size = max(calc_auto_box if USE_AUTO_BOX else MANUAL_BOX, MINTICK * 2.0)
@@ -183,7 +218,6 @@ def process_single_closed_bar(eng, kline):
 
     eval_price = (c * 0.70 + g_val * 0.30) if USE_GAUSSIAN else c
 
-    # 7. Renko Brick Step Update
     brick_step_up = False
     brick_step_dn = False
 
@@ -210,7 +244,6 @@ def process_single_closed_bar(eng, kline):
 
     r_close = eng["brick_top"] if eng["brick_dir"] == 1 else eng["brick_bot"]
 
-    # 8. Supertrend Update
     band_dist = box_size * ST_FACTOR
     raw_supp = r_close - band_dist
     raw_res = r_close + band_dist
@@ -262,15 +295,12 @@ def process_single_closed_bar(eng, kline):
     if eng["st_trend"] == 1:
         eng["pending_flip_sell"] = False
 
-    # ========================================================================
-    # 9. MANAGE ACTIVE 10-QTY TRADE (ONLY ON CONFIRMED BAR CLOSE)
-    # ========================================================================
+    # Manage Active 10-Qty Trade
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
         t_label = "LONG" if t_dir == 1 else "SHORT"
         eng["max_fav_price"] = max(eng["max_fav_price"], h) if t_dir == 1 else min(eng["max_fav_price"], l)
 
-        # A. Check TP1 (Book 5 Qty & Move SL to Cost/Entry)
         hit_tp1_now = (not eng["tp1_reached"]) and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"]))
         if hit_tp1_now:
             eng["tp1_reached"] = True
@@ -281,13 +311,11 @@ def process_single_closed_bar(eng, kline):
             eng["open_qty"] = RUNNER_QTY
             eng["stop_price"] = eng["entry_price"]
 
-        # B. Mid-Zone Step Lock (1.5 Bricks)
         hit_mid_now = eng["tp1_reached"] and (not eng["mid_reached"]) and ((h >= eng["mid_lock_price"]) if t_dir == 1 else (l <= eng["mid_lock_price"]))
         if hit_mid_now:
             eng["mid_reached"] = True
             eng["stop_price"] = max(eng["stop_price"], eng["tp1_price"]) if t_dir == 1 else min(eng["stop_price"], eng["tp1_price"])
 
-        # C. Check TP2
         hit_tp2_now = eng["tp1_reached"] and (not eng["tp2_reached"]) and ((h >= eng["tp2_price"]) if t_dir == 1 else (l <= eng["tp2_price"]))
         if hit_tp2_now:
             eng["tp2_reached"] = True
@@ -295,7 +323,6 @@ def process_single_closed_bar(eng, kline):
             lock_floor = (eng["tp2_price"] - box_size * 0.35) if t_dir == 1 else (eng["tp2_price"] + box_size * 0.35)
             eng["stop_price"] = max(eng["stop_price"], lock_floor) if t_dir == 1 else min(eng["stop_price"], lock_floor)
 
-        # D. Unlimited Trailing Beyond TP2 (Remaining 5 Qty)
         if eng["trade_dir"] != 0 and eng["tp2_reached"] and USE_TRAIL_BEYOND_TP2:
             gap_dist = box_size * TRAIL_LOCK_BRICKS
             brick_trail = (r_close - gap_dist) if t_dir == 1 else (r_close + gap_dist)
@@ -332,7 +359,6 @@ def process_single_closed_bar(eng, kline):
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
-        # E. Stop-Loss / Cost-Exit Check Before TP2
         if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
             if not eng["tp1_reached"]:
                 wick_hit_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
@@ -381,9 +407,7 @@ def process_single_closed_bar(eng, kline):
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
 
-    # ========================================================================
-    # 10. CHECK NEW ENTRY SIGNALS (ONLY ON CONFIRMED BAR CLOSE)
-    # ========================================================================
+    # Check New Entry Signals
     ema21 = eng["ema21"]
     rsi_val = eng["rsi14"]
 
@@ -457,22 +481,32 @@ def process_single_closed_bar(eng, kline):
     eng["bar_count"] += 1
 
 # ============================================================================
-# 24x7 SINGLE-SOURCE INCREMENTAL WORKER
+# 24x7 BACKGROUND WORKER (AI-RENKO + YFINANCE CACHE)
 # ============================================================================
 def background_worker(eng):
-    # केवल ग्लोबल Binance डेटा फीड (ताकि Binance.US और ग्लोबल के बीच डेटा कभी न बदले)
     primary_urls = [
         "https://data-api.binance.vision/api/v3",
         "https://api.binance.com/api/v3"
     ]
     last_1d_fetch = 0
+    last_yf_fetch = 0
 
     while True:
         try:
             now_ts = time.time()
-            base_used = None
 
-            # 1. हर 5 मिनट में Daily ATR अपडेट करें
+            # 1. Pre-fetch Yahoo Finance Indian Stocks/Indices (^NSEI, ^NSEBANK, etc.)
+            if now_ts - last_yf_fetch > 60 or not eng["yf_cache"]:
+                for sym in ["^NSEI", "^NSEBANK", "^BSESN", "RELIANCE.NS", "HDFCBANK.NS", "TCS.NS"]:
+                    for tf in ["5m", "15m", "1m", "1h", "1d"]:
+                        key = f"{sym}_{tf}"
+                        if key not in eng["yf_cache"] or tf in ["1m", "5m", "15m"]:
+                            res = fetch_yf_chart(sym, tf)
+                            if res and res.get("candles"):
+                                eng["yf_cache"][key] = res
+                last_yf_fetch = now_ts
+
+            # 2. Fetch Daily ATR-5 for Auto Box Size
             if now_ts - last_1d_fetch > 300 or eng["macro_range"] is None:
                 for base in primary_urls:
                     try:
@@ -486,7 +520,7 @@ def background_worker(eng):
                     except Exception:
                         continue
 
-            # 2. यदि इंजन पहली बार चालू हुआ है, तो 1000 कैंडल्स से केवल एक बार वार्म-अप करें
+            # 3. Initialize or Incrementally Update AI-Renko Engine
             if not eng["initialized"]:
                 for base in primary_urls:
                     try:
@@ -494,28 +528,23 @@ def background_worker(eng):
                         if r_init.status_code == 200:
                             data = r_init.json()
                             if isinstance(data, list) and len(data) > 100:
-                                closed_bars = data[:-1]
-                                live_bar = data[-1]
-                                for b in closed_bars:
+                                for b in data[:-1]:
                                     process_single_closed_bar(eng, b)
-                                eng["price"] = float(live_bar[4])
+                                eng["price"] = float(data[-1][4])
                                 eng["initialized"] = True
                                 break
                     except Exception:
                         continue
             else:
-                # 3. इंजन लॉक हो चुका है! अब केवल ताज़ा 5 कैंडल्स मँगाएं और सिर्फ नई क्लोज हुई कैंडल को जोड़ें
                 for base in primary_urls:
                     try:
                         r_live = requests.get(f"{base}/klines?symbol=BTCUSDT&interval=1m&limit=5", timeout=5)
                         if r_live.status_code == 200:
                             data = r_live.json()
                             if isinstance(data, list) and len(data) >= 2:
-                                closed_bars = data[:-1]
-                                live_bar = data[-1]
-                                for b in closed_bars:
+                                for b in data[:-1]:
                                     process_single_closed_bar(eng, b)
-                                eng["price"] = float(live_bar[4])
+                                eng["price"] = float(data[-1][4])
                                 break
                     except Exception:
                         continue
@@ -595,6 +624,7 @@ def get_server_engine():
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है",
         "last_result_color": "#334155",
         "history": [],
+        "yf_cache": {},
         "error": None
     }
     thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
@@ -602,10 +632,475 @@ def get_server_engine():
     return eng
 
 eng = get_server_engine()
-terminal = st.empty()
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP
+# TWO TABS: TAB 1 = AI-RENKO PRO | TAB 2 = MULTI-CHART DASHBOARD
+# ============================================================================
+tab_renko, tab_charts = st.tabs([
+    "⚡ AI-Renko Pro Terminal (10-Qty Locked)",
+    "📊 Multi-Chart Dashboard (Hyperliquid + NSE)"
+])
+
+with tab_renko:
+    terminal = st.empty()
+
+with tab_charts:
+    yf_json_str = json.dumps(eng.get("yf_cache", {}))
+    multi_chart_html = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0b0e14; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  .top-bar {
+    height: 42px; background: #131722; border-bottom: 1px solid #2a2e39;
+    display: flex; align-items: center; justify-content: space-between; padding: 0 14px;
+  }
+  .top-title { font-size: 14px; font-weight: 700; color: #e2e8f0; letter-spacing: 0.2px; }
+  .top-controls { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #94a3b8; }
+  select {
+    background: #1e222d; color: #e2e8f0; border: 1px solid #363a45; border-radius: 4px;
+    padding: 3px 8px; font-size: 12px; font-weight: 600; outline: none; cursor: pointer;
+  }
+  select:hover { border-color: #38bdf8; }
+  #chart-grid {
+    display: grid; width: 100vw; height: calc(100vh - 42px); gap: 4px; background: #06080c; padding: 4px;
+  }
+  .pane {
+    background: #0f131c; border: 1px solid #1e222d; border-radius: 4px;
+    display: flex; flex-direction: column; overflow: hidden; position: relative;
+  }
+  .pane-ctrl {
+    height: 30px; background: #161b26; border-bottom: 1px solid #232834;
+    display: flex; align-items: center; justify-content: space-between; padding: 0 6px; gap: 6px;
+  }
+  .pane-ctrl select.sym-sel { flex: 1; max-width: 220px; }
+  .pane-ctrl select.tf-sel { width: 68px; }
+  .ticker-bar {
+    height: 28px; background: #11151f; border-bottom: 1px solid #1e222d;
+    display: flex; align-items: center; justify-content: space-between; padding: 0 10px;
+    font-size: 12px; transition: background-color 0.25s ease;
+  }
+  .flash-up { background-color: rgba(16, 185, 129, 0.28) !important; }
+  .flash-dn { background-color: rgba(239, 68, 68, 0.28) !important; }
+  .tk-left { display: flex; align-items: center; gap: 6px; color: #94a3b8; font-weight: 600; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot-crypto { background: #10b981; box-shadow: 0 0 6px #10b981; }
+  .dot-stock { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
+  .tk-right { display: flex; align-items: baseline; gap: 8px; font-family: monospace; }
+  .tk-price { font-size: 15px; font-weight: 800; }
+  .tk-chg { font-size: 11px; font-weight: 600; }
+  .up-col { color: #26a69a; }
+  .dn-col { color: #ef5350; }
+  .chart-box { flex: 1; width: 100%; position: relative; }
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <div class="top-title">Multi-chart dashboard</div>
+  <div class="top-controls">
+    <span>Number of charts</span>
+    <select id="count-select">
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="4" selected>4</option>
+      <option value="6">6</option>
+      <option value="8">8</option>
+    </select>
+  </div>
+</div>
+<div id="chart-grid"></div>
+
+<script>
+const SERVER_YF_CACHE = __INITIAL_YF_JSON__;
+
+const SYMBOLS = [
+  { id: "BTC", label: "BTC", type: "crypto", binance: "BTCUSDT" },
+  { id: "ETH", label: "ETH", type: "crypto", binance: "ETHUSDT" },
+  { id: "SOL", label: "SOL", type: "crypto", binance: "SOLUSDT" },
+  { id: "BNB", label: "BNB", type: "crypto", binance: "BNBUSDT" },
+  { id: "XRP", label: "XRP", type: "crypto", binance: "XRPUSDT" },
+  { id: "^NSEI", label: "^NSEI (Nifty 50)", type: "yf" },
+  { id: "^NSEBANK", label: "^NSEBANK (BankNifty)", type: "yf" },
+  { id: "^BSESN", label: "^BSESN (Sensex)", type: "yf" },
+  { id: "RELIANCE.NS", label: "RELIANCE.NS", type: "yf" },
+  { id: "HDFCBANK.NS", label: "HDFCBANK.NS", type: "yf" },
+  { id: "TCS.NS", label: "TCS.NS", type: "yf" }
+];
+
+const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"];
+
+const DEFAULT_PANES = [
+  { sym: "BTC", tf: "5m" },
+  { sym: "BTC", tf: "15m" },
+  { sym: "^NSEI", tf: "5m" },
+  { sym: "^NSEI", tf: "5m" },
+  { sym: "ETH", tf: "5m" },
+  { sym: "^NSEBANK", tf: "5m" },
+  { sym: "SOL", tf: "15m" },
+  { sym: "RELIANCE.NS", tf: "5m" }
+];
+
+let activePanes = [];
+let hlSocket = null;
+
+function getGridDims(count) {
+  if (count === 1) return { cols: 1, rows: 1 };
+  if (count === 2) return { cols: 2, rows: 1 };
+  if (count === 4) return { cols: 2, rows: 2 };
+  if (count === 6) return { cols: 3, rows: 2 };
+  return { cols: 4, rows: 2 };
+}
+
+function saveConfig(count) {
+  try {
+    localStorage.setItem("mc_chart_count", String(count));
+    const cfg = activePanes.map(p => ({ sym: p.sym, tf: p.tf }));
+    localStorage.setItem("mc_pane_cfg", JSON.stringify(cfg));
+  } catch (e) {}
+}
+
+function loadSavedConfigs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("mc_pane_cfg") || "null");
+    if (Array.isArray(saved) && saved.length > 0) {
+      for (let i = 0; i < 8; i++) {
+        if (saved[i] && saved[i].sym && saved[i].tf) {
+          DEFAULT_PANES[i] = saved[i];
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+async function fetchCryptoHistory(symObj, tf) {
+  // 1. Try Hyperliquid candleSnapshot first
+  try {
+    const tfMsMap = { "1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "1d": 86400000 };
+    const endTime = Date.now();
+    const startTime = endTime - (tfMsMap[tf] || 300000) * 250;
+    const r = await fetch("https://api.hyperliquid.xyz/info", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "candleSnapshot",
+        req: { coin: symObj.id, interval: tf, startTime: startTime, endTime: endTime }
+      })
+    });
+    if (r.ok) {
+      const data = await r.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const candles = data.map(k => ({
+          time: Math.floor(k.t / 1000) + 19800,
+          open: parseFloat(k.o),
+          high: parseFloat(k.h),
+          low: parseFloat(k.l),
+          close: parseFloat(k.c),
+          volume: parseFloat(k.v)
+        }));
+        return { candles, prevClose: candles[0].open };
+      }
+    }
+  } catch (e) {}
+
+  // 2. Fallback to Binance Vision API
+  try {
+    const r = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${symObj.binance}&interval=${tf}&limit=250`);
+    if (r.ok) {
+      const data = await r.json();
+      const candles = data.map(k => ({
+        time: Math.floor(k[0] / 1000) + 19800,
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5])
+      }));
+      return { candles, prevClose: candles[0].open };
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function fetchYfHistory(sym, tf) {
+  const key = `${sym}_${tf}`;
+  const rngMap = { "1m": "1d", "5m": "5d", "15m": "5d", "1h": "1mo", "1d": "6mo" };
+  const rng = rngMap[tf] || "5d";
+  const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=${tf}&range=${rng}`;
+  const proxies = [
+    `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
+  ];
+
+  for (const pUrl of proxies) {
+    try {
+      const r = await fetch(pUrl);
+      if (r.ok) {
+        const j = await r.json();
+        const res = j?.chart?.result?.[0];
+        if (res && res.timestamp) {
+          const ts = res.timestamp;
+          const q = res.indicators.quote[0];
+          const candles = [];
+          for (let i = 0; i < ts.length; i++) {
+            if (q.close[i] != null && q.open[i] != null) {
+              candles.push({
+                time: ts[i] + 19800,
+                open: parseFloat(q.open[i].toFixed(2)),
+                high: parseFloat(q.high[i].toFixed(2)),
+                low: parseFloat(q.low[i].toFixed(2)),
+                close: parseFloat(q.close[i].toFixed(2)),
+                volume: q.volume?.[i] || 0
+              });
+            }
+          }
+          if (candles.length > 0) {
+            const prevClose = res.meta?.chartPreviousClose || candles[0].open;
+            SERVER_YF_CACHE[key] = { candles, prevClose };
+            return SERVER_YF_CACHE[key];
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (SERVER_YF_CACHE[key]) {
+    return SERVER_YF_CACHE[key];
+  }
+  return null;
+}
+
+function updateTickerUI(pane, price, prevClose) {
+  const oldPrice = pane.lastPrice;
+  pane.lastPrice = price;
+  const diff = price - (prevClose || price);
+  const pct = prevClose ? (diff / prevClose) * 100.0 : 0.0;
+  const sign = diff >= 0 ? "+" : "";
+  const colClass = diff >= 0 ? "up-col" : "dn-col";
+
+  pane.priceEl.className = "tk-price " + colClass;
+  pane.chgEl.className = "tk-chg " + colClass;
+  pane.priceEl.textContent = price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  pane.chgEl.textContent = `${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+
+  if (oldPrice !== null && oldPrice !== price) {
+    const flashClass = price > oldPrice ? "flash-up" : "flash-dn";
+    pane.tickerEl.classList.remove("flash-up", "flash-dn");
+    void pane.tickerEl.offsetWidth;
+    pane.tickerEl.classList.add(flashClass);
+    setTimeout(() => pane.tickerEl.classList.remove(flashClass), 350);
+  }
+}
+
+async function loadPaneData(pane) {
+  const symObj = SYMBOLS.find(s => s.id === pane.sym) || SYMBOLS[0];
+  pane.symLabelEl.textContent = symObj.id;
+  pane.dotEl.className = "dot " + (symObj.type === "crypto" ? "dot-crypto" : "dot-stock");
+
+  let data = null;
+  if (symObj.type === "crypto") {
+    data = await fetchCryptoHistory(symObj, pane.tf);
+  } else {
+    data = await fetchYfHistory(symObj.id, pane.tf);
+  }
+
+  if (data && data.candles && data.candles.length > 0) {
+    pane.candles = data.candles;
+    pane.prevClose = data.prevClose;
+    pane.candleSeries.setData(pane.candles);
+    const volData = pane.candles.map(c => ({
+      time: c.time,
+      value: c.volume,
+      color: c.close >= c.open ? "rgba(38, 166, 154, 0.35)" : "rgba(239, 83, 80, 0.35)"
+    }));
+    pane.volSeries.setData(volData);
+    const lastC = pane.candles[pane.candles.length - 1];
+    updateTickerUI(pane, lastC.close, pane.prevClose);
+  }
+}
+
+function buildGrid(count) {
+  const grid = document.getElementById("chart-grid");
+  activePanes.forEach(p => {
+    if (p.ro) p.ro.disconnect();
+    if (p.chart) p.chart.remove();
+  });
+  activePanes = [];
+  grid.innerHTML = "";
+
+  const dims = getGridDims(count);
+  grid.style.gridTemplateColumns = `repeat(${dims.cols}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${dims.rows}, 1fr)`;
+
+  for (let i = 0; i < count; i++) {
+    const def = DEFAULT_PANES[i] || { sym: "BTC", tf: "5m" };
+    const paneEl = document.createElement("div");
+    paneEl.className = "pane";
+
+    const ctrlEl = document.createElement("div");
+    ctrlEl.className = "pane-ctrl";
+
+    const symSel = document.createElement("select");
+    symSel.className = "sym-sel";
+    SYMBOLS.forEach(s => {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.id;
+      if (s.id === def.sym) opt.selected = true;
+      symSel.appendChild(opt);
+    });
+
+    const tfSel = document.createElement("select");
+    tfSel.className = "tf-sel";
+    TIMEFRAMES.forEach(t => {
+      const opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = t;
+      if (t === def.tf) opt.selected = true;
+      tfSel.appendChild(opt);
+    });
+
+    ctrlEl.appendChild(symSel);
+    ctrlEl.appendChild(tfSel);
+
+    const tickerEl = document.createElement("div");
+    tickerEl.className = "ticker-bar";
+    tickerEl.innerHTML = `
+      <div class="tk-left"><span class="dot dot-crypto"></span><span class="sym-lbl">${def.sym}</span></div>
+      <div class="tk-right"><span class="tk-price up-col">--</span><span class="tk-chg up-col">--</span></div>
+    `;
+
+    const chartBox = document.createElement("div");
+    chartBox.className = "chart-box";
+
+    paneEl.appendChild(ctrlEl);
+    paneEl.appendChild(tickerEl);
+    paneEl.appendChild(chartBox);
+    grid.appendChild(paneEl);
+
+    const chart = LightweightCharts.createChart(chartBox, {
+      layout: { background: { type: "solid", color: "#0f131c" }, textColor: "#94a3b8", fontSize: 11 },
+      grid: { vertLines: { color: "#1a1f2c" }, horzLines: { color: "#1a1f2c" } },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: "#232834" },
+      timeScale: { borderColor: "#232834", timeVisible: true, secondsVisible: false }
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: "#26a69a", downColor: "#ef5350",
+      borderUpColor: "#26a69a", borderDownColor: "#ef5350",
+      wickUpColor: "#26a69a", wickDownColor: "#ef5350"
+    });
+
+    const volSeries = chart.addHistogramSeries({
+      priceFormat: { type: "volume" },
+      priceScaleId: ""
+    });
+    volSeries.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+
+    const ro = new ResizeObserver(entries => {
+      for (let entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) chart.applyOptions({ width, height });
+      }
+    });
+    ro.observe(chartBox);
+
+    const paneObj = {
+      idx: i, sym: def.sym, tf: def.tf,
+      chart, candleSeries, volSeries, ro,
+      tickerEl,
+      dotEl: tickerEl.querySelector(".dot"),
+      symLabelEl: tickerEl.querySelector(".sym-lbl"),
+      priceEl: tickerEl.querySelector(".tk-price"),
+      chgEl: tickerEl.querySelector(".tk-chg"),
+      candles: [], prevClose: 0, lastPrice: null
+    };
+
+    symSel.addEventListener("change", () => {
+      paneObj.sym = symSel.value;
+      DEFAULT_PANES[i].sym = paneObj.sym;
+      paneObj.lastPrice = null;
+      saveConfig(count);
+      loadPaneData(paneObj);
+    });
+
+    tfSel.addEventListener("change", () => {
+      paneObj.tf = tfSel.value;
+      DEFAULT_PANES[i].tf = paneObj.tf;
+      saveConfig(count);
+      loadPaneData(paneObj);
+    });
+
+    activePanes.push(paneObj);
+    loadPaneData(paneObj);
+  }
+}
+
+function connectHyperliquidWs() {
+  try {
+    hlSocket = new WebSocket("wss://api.hyperliquid.xyz/ws");
+    hlSocket.onopen = () => {
+      hlSocket.send(JSON.stringify({ method: "subscribe", subscription: { type: "allMids" } }));
+    };
+    hlSocket.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.channel === "allMids" && msg.data && msg.data.mids) {
+          const mids = msg.data.mids;
+          activePanes.forEach(pane => {
+            if (mids[pane.sym] !== undefined && pane.candles.length > 0) {
+              const liveP = parseFloat(mids[pane.sym]);
+              if (!isNaN(liveP) && liveP > 0) {
+                const lastC = pane.candles[pane.candles.length - 1];
+                lastC.close = liveP;
+                if (liveP > lastC.high) lastC.high = liveP;
+                if (liveP < lastC.low) lastC.low = liveP;
+                pane.candleSeries.update(lastC);
+                updateTickerUI(pane, liveP, pane.prevClose);
+              }
+            }
+          });
+        }
+      } catch (e) {}
+    };
+    hlSocket.onclose = () => setTimeout(connectHyperliquidWs, 3000);
+  } catch (e) {}
+}
+
+// Poll Yahoo Finance panes every 8 seconds for live Indian index updates
+setInterval(() => {
+  activePanes.forEach(pane => {
+    const symObj = SYMBOLS.find(s => s.id === pane.sym);
+    if (symObj && symObj.type === "yf") {
+      loadPaneData(pane);
+    }
+  });
+}, 8000);
+
+loadSavedConfigs();
+const savedCount = parseInt(localStorage.getItem("mc_chart_count") || "4", 10);
+const validCount = [1, 2, 4, 6, 8].includes(savedCount) ? savedCount : 4;
+const countSel = document.getElementById("count-select");
+countSel.value = String(validCount);
+buildGrid(validCount);
+connectHyperliquidWs();
+
+countSel.addEventListener("change", () => {
+  const c = parseInt(countSel.value, 10);
+  saveConfig(c);
+  buildGrid(c);
+});
+</script>
+</body>
+</html>"""
+    multi_chart_html = multi_chart_html.replace("__INITIAL_YF_JSON__", yf_json_str)
+    components.html(multi_chart_html, height=820, scrolling=False)
+
+# ============================================================================
+# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (AI-RENKO PRO)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
