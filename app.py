@@ -15,7 +15,8 @@ st.markdown("""<style>
 header, footer, #MainMenu { visibility: hidden; }
 .t-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
 @media (min-width: 960px) { .t-grid { grid-template-columns: 1.15fr 0.85fr; } }
-button[data-baseweb="tab"] { font-size: 15px !important; font-weight: 700 !important; color: #94a3b8 !important; }
+/* टैब के टेक्स्ट कलर को वाइट और एक्टिव टैब को स्काई ब्लू किया गया है */
+button[data-baseweb="tab"] { font-size: 15px !important; font-weight: 700 !important; color: #ffffff !important; }
 button[data-baseweb="tab"][aria-selected="true"] { color: #38bdf8 !important; border-bottom-color: #38bdf8 !important; }
 </style>""", unsafe_allow_html=True)
 
@@ -1697,7 +1698,7 @@ while True:
 <th style="padding:6px;">ट्रेड</th>
 <th style="padding:6px;">Entry → Exit</th>
 <th style="padding:6px;">स्टेटस</th>
-<th style="padding:6px; right:align;">10Q PnL</th>
+<th style="padding:6px; text-align:right;">10Q PnL</th>
 </tr>
 </thead>
 <tbody>
