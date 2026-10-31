@@ -15,9 +15,18 @@ st.markdown("""<style>
 header, footer, #MainMenu { visibility: hidden; }
 .t-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
 @media (min-width: 960px) { .t-grid { grid-template-columns: 1.15fr 0.85fr; } }
-/* टैब के टेक्स्ट कलर को वाइट और एक्टिव टैब को स्काई ब्लू किया गया है */
-button[data-baseweb="tab"] { font-size: 15px !important; font-weight: 700 !important; color: #ffffff !important; }
-button[data-baseweb="tab"][aria-selected="true"] { color: #38bdf8 !important; border-bottom-color: #38bdf8 !important; }
+
+/* टैब के बटन्स और उनके अंदर के टेक्स्ट को सफ़ेद करने के लिए */
+.stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+    color: #ffffff !important;
+    font-size: 15px !important;
+    font-weight: 700 !important;
+}
+
+/* एक्टिव (चयनित) टैब का टेक्स्ट स्काई ब्लू और बॉर्डर दिखेगा */
+.stTabs [data-baseweb="tab-list"] button[aria-selected="true"] [data-testid="stMarkdownContainer"] p {
+    color: #38bdf8 !important;
+}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
@@ -768,7 +777,6 @@ function ensureVolumeFallback(candles) {
 }
 
 async function fetchBtcHistory(tf) {
-  // 1. Try Hyperliquid candleSnapshot
   try {
     const tfMsMap = { "1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "1d": 86400000 };
     const endTime = Date.now();
@@ -797,7 +805,6 @@ async function fetchBtcHistory(tf) {
     }
   } catch (e) {}
 
-  // 2. Fallback to Binance API
   try {
     const r = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=${tf}&limit=280`);
     if (r.ok) {
@@ -816,7 +823,6 @@ async function fetchBtcHistory(tf) {
   return null;
 }
 
-// Indicator math functions
 function calcEMA(candles, period) {
   const res = [];
   if (!candles.length) return res;
