@@ -85,8 +85,59 @@ ANTI_WICK_SL         = True
 BROK_PER_QTY         = 1.5
 MINTICK              = 0.1
 
+HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+
 def fmt_pts(pts):
     return f"{pts:,.1f}"
+
+# ============================================================================
+# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHER (NO BINANCE FALLBACK)
+# ============================================================================
+def fetch_hl_klines(interval="1m", num_bars=1000):
+    tf_ms_map = {
+        "1m": 60 * 1000,
+        "5m": 5 * 60 * 1000,
+        "15m": 15 * 60 * 1000,
+        "1h": 60 * 60 * 1000,
+        "1d": 24 * 60 * 60 * 1000
+    }
+    step_ms = tf_ms_map.get(interval, 60000)
+    end_time = int(time.time() * 1000)
+    start_time = end_time - (num_bars * step_ms)
+
+    try:
+        r = requests.post(
+            HYPERLIQUID_INFO_URL,
+            json={
+                "type": "candleSnapshot",
+                "req": {
+                    "coin": "BTC",
+                    "interval": interval,
+                    "startTime": start_time,
+                    "endTime": end_time
+                }
+            },
+            headers={"Content-Type": "application/json"},
+            timeout=8
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and len(data) > 0:
+                data.sort(key=lambda x: int(x["t"]))
+                klines = []
+                for k in data:
+                    t_ms = int(k["t"])
+                    o_val = float(k["o"])
+                    h_val = float(k["h"])
+                    l_val = float(k["l"])
+                    c_val = float(k["c"])
+                    v_raw = float(k.get("v", 0.0))
+                    v_safe = v_raw if v_raw > 0 else max(0.01, (h_val - l_val) * 0.1)
+                    klines.append([t_ms, o_val, h_val, l_val, c_val, v_safe])
+                return klines
+    except Exception:
+        pass
+    return None
 
 def calc_daily_atr5(klines_1d):
     if not klines_1d or len(klines_1d) < ATR_PERIOD + 2:
@@ -111,7 +162,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# STATEFUL INCREMENTAL BAR PROCESSOR (PERMANENT LOCK)
+# STATEFUL INCREMENTAL BAR PROCESSOR (PERMANENT LOCK - HYPERLIQUID 1M)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -476,121 +527,177 @@ def process_single_closed_bar(eng, kline):
     eng["bar_count"] += 1
 
 # ============================================================================
-# LIVE ORDER BOOK & SPIKE RADAR BACKGROUND WORKER
+# 100% HYPERLIQUID L2 ORDER BOOK & SPIKE VACUUM RADAR (NO BINANCE FALLBACK)
 # ============================================================================
-def fetch_binance_depth_and_spread(eng):
+def fetch_l2_orderbook_and_spike_radar(eng):
+    bids = []
+    asks = []
+
     try:
-        r = requests.get("https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=50", timeout=4)
-        if r.status_code == 200:
-            data = r.json()
-            bids = data.get("bids", [])
-            asks = data.get("asks", [])
-            if bids and asks:
-                best_bid = float(bids[0][0])
-                best_ask = float(asks[0][0])
-                spread = best_ask - best_bid
-
-                # Compute Total Depth Volume (Top 20 Bids vs Asks)
-                bid_vol = sum(float(b[1]) for b in bids[:20])
-                ask_vol = sum(float(a[1]) for a in asks[:20])
-                tot_depth = bid_vol + ask_vol
-                bid_depth_pct = int((bid_vol / tot_depth) * 100) if tot_depth > 0 else 50
-                ask_depth_pct = 100 - bid_depth_pct
-
-                eng["order_book"] = {
-                    "best_bid": best_bid,
-                    "best_ask": best_ask,
-                    "spread": spread,
-                    "bid_pct": bid_depth_pct,
-                    "ask_pct": ask_depth_pct
-                }
-
-                # Spike Radar Logic: Detect Spread Expansion & Imbalance Vacuum
-                if eng["last_spread"] is not None:
-                    spread_jump = spread - eng["last_spread"]
-                    # If spread widens abruptly by > $2.5 and imbalance is skewed (>62%)
-                    if spread_jump >= 2.0 or spread >= 12.0:
-                        spike_dir = "UPWARD SPIKE (BULLISH VACUUM)" if bid_depth_pct >= 60 else ("DOWNWARD SPIKE (BEARISH VACUUM)" if ask_depth_pct >= 60 else "NEUTRAL SPREAD EXPANSION")
-                        col = "#22c55e" if "UPWARD" in spike_dir else ("#ef4444" if "DOWNWARD" in spike_dir else "#f59e0b")
-                        
-                        # Avoid duplicate spam within 30 seconds
-                        now_ts = time.time()
-                        if now_ts - eng["last_spike_alert_ts"] > 30:
-                            ist_t = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
-                            eng["spike_history"].insert(0, {
-                                "time": ist_t,
-                                "price": best_bid,
-                                "spread": f"{spread:.1f}",
-                                "direction": spike_dir,
-                                "color": col
-                            })
-                            eng["spike_history"] = eng["spike_history"][:15]
-                            eng["last_spike_alert_ts"] = now_ts
-                            eng["last_spike_status"] = f"⚡ ALERT: {spike_dir} @ ${best_bid:,.1f} (Spread: ${spread:.1f})"
-                eng["last_spread"] = spread
+        r_hl = requests.post(
+            HYPERLIQUID_INFO_URL,
+            json={"type": "l2Book", "coin": "BTC"},
+            headers={"Content-Type": "application/json"},
+            timeout=3
+        )
+        if r_hl.status_code == 200:
+            data = r_hl.json()
+            levels = data.get("levels", [])
+            if len(levels) >= 2 and levels[0] and levels[1]:
+                bids = [(float(b["px"]), float(b["sz"])) for b in levels[0][:20]]
+                asks = [(float(a["px"]), float(a["sz"])) for a in levels[1][:20]]
     except Exception:
-        pass
+        return
+
+    if not bids or not asks:
+        return
+
+    best_bid, best_bid_sz = bids[0][0], bids[0][1]
+    best_ask, best_ask_sz = asks[0][0], asks[0][1]
+    mid_price = (best_bid + best_ask) / 2.0
+    spread = max(0.1, best_ask - best_bid)
+
+    # Top-15 Order Book Depth Volume & Imbalance %
+    bid_vol_15 = sum(b[1] for b in bids[:15])
+    ask_vol_15 = sum(a[1] for a in asks[:15])
+    tot_depth = bid_vol_15 + ask_vol_15
+    bid_pct = round((bid_vol_15 / tot_depth) * 100.0, 1) if tot_depth > 0 else 50.0
+    ask_pct = round(100.0 - bid_pct, 1)
+
+    # Volume-Weighted Micro-Price Calculation
+    top_sz = best_bid_sz + best_ask_sz
+    micro_price = ((best_bid * best_ask_sz) + (best_ask * best_bid_sz)) / top_sz if top_sz > 0 else mid_price
+    micro_skew = micro_price - mid_price
+
+    # Largest Whale Wall Detection (Top 20 levels)
+    max_bid_wall = max(bids, key=lambda x: x[1])
+    max_ask_wall = max(asks, key=lambda x: x[1])
+
+    # Rolling Spread Window (Last 20 readings)
+    eng["spread_window"].append(spread)
+    if len(eng["spread_window"]) > 20:
+        eng["spread_window"].pop(0)
+    avg_spread = sum(eng["spread_window"]) / float(len(eng["spread_window"]))
+
+    # Asymmetric Liquidity Pull Detection
+    ask_pulled_up = (eng["prev_best_ask"] is not None) and ((best_ask - eng["prev_best_ask"]) >= max(1.5, avg_spread * 0.8))
+    bid_pulled_dn = (eng["prev_best_bid"] is not None) and ((eng["prev_best_bid"] - best_bid) >= max(1.5, avg_spread * 0.8))
+    eng["prev_best_bid"] = best_bid
+    eng["prev_best_ask"] = best_ask
+
+    eng["order_book"] = {
+        "source": "Hyperliquid L2 (Locked)",
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "mid_price": mid_price,
+        "micro_price": micro_price,
+        "micro_skew": micro_skew,
+        "spread": spread,
+        "avg_spread": avg_spread,
+        "bid_vol": bid_vol_15,
+        "ask_vol": ask_vol_15,
+        "bid_pct": bid_pct,
+        "ask_pct": ask_pct,
+        "bid_wall_px": max_bid_wall[0],
+        "bid_wall_sz": max_bid_wall[1],
+        "ask_wall_px": max_ask_wall[0],
+        "ask_wall_sz": max_ask_wall[1]
+    }
+
+    # Update Cross-Check Post-Signal Move for previously logged spike signals
+    for item in eng["spike_history"]:
+        sig_p = item["price"]
+        if item["dir_code"] == 1:
+            fav_move = mid_price - sig_p
+        else:
+            fav_move = sig_p - mid_price
+        item["max_fav"] = max(item["max_fav"], fav_move)
+        item["curr_move"] = fav_move
+
+    # Spike Detection Rules
+    spread_expanded = (spread >= max(avg_spread * 1.6, 1.5)) or (spread >= 4.0)
+    heavy_bull_book = (bid_pct >= 68.0 and micro_skew >= 0)
+    heavy_bear_book = (ask_pct >= 68.0 and micro_skew <= 0)
+
+    spike_dir_text = None
+    dir_code = 0
+    col = "#38bdf8"
+
+    if (spread_expanded and (bid_pct >= 58.0 or ask_pulled_up)) or heavy_bull_book:
+        reason = "Spread Vacuum" if spread_expanded else "Whale Bid Surge"
+        spike_dir_text = f"🚀 UP SPIKE ({reason} | {bid_pct:.0f}% Buy)"
+        dir_code = 1
+        col = "#22c55e"
+    elif (spread_expanded and (ask_pct >= 58.0 or bid_pulled_dn)) or heavy_bear_book:
+        reason = "Spread Vacuum" if spread_expanded else "Whale Ask Surge"
+        spike_dir_text = f"🔻 DOWN SPIKE ({reason} | {ask_pct:.0f}% Sell)"
+        dir_code = -1
+        col = "#ef4444"
+
+    now_ts = time.time()
+    if spike_dir_text and (now_ts - eng["last_spike_alert_ts"] >= 20):
+        ist_t = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
+        eng["spike_history"].insert(0, {
+            "time": ist_t,
+            "price": mid_price,
+            "spread_info": f"${spread:.1f} ({bid_pct:.0f}%/{ask_pct:.0f}%)",
+            "direction": spike_dir_text,
+            "dir_code": dir_code,
+            "max_fav": 0.0,
+            "curr_move": 0.0,
+            "color": col
+        })
+        eng["spike_history"] = eng["spike_history"][:20]
+        eng["last_spike_alert_ts"] = now_ts
+        eng["last_spike_status"] = f"⚡ {ist_t}: {spike_dir_text} @ ${mid_price:,.1f}"
+        eng["last_spike_color"] = col
+    elif now_ts - eng["last_spike_alert_ts"] > 15:
+        bias_txt = "🟢 Bullish Book Pressure" if bid_pct >= 55 else ("🔴 Bearish Book Pressure" if ask_pct >= 55 else "⚖️ Balanced Orderbook")
+        eng["last_spike_status"] = f"📡 Hyperliquid L2 Locked | {bias_txt} | Micro-Price: ${micro_price:,.1f}"
+        eng["last_spike_color"] = "#1e293b"
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (AI-RENKO EXCLUSIVE BTC + ORDER BOOK)
+# 24x7 BACKGROUND WORKER (100% HYPERLIQUID UNIFIED FEED)
 # ============================================================================
 def background_worker(eng):
-    primary_urls = [
-        "https://data-api.binance.vision/api/v3",
-        "https://api.binance.com/api/v3"
-    ]
     last_1d_fetch = 0
-    last_ob_fetch = 0
+    last_kline_fetch = 0
 
     while True:
         try:
             now_ts = time.time()
 
-            # Fetch Order Book Depth & Spread every 2 seconds
-            if now_ts - last_ob_fetch >= 2:
-                fetch_binance_depth_and_spread(eng)
-                last_ob_fetch = now_ts
+            # 1. Every 1 second: Fetch Hyperliquid L2 Order Book, Spread & Spike Radar
+            fetch_l2_orderbook_and_spike_radar(eng)
+            if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
+                eng["price"] = eng["order_book"]["mid_price"]
 
+            # 2. Every 5 minutes: Fetch Hyperliquid 1D Candles for Daily ATR-5 Auto Box Size
             if now_ts - last_1d_fetch > 300 or eng["macro_range"] is None:
-                for base in primary_urls:
-                    try:
-                        r_d = requests.get(f"{base}/klines?symbol=BTCUSDT&interval=1d&limit=15", timeout=5)
-                        if r_d.status_code == 200 and isinstance(r_d.json(), list):
-                            d_val = calc_daily_atr5(r_d.json())
-                            if d_val:
-                                eng["macro_range"] = d_val
-                                last_1d_fetch = now_ts
-                            break
-                    except Exception:
-                        continue
+                klines_1d = fetch_hl_klines("1d", 20)
+                if klines_1d:
+                    d_val = calc_daily_atr5(klines_1d)
+                    if d_val:
+                        eng["macro_range"] = d_val
+                        last_1d_fetch = now_ts
 
+            # 3. Initialize or Incrementally Update AI-Renko 1m Candles from Hyperliquid
             if not eng["initialized"]:
-                for base in primary_urls:
-                    try:
-                        r_init = requests.get(f"{base}/klines?symbol=BTCUSDT&interval=1m&limit=1000", timeout=8)
-                        if r_init.status_code == 200:
-                            data = r_init.json()
-                            if isinstance(data, list) and len(data) > 100:
-                                for b in data[:-1]:
-                                    process_single_closed_bar(eng, b)
-                                eng["price"] = float(data[-1][4])
-                                eng["initialized"] = True
-                                break
-                    except Exception:
-                        continue
-            else:
-                for base in primary_urls:
-                    try:
-                        r_live = requests.get(f"{base}/klines?symbol=BTCUSDT&interval=1m&limit=5", timeout=5)
-                        if r_live.status_code == 200:
-                            data = r_live.json()
-                            if isinstance(data, list) and len(data) >= 2:
-                                for b in data[:-1]:
-                                    process_single_closed_bar(eng, b)
-                                eng["price"] = float(data[-1][4])
-                                break
-                    except Exception:
-                        continue
+                klines_init = fetch_hl_klines("1m", 1000)
+                if klines_init and len(klines_init) > 50:
+                    for b in klines_init[:-1]:
+                        process_single_closed_bar(eng, b)
+                    eng["price"] = float(klines_init[-1][4])
+                    eng["initialized"] = True
+                    last_kline_fetch = now_ts
+            elif now_ts - last_kline_fetch >= 2.0:
+                klines_live = fetch_hl_klines("1m", 6)
+                if klines_live and len(klines_live) >= 2:
+                    for b in klines_live[:-1]:
+                        process_single_closed_bar(eng, b)
+                    if eng["order_book"]["mid_price"] == 0:
+                        eng["price"] = float(klines_live[-1][4])
+                    last_kline_fetch = now_ts
 
             eng["ist_time"] = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
             eng["error"] = None
@@ -598,10 +705,10 @@ def background_worker(eng):
         except Exception as e:
             eng["error"] = str(e)
 
-        time.sleep(2)
+        time.sleep(1)
 
 @st.cache_resource
-def get_server_engine():
+def get_hl_locked_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -667,10 +774,30 @@ def get_server_engine():
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है",
         "last_result_color": "#334155",
         "history": [],
-        "order_book": {"best_bid": 0, "best_ask": 0, "spread": 0, "bid_pct": 50, "ask_pct": 50},
-        "last_spread": None,
+        "order_book": {
+            "source": "Hyperliquid L2 (Locked)",
+            "best_bid": 0.0,
+            "best_ask": 0.0,
+            "mid_price": 0.0,
+            "micro_price": 0.0,
+            "micro_skew": 0.0,
+            "spread": 0.0,
+            "avg_spread": 0.0,
+            "bid_vol": 0.0,
+            "ask_vol": 0.0,
+            "bid_pct": 50.0,
+            "ask_pct": 50.0,
+            "bid_wall_px": 0.0,
+            "bid_wall_sz": 0.0,
+            "ask_wall_px": 0.0,
+            "ask_wall_sz": 0.0
+        },
+        "spread_window": [],
+        "prev_best_bid": None,
+        "prev_best_ask": None,
         "last_spike_alert_ts": 0,
-        "last_spike_status": "🟢 मॉनिटर सक्रिय है (कोई स्पाइक वैक्यूम नहीं)",
+        "last_spike_status": "📡 Hyperliquid L2 Order Book सिंक हो रहा है...",
+        "last_spike_color": "#1e293b",
         "spike_history": [],
         "error": None
     }
@@ -678,13 +805,13 @@ def get_server_engine():
     thread.start()
     return eng
 
-eng = get_server_engine()
+eng = get_hl_locked_engine()
 
 # ============================================================================
 # TWO TABS: TAB 1 = AI-RENKO PRO | TAB 2 = BTC MULTI-CHART PRO (10 INDICATORS)
 # ============================================================================
 tab_renko, tab_charts = st.tabs([
-    "⚡ AI-Renko Pro Terminal (10-Qty Locked)",
+    "⚡ AI-Renko Pro Terminal (10-Qty • Hyperliquid Locked)",
     "📊 BTC Multi-Chart Pro (10 Institutional Indicators)"
 ])
 
@@ -774,7 +901,7 @@ with tab_charts:
 <div class="top-bar">
   <div class="top-title">
     <span>BTC Multi-chart Pro</span>
-    <span class="top-badge">⚡ Hyperliquid Live WS + 10 Indicators</span>
+    <span class="top-badge">⚡ 100% Hyperliquid Live Feed + 10 Indicators</span>
   </div>
   <div class="top-controls">
     <span>Number of charts</span>
@@ -865,50 +992,39 @@ function ensureVolumeFallback(candles) {
   });
 }
 
+// 100% Hyperliquid candleSnapshot with auto-retry (No Binance fallback)
 async function fetchBtcHistory(tf) {
-  try {
-    const tfMsMap = { "1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "1d": 86400000 };
-    const endTime = Date.now();
-    const startTime = endTime - (tfMsMap[tf] || 300000) * 280;
-    const r = await fetch("https://api.hyperliquid.xyz/info", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "candleSnapshot",
-        req: { coin: "BTC", interval: tf, startTime: startTime, endTime: endTime }
-      })
-    });
-    if (r.ok) {
-      const data = await r.json();
-      if (Array.isArray(data) && data.length > 0) {
-        const candles = ensureVolumeFallback(data.map(k => ({
-          time: Math.floor(k.t / 1000) + 19800,
-          open: parseFloat(k.o),
-          high: parseFloat(k.h),
-          low: parseFloat(k.l),
-          close: parseFloat(k.c),
-          volume: parseFloat(k.v)
-        })));
-        return { candles, prevClose: candles[0].open };
+  const tfMsMap = { "1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "1d": 86400000 };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const endTime = Date.now();
+      const startTime = endTime - (tfMsMap[tf] || 300000) * 280;
+      const r = await fetch("https://api.hyperliquid.xyz/info", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "candleSnapshot",
+          req: { coin: "BTC", interval: tf, startTime: startTime, endTime: endTime }
+        })
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (Array.isArray(data) && data.length > 0) {
+          data.sort((a, b) => a.t - b.t);
+          const candles = ensureVolumeFallback(data.map(k => ({
+            time: Math.floor(k.t / 1000) + 19800,
+            open: parseFloat(k.o),
+            high: parseFloat(k.h),
+            low: parseFloat(k.l),
+            close: parseFloat(k.c),
+            volume: parseFloat(k.v)
+          })));
+          return { candles, prevClose: candles[0].open };
+        }
       }
-    }
-  } catch (e) {}
-
-  try {
-    const r = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=${tf}&limit=280`);
-    if (r.ok) {
-      const data = await r.json();
-      const candles = ensureVolumeFallback(data.map(k => ({
-        time: Math.floor(k[0] / 1000) + 19800,
-        open: parseFloat(k[1]),
-        high: parseFloat(k[2]),
-        low: parseFloat(k[3]),
-        close: parseFloat(k[4]),
-        volume: parseFloat(k[5])
-      })));
-      return { candles, prevClose: candles[0].open };
-    }
-  } catch (e) {}
+    } catch (e) {}
+    await new Promise(res => setTimeout(res, 600));
+  }
   return null;
 }
 
@@ -1057,17 +1173,14 @@ function calcCPR(candles) {
 function calcMarketStructure(candles) {
   const markers = [];
   if (candles.length < 10) return markers;
-  let structTrend = 0;
   for (let i = 2; i < candles.length - 2; i++) {
     const c = candles[i];
     let isHigh = c.high > candles[i - 1].high && c.high > candles[i - 2].high && c.high > candles[i + 1].high && c.high > candles[i + 2].high;
     let isLow = c.low < candles[i - 1].low && c.low < candles[i - 2].low && c.low < candles[i + 1].low && c.low < candles[i + 2].low;
     if (isHigh && c.close > candles[i].high) {
-      structTrend = 1;
       markers.push({ time: c.time, position: "aboveBar", color: "#38bdf8", shape: "circle", text: "BOS" });
     }
     if (isLow && c.close < candles[i].low) {
-      structTrend = -1;
       markers.push({ time: c.time, position: "belowBar", color: "#f59e0b", shape: "circle", text: "CHOCH" });
     }
   }
@@ -1409,7 +1522,7 @@ function buildGrid(count) {
 
     const btcBadge = document.createElement("span");
     btcBadge.className = "btc-lbl";
-    btcBadge.textContent = "BTCUSDT";
+    btcBadge.textContent = "BTC (HL)";
 
     const tfSel = document.createElement("select");
     tfSel.className = "tf-sel";
@@ -1452,7 +1565,7 @@ function buildGrid(count) {
     tickerEl.innerHTML = `
       <div class="tk-left">
         <span class="dot dot-crypto"></span>
-        <span>BTCUSDT</span>
+        <span>BTC-USD (Hyperliquid)</span>
         <div class="ind-tags"></div>
       </div>
       <div class="tk-right"><span class="tk-price up-col">--</span><span class="tk-chg up-col">--</span></div>
@@ -1619,6 +1732,11 @@ function connectHyperliquidWs() {
   } catch (e) {}
 }
 
+// Periodically refresh candle history from Hyperliquid every 30s so new timeframe bars append cleanly
+setInterval(() => {
+  activePanes.forEach(pane => loadPaneData(pane));
+}, 30000);
+
 loadSavedConfigs();
 const savedCount = parseInt(localStorage.getItem("btc_mc_count") || "4", 10);
 const validCount = [1, 2, 4, 6, 8].includes(savedCount) ? savedCount : 4;
@@ -1638,11 +1756,11 @@ countSel.addEventListener("change", () => {
     components.html(multi_chart_html, height=820, scrolling=False)
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (AI-RENKO PRO + SPIKE RADAR)
+# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (100% HYPERLIQUID LOCKED)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: 1000 कैंडल्स से परमानेंट स्टेट-लॉक इंजन सेटअप हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: Hyperliquid से 1000 कैंडल्स और L2 Order Book सिंक हो रहा है...")
         time.sleep(1)
         continue
 
@@ -1659,14 +1777,22 @@ while True:
     imbalance = (eng["buy_dom_pct"] - eng["sell_dom_pct"]) / 100.0
     ist_time = eng["ist_time"]
 
-    # Order Book & Spike Radar Data
+    # Hyperliquid L2 Order Book & Spike Radar Data
     ob = eng["order_book"]
     best_bid = ob["best_bid"]
     best_ask = ob["best_ask"]
     spread = ob["spread"]
+    avg_spread = ob["avg_spread"]
     bid_pct = ob["bid_pct"]
     ask_pct = ob["ask_pct"]
+    bid_vol = ob["bid_vol"]
+    ask_vol = ob["ask_vol"]
+    bid_wall_px = ob["bid_wall_px"]
+    bid_wall_sz = ob["bid_wall_sz"]
+    ask_wall_px = ob["ask_wall_px"]
+    ask_wall_sz = ob["ask_wall_sz"]
     spike_status = eng["last_spike_status"]
+    spike_box_bg = eng["last_spike_color"]
 
     tot_trades = eng["wins"] + eng["losses"]
     win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
@@ -1723,21 +1849,23 @@ while True:
 </div>"""
     else:
         trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (STATE-LOCKED • 10 QTY)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (100% HYPERLIQUID • 10 QTY)</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:4px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
 
     # Spike Radar History Rows
     spike_rows_html = ""
     if not eng["spike_history"]:
-        spike_rows_html = """<tr><td colspan="4" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई स्पाइक सिग्नल रिकॉर्ड नहीं हुआ है</td></tr>"""
+        spike_rows_html = """<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई बड़ा स्पाइक/वैक्यूम सिग्नल ट्रिगर नहीं हुआ है</td></tr>"""
     else:
         for sh in eng["spike_history"]:
-            spike_rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:12px;">
-<td style="padding:7px 6px; color:#94a3b8;">{sh['time']}</td>
-<td style="padding:7px 6px; color:#f8fafc; font-weight:600;">${sh['price']:,.1f}</td>
-<td style="padding:7px 6px; color:#cbd5e1;">${sh['spread']}</td>
-<td style="padding:7px 6px; color:{sh['color']}; font-weight:bold;">{sh['direction']}</td>
+            mv_col = "#4ade80" if sh["max_fav"] >= 25.0 else "#cbd5e1"
+            spike_rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:11.5px;">
+<td style="padding:6px 5px; color:#94a3b8;">{sh['time']}</td>
+<td style="padding:6px 5px; color:#f8fafc; font-weight:600;">${sh['price']:,.1f}</td>
+<td style="padding:6px 5px; color:#facc15;">{sh['spread_info']}</td>
+<td style="padding:6px 5px; color:{sh['color']}; font-weight:bold;">{sh['direction']}</td>
+<td style="padding:6px 5px; color:{mv_col}; font-weight:bold; text-align:right;">Max: +{sh['max_fav']:.1f}p (Now: {sh['curr_move']:+.1f}p)</td>
 </tr>"""
 
     rows_html = ""
@@ -1761,21 +1889,21 @@ while True:
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [PERMANENT STATE-LOCKED 10-QTY]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [100% HYPERLIQUID LOCKED • 10-QTY]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
 <div style="background:#1e293b; border:1px solid {st_badge_col}; color:{st_badge_col}; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:bold; display:inline-block; margin-bottom:4px;">{st_badge_text}</div>
-<div style="font-size:12px; color:#cbd5e1;">🔒 Incremental Lock | {ist_time}</div>
+<div style="font-size:12px; color:#cbd5e1;">🔒 Hyperliquid Single-Feed | {ist_time}</div>
 </div>
 </div>
 <div class="t-grid">
 <div>
 <div style="margin-bottom:14px; background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
 <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; margin-bottom:6px;">
-<span style="color:#22c55e;">🟢 3-Bar Buy Dom: {buy_pct}%</span>
+<span style="color:#22c55e;">🟢 3-Bar Candle Flow: {buy_pct}%</span>
 <span style="color:#e2e8f0;">Imbalance: {imbalance:+.2f}</span>
-<span style="color:#ef4444;">Sell Dom: {sell_pct}% 🔴</span>
+<span style="color:#ef4444;">Sell Flow: {sell_pct}% 🔴</span>
 </div>
 <div style="width:100%; background:#ef4444; height:12px; border-radius:6px; overflow:hidden;">
 <div style="width:{buy_pct}%; background:#22c55e; height:100%;"></div>
@@ -1784,28 +1912,36 @@ while True:
 
 {trade_box_html}
 
-<!-- SPIKE RADAR & ORDER BOOK IMBALANCE MONITOR BOX -->
+<!-- 100% HYPERLIQUID L2 ORDER BOOK & SPIKE VACUUM RADAR BOX -->
 <div style="background:#1e293b; border:2px solid #38bdf8; border-radius:12px; padding:14px; margin-bottom:14px; box-shadow:0 4px 15px rgba(56,189,248,0.15);">
-<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 LIVE ORDER BOOK & SPIKE RADAR</span>
-<span style="font-size:12px; color:#facc15; font-weight:600;">Spread: ${spread:.1f}</span>
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 HYPERLIQUID L2 ORDER BOOK & SPIKE RADAR</span>
+<span style="font-size:12px; color:#facc15; font-weight:700;">Live Spread: ${spread:.1f} (Avg: ${avg_spread:.1f})</span>
 </div>
-<div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:8px; background:#0b1324; padding:6px 10px; border-radius:6px;">
-<span>🟢 Bid Depth: <b style="color:#22c55e;">{bid_pct}%</b> (${best_bid:,.1f})</span>
-<span>🔴 Ask Depth: <b style="color:#ef4444;">{ask_pct}%</b> (${best_ask:,.1f})</span>
+<div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:6px; background:#0b1324; padding:7px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
+<span>🟢 Bid Depth (15L): <b style="color:#22c55e;">{bid_pct:.1f}% ({bid_vol:.2f} BTC)</b> @ ${best_bid:,.1f}</span>
+<span>🔴 Ask Depth (15L): <b style="color:#ef4444;">{ask_pct:.1f}% ({ask_vol:.2f} BTC)</b> @ ${best_ask:,.1f}</span>
 </div>
-<div style="background:#0f172a; color:#f8fafc; padding:10px; border-radius:8px; font-size:12px; font-weight:bold; text-align:center; border:1px dashed #334155; margin-bottom:10px;">
+<div style="width:100%; background:#ef4444; height:10px; border-radius:5px; overflow:hidden; margin-bottom:8px;">
+<div style="width:{bid_pct}%; background:#22c55e; height:100%;"></div>
+</div>
+<div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-bottom:8px; background:#0f172a; padding:6px 10px; border-radius:6px;">
+<span>🛡️ Buy Whale Wall: <b style="color:#4ade80;">${bid_wall_px:,.1f} ({bid_wall_sz:.2f} BTC)</b></span>
+<span>🧱 Sell Whale Wall: <b style="color:#f87171;">${ask_wall_px:,.1f} ({ask_wall_sz:.2f} BTC)</b></span>
+</div>
+<div style="background:{spike_box_bg}; color:#ffffff; padding:9px; border-radius:8px; font-size:12px; font-weight:bold; text-align:center; border:1px solid #334155; margin-bottom:10px;">
 {spike_status}
 </div>
-<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 Spike Signal History (Cross-Check Log)</div>
-<div style="max-height: 140px; overflow-y: auto;">
+<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 Spike Signal History & Cross-Check Move Tracker</div>
+<div style="max-height:150px; overflow-y:auto;">
 <table style="width:100%; border-collapse:collapse;">
 <thead>
 <tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
 <th style="padding:5px;">समय</th>
-<th style="padding:5px;">प्राइस</th>
-<th style="padding:5px;">स्प्रेड</th>
-<th style="padding:5px;">स्पाइक दिशा</th>
+<th style="padding:5px;">सिग्नल प्राइस</th>
+<th style="padding:5px;">स्प्रेड (Buy/Sell)</th>
+<th style="padding:5px;">स्पाइक सिग्नल</th>
+<th style="padding:5px; text-align:right;">अधिकतम मूव (Cross-Check)</th>
 </tr>
 </thead>
 <tbody>
