@@ -91,7 +91,7 @@ def fmt_pts(pts):
     return f"{pts:,.1f}"
 
 # ============================================================================
-# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHER (NO BINANCE FALLBACK)
+# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHER
 # ============================================================================
 def fetch_hl_klines(interval="1m", num_bars=1000):
     tf_ms_map = {
@@ -527,7 +527,7 @@ def process_single_closed_bar(eng, kline):
     eng["bar_count"] += 1
 
 # ============================================================================
-# 100% HYPERLIQUID L2 ORDER BOOK & SPIKE VACUUM RADAR (NO BINANCE FALLBACK)
+# PRO-LEVEL 5-FACTOR INSTITUTIONAL VACUUM & SWEEP ENGINE (ANTI-SPOOFING)
 # ============================================================================
 def fetch_l2_orderbook_and_spike_radar(eng):
     bids = []
@@ -557,90 +557,179 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     mid_price = (best_bid + best_ask) / 2.0
     spread = max(0.1, best_ask - best_bid)
 
-    # Top-15 Order Book Depth Volume & Imbalance %
+    # Top-5 Near-Touch Liquidity (for Vacuum Detection) & Top-15 Total Depth
+    bid_vol_5 = sum(b[1] for b in bids[:5])
+    ask_vol_5 = sum(a[1] for a in asks[:5])
     bid_vol_15 = sum(b[1] for b in bids[:15])
     ask_vol_15 = sum(a[1] for a in asks[:15])
     tot_depth = bid_vol_15 + ask_vol_15
-    bid_pct = round((bid_vol_15 / tot_depth) * 100.0, 1) if tot_depth > 0 else 50.0
-    ask_pct = round(100.0 - bid_pct, 1)
+    raw_bid_pct = round((bid_vol_15 / tot_depth) * 100.0, 1) if tot_depth > 0 else 50.0
+    raw_ask_pct = round(100.0 - raw_bid_pct, 1)
 
-    # Volume-Weighted Micro-Price Calculation
+    # Volume-Weighted Micro-Price
     top_sz = best_bid_sz + best_ask_sz
     micro_price = ((best_bid * best_ask_sz) + (best_ask * best_bid_sz)) / top_sz if top_sz > 0 else mid_price
     micro_skew = micro_price - mid_price
 
-    # Largest Whale Wall Detection (Top 20 levels)
+    # Largest Whale Wall Detection
     max_bid_wall = max(bids, key=lambda x: x[1])
     max_ask_wall = max(asks, key=lambda x: x[1])
 
-    # Rolling Spread Window (Last 20 readings)
-    eng["spread_window"].append(spread)
-    if len(eng["spread_window"]) > 20:
-        eng["spread_window"].pop(0)
-    avg_spread = sum(eng["spread_window"]) / float(len(eng["spread_window"]))
-
-    # Asymmetric Liquidity Pull Detection
-    ask_pulled_up = (eng["prev_best_ask"] is not None) and ((best_ask - eng["prev_best_ask"]) >= max(1.5, avg_spread * 0.8))
-    bid_pulled_dn = (eng["prev_best_bid"] is not None) and ((eng["prev_best_bid"] - best_bid) >= max(1.5, avg_spread * 0.8))
-    eng["prev_best_bid"] = best_bid
-    eng["prev_best_ask"] = best_ask
-
-    eng["order_book"] = {
-        "source": "Hyperliquid L2 (Locked)",
-        "best_bid": best_bid,
-        "best_ask": best_ask,
-        "mid_price": mid_price,
-        "micro_price": micro_price,
-        "micro_skew": micro_skew,
+    # Maintain 25-Tick Rolling History for Anti-Spoofing & Vacuum Baselines
+    hist = eng["l2_tick_window"]
+    hist.append({
+        "ts": time.time(),
+        "mid": mid_price,
+        "bid": best_bid,
+        "ask": best_ask,
         "spread": spread,
-        "avg_spread": avg_spread,
-        "bid_vol": bid_vol_15,
-        "ask_vol": ask_vol_15,
-        "bid_pct": bid_pct,
-        "ask_pct": ask_pct,
-        "bid_wall_px": max_bid_wall[0],
-        "bid_wall_sz": max_bid_wall[1],
-        "ask_wall_px": max_ask_wall[0],
-        "ask_wall_sz": max_ask_wall[1]
-    }
+        "bid_pct": raw_bid_pct,
+        "ask_pct": raw_ask_pct,
+        "bid_v5": bid_vol_5,
+        "ask_v5": ask_vol_5,
+        "micro_skew": micro_skew
+    })
+    if len(hist) > 25:
+        hist.pop(0)
 
     # Update Cross-Check Post-Signal Move for previously logged spike signals
     for item in eng["spike_history"]:
         sig_p = item["price"]
-        if item["dir_code"] == 1:
-            fav_move = mid_price - sig_p
-        else:
-            fav_move = sig_p - mid_price
+        fav_move = (mid_price - sig_p) if item["dir_code"] == 1 else (sig_p - mid_price)
         item["max_fav"] = max(item["max_fav"], fav_move)
         item["curr_move"] = fav_move
 
-    # Spike Detection Rules
-    spread_expanded = (spread >= max(avg_spread * 1.6, 1.5)) or (spread >= 4.0)
-    heavy_bull_book = (bid_pct >= 68.0 and micro_skew >= 0)
-    heavy_bear_book = (ask_pct >= 68.0 and micro_skew <= 0)
+    # Calculate 5-Tick Sustained Averages (Filters out 1-second HFT spoofing)
+    recent_5 = hist[-5:] if len(hist) >= 5 else hist
+    sustained_bid_pct = sum(x["bid_pct"] for x in recent_5) / float(len(recent_5))
+    sustained_ask_pct = 100.0 - sustained_bid_pct
+    avg_spread = sum(x["spread"] for x in hist) / float(len(hist))
+
+    # Baseline Top-5 Liquidity over the last 25 ticks
+    base_bid_v5 = max(0.01, sum(x["bid_v5"] for x in hist) / float(len(hist)))
+    base_ask_v5 = max(0.01, sum(x["ask_v5"] for x in hist) / float(len(hist)))
+
+    # Opposite Side Liquidity Ratio (< 0.65 means 35%+ orders pulled/eaten = Vacuum!)
+    ask_vacuum_ratio = ask_vol_5 / base_ask_v5
+    bid_vacuum_ratio = bid_vol_5 / base_bid_v5
+
+    # Directional Sweep Velocity over the last 5 ticks (5 seconds)
+    if len(hist) >= 6:
+        price_vel_5s = mid_price - hist[-6]["mid"]
+        # Count how many of the last 5 ticks stepped monotonically without pullback
+        up_steps = sum(1 for k in range(-5, 0) if hist[k]["ask"] >= hist[k - 1]["ask"] and hist[k]["mid"] >= hist[k - 1]["mid"])
+        dn_steps = sum(1 for k in range(-5, 0) if hist[k]["bid"] <= hist[k - 1]["bid"] and hist[k]["mid"] <= hist[k - 1]["mid"])
+    else:
+        price_vel_5s = 0.0
+        up_steps = 0
+        dn_steps = 0
+
+    # ========================================================================
+    # 5-FACTOR INSTITUTIONAL CONFLUENCE SCORING (0 to 100)
+    # ========================================================================
+    bull_score = 0
+    bear_score = 0
+
+    # Factor 1: Sustained 5-Tick L2 Depth Imbalance (Max 30 pts) — No single-tick spoofs
+    if sustained_bid_pct >= 74.0 and all(x["bid_pct"] >= 65.0 for x in recent_5):
+        bull_score += 30
+    elif sustained_bid_pct >= 68.0:
+        bull_score += 15
+
+    if sustained_ask_pct >= 74.0 and all(x["ask_pct"] >= 65.0 for x in recent_5):
+        bear_score += 30
+    elif sustained_ask_pct >= 68.0:
+        bear_score += 15
+
+    # Factor 2: Opposite-Side Liquidity Vacuum / Thinning (Max 25 pts)
+    if ask_vacuum_ratio <= 0.62 and bid_vol_5 > ask_vol_5 * 2.2:
+        bull_score += 25
+    elif ask_vacuum_ratio <= 0.78 and bid_vol_5 > ask_vol_5 * 1.6:
+        bull_score += 12
+
+    if bid_vacuum_ratio <= 0.62 and ask_vol_5 > bid_vol_5 * 2.2:
+        bear_score += 25
+    elif bid_vacuum_ratio <= 0.78 and ask_vol_5 > bid_vol_5 * 1.6:
+        bear_score += 12
+
+    # Factor 3: Real Taker Sweep Velocity & Level Stepping (Max 25 pts)
+    if price_vel_5s >= 28.0 and up_steps >= 4:
+        bull_score += 25
+    elif price_vel_5s >= 16.0 and up_steps >= 4:
+        bull_score += 12
+
+    if price_vel_5s <= -28.0 and dn_steps >= 4:
+        bear_score += 25
+    elif price_vel_5s <= -16.0 and dn_steps >= 4:
+        bear_score += 12
+
+    # Factor 4: Micro-Price Lead & Spread Stretch (Max 10 pts)
+    if micro_skew > 0.15 and (spread >= avg_spread * 1.3 or best_ask > hist[-2]["ask"] if len(hist) >= 2 else False):
+        bull_score += 10
+    if micro_skew < -0.15 and (spread >= avg_spread * 1.3 or best_bid < hist[-2]["bid"] if len(hist) >= 2 else False):
+        bear_score += 10
+
+    # Factor 5: Macro Renko & 3-Bar Candle Flow Alignment (Max 10 pts, Blocks counter-trend flip-flops)
+    if eng["buy_dom_pct"] >= 53.0 and (eng["st_trend"] == 1 or mid_price > eng["ema21"]):
+        bull_score += 10
+    if eng["sell_dom_pct"] >= 53.0 and (eng["st_trend"] == -1 or mid_price < eng["ema21"]):
+        bear_score += 10
+
+    active_score = max(bull_score, bear_score)
+    score_side = "BULL" if bull_score >= bear_score else "BEAR"
+
+    eng["order_book"] = {
+        "source": "Hyperliquid L2 (5-Factor Pro)",
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "mid_price": mid_price,
+        "micro_price": micro_price,
+        "spread": spread,
+        "avg_spread": avg_spread,
+        "bid_vol": bid_vol_15,
+        "ask_vol": ask_vol_15,
+        "bid_pct": round(sustained_bid_pct, 1),
+        "ask_pct": round(sustained_ask_pct, 1),
+        "raw_bid_pct": raw_bid_pct,
+        "bid_wall_px": max_bid_wall[0],
+        "bid_wall_sz": max_bid_wall[1],
+        "ask_wall_px": max_ask_wall[0],
+        "ask_wall_sz": max_ask_wall[1],
+        "vel_5s": price_vel_5s,
+        "ask_vac_pct": int(round((1.0 - min(1.0, ask_vacuum_ratio)) * 100)),
+        "bid_vac_pct": int(round((1.0 - min(1.0, bid_vacuum_ratio)) * 100)),
+        "spike_score": active_score,
+        "score_side": score_side
+    }
+
+    # STRICT INSTITUTIONAL TRIGGER:
+    # Requires Confluence Score >= 85/100 AND real directional velocity (>= $22 in 5s)
+    # Plus 180s (3 min) cooldown for same direction, and 90s minimum lock between any signals
+    now_ts = time.time()
+    time_since_last = now_ts - eng["last_spike_alert_ts"]
 
     spike_dir_text = None
     dir_code = 0
     col = "#38bdf8"
 
-    if (spread_expanded and (bid_pct >= 58.0 or ask_pulled_up)) or heavy_bull_book:
-        reason = "Spread Vacuum" if spread_expanded else "Whale Bid Surge"
-        spike_dir_text = f"🚀 UP SPIKE ({reason} | {bid_pct:.0f}% Buy)"
-        dir_code = 1
-        col = "#22c55e"
-    elif (spread_expanded and (ask_pct >= 58.0 or bid_pulled_dn)) or heavy_bear_book:
-        reason = "Spread Vacuum" if spread_expanded else "Whale Ask Surge"
-        spike_dir_text = f"🔻 DOWN SPIKE ({reason} | {ask_pct:.0f}% Sell)"
-        dir_code = -1
-        col = "#ef4444"
+    if len(hist) >= 10:
+        if bull_score >= 85 and price_vel_5s >= 22.0 and eng["buy_dom_pct"] >= 52.0:
+            if (eng["last_spike_dir"] != 1 and time_since_last >= 90) or (time_since_last >= 180):
+                spike_dir_text = f"🚀 PRO UPWARD BREAKOUT (Score: {bull_score}/100 | Sweep: +${price_vel_5s:.0f})"
+                dir_code = 1
+                col = "#22c55e"
+        elif bear_score >= 85 and price_vel_5s <= -22.0 and eng["sell_dom_pct"] >= 52.0:
+            if (eng["last_spike_dir"] != -1 and time_since_last >= 90) or (time_since_last >= 180):
+                spike_dir_text = f"🔻 PRO DOWNWARD BREAKOUT (Score: {bear_score}/100 | Sweep: ${price_vel_5s:.0f})"
+                dir_code = -1
+                col = "#ef4444"
 
-    now_ts = time.time()
-    if spike_dir_text and (now_ts - eng["last_spike_alert_ts"] >= 20):
+    if spike_dir_text:
         ist_t = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
         eng["spike_history"].insert(0, {
             "time": ist_t,
             "price": mid_price,
-            "spread_info": f"${spread:.1f} ({bid_pct:.0f}%/{ask_pct:.0f}%)",
+            "spread_info": f"Score {active_score} | {sustained_bid_pct:.0f}%/{sustained_ask_pct:.0f}%",
             "direction": spike_dir_text,
             "dir_code": dir_code,
             "max_fav": 0.0,
@@ -649,12 +738,15 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         })
         eng["spike_history"] = eng["spike_history"][:20]
         eng["last_spike_alert_ts"] = now_ts
+        eng["last_spike_dir"] = dir_code
         eng["last_spike_status"] = f"⚡ {ist_t}: {spike_dir_text} @ ${mid_price:,.1f}"
         eng["last_spike_color"] = col
-    elif now_ts - eng["last_spike_alert_ts"] > 15:
-        bias_txt = "🟢 Bullish Book Pressure" if bid_pct >= 55 else ("🔴 Bearish Book Pressure" if ask_pct >= 55 else "⚖️ Balanced Orderbook")
-        eng["last_spike_status"] = f"📡 Hyperliquid L2 Locked | {bias_txt} | Micro-Price: ${micro_price:,.1f}"
-        eng["last_spike_color"] = "#1e293b"
+    elif now_ts - eng["last_spike_alert_ts"] > 20:
+        eng["last_spike_status"] = (
+            f"🛡️ 5-Stage Filter Active | Score: {active_score}/100 ({score_side}) "
+            f"| 5s Sweep: {price_vel_5s:+.1f}p (Need Score ≥ 85 & Sweep ≥ $22)"
+        )
+        eng["last_spike_color"] = "#0f172a"
 
 # ============================================================================
 # 24x7 BACKGROUND WORKER (100% HYPERLIQUID UNIFIED FEED)
@@ -667,7 +759,7 @@ def background_worker(eng):
         try:
             now_ts = time.time()
 
-            # 1. Every 1 second: Fetch Hyperliquid L2 Order Book, Spread & Spike Radar
+            # 1. Every 1 second: Fetch Hyperliquid L2 Order Book & Run 5-Stage Spike Engine
             fetch_l2_orderbook_and_spike_radar(eng)
             if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
                 eng["price"] = eng["order_book"]["mid_price"]
@@ -708,7 +800,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_locked_engine():
+def get_hl_pro_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -775,29 +867,33 @@ def get_hl_locked_engine():
         "last_result_color": "#334155",
         "history": [],
         "order_book": {
-            "source": "Hyperliquid L2 (Locked)",
+            "source": "Hyperliquid L2 (5-Factor Pro)",
             "best_bid": 0.0,
             "best_ask": 0.0,
             "mid_price": 0.0,
             "micro_price": 0.0,
-            "micro_skew": 0.0,
             "spread": 0.0,
             "avg_spread": 0.0,
             "bid_vol": 0.0,
             "ask_vol": 0.0,
             "bid_pct": 50.0,
             "ask_pct": 50.0,
+            "raw_bid_pct": 50.0,
             "bid_wall_px": 0.0,
             "bid_wall_sz": 0.0,
             "ask_wall_px": 0.0,
-            "ask_wall_sz": 0.0
+            "ask_wall_sz": 0.0,
+            "vel_5s": 0.0,
+            "ask_vac_pct": 0,
+            "bid_vac_pct": 0,
+            "spike_score": 0,
+            "score_side": "NEUTRAL"
         },
-        "spread_window": [],
-        "prev_best_bid": None,
-        "prev_best_ask": None,
+        "l2_tick_window": [],
         "last_spike_alert_ts": 0,
-        "last_spike_status": "📡 Hyperliquid L2 Order Book सिंक हो रहा है...",
-        "last_spike_color": "#1e293b",
+        "last_spike_dir": 0,
+        "last_spike_status": "📡 Hyperliquid 5-Stage Institutional Radar सिंक हो रहा है...",
+        "last_spike_color": "#0f172a",
         "spike_history": [],
         "error": None
     }
@@ -805,7 +901,7 @@ def get_hl_locked_engine():
     thread.start()
     return eng
 
-eng = get_hl_locked_engine()
+eng = get_hl_pro_engine()
 
 # ============================================================================
 # TWO TABS: TAB 1 = AI-RENKO PRO | TAB 2 = BTC MULTI-CHART PRO (10 INDICATORS)
@@ -992,7 +1088,6 @@ function ensureVolumeFallback(candles) {
   });
 }
 
-// 100% Hyperliquid candleSnapshot with auto-retry (No Binance fallback)
 async function fetchBtcHistory(tf) {
   const tfMsMap = { "1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "1d": 86400000 };
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -1732,7 +1827,6 @@ function connectHyperliquidWs() {
   } catch (e) {}
 }
 
-// Periodically refresh candle history from Hyperliquid every 30s so new timeframe bars append cleanly
 setInterval(() => {
   activePanes.forEach(pane => loadPaneData(pane));
 }, 30000);
@@ -1756,11 +1850,11 @@ countSel.addEventListener("change", () => {
     components.html(multi_chart_html, height=820, scrolling=False)
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (100% HYPERLIQUID LOCKED)
+# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (PRO 5-STAGE SPIKE ENGINE)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: Hyperliquid से 1000 कैंडल्स और L2 Order Book सिंक हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: Hyperliquid से 1000 कैंडल्स और 5-Stage Institutional L2 Radar सिंक हो रहा है...")
         time.sleep(1)
         continue
 
@@ -1777,7 +1871,7 @@ while True:
     imbalance = (eng["buy_dom_pct"] - eng["sell_dom_pct"]) / 100.0
     ist_time = eng["ist_time"]
 
-    # Hyperliquid L2 Order Book & Spike Radar Data
+    # Hyperliquid Pro 5-Factor Order Book Data
     ob = eng["order_book"]
     best_bid = ob["best_bid"]
     best_ask = ob["best_ask"]
@@ -1791,8 +1885,15 @@ while True:
     bid_wall_sz = ob["bid_wall_sz"]
     ask_wall_px = ob["ask_wall_px"]
     ask_wall_sz = ob["ask_wall_sz"]
+    vel_5s = ob["vel_5s"]
+    ask_vac_pct = ob["ask_vac_pct"]
+    bid_vac_pct = ob["bid_vac_pct"]
+    spike_score = ob["spike_score"]
+    score_side = ob["score_side"]
     spike_status = eng["last_spike_status"]
     spike_box_bg = eng["last_spike_color"]
+
+    score_col = "#22c55e" if spike_score >= 85 else ("#facc15" if spike_score >= 60 else "#94a3b8")
 
     tot_trades = eng["wins"] + eng["losses"]
     win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
@@ -1856,10 +1957,10 @@ while True:
     # Spike Radar History Rows
     spike_rows_html = ""
     if not eng["spike_history"]:
-        spike_rows_html = """<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई बड़ा स्पाइक/वैक्यूम सिग्नल ट्रिगर नहीं हुआ है</td></tr>"""
+        spike_rows_html = """<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी कोई हाई-कन्विक्शन स्पाइक (Score ≥ 85) ट्रिगर नहीं हुआ है</td></tr>"""
     else:
         for sh in eng["spike_history"]:
-            mv_col = "#4ade80" if sh["max_fav"] >= 25.0 else "#cbd5e1"
+            mv_col = "#4ade80" if sh["max_fav"] >= 30.0 else "#cbd5e1"
             spike_rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:11.5px;">
 <td style="padding:6px 5px; color:#94a3b8;">{sh['time']}</td>
 <td style="padding:6px 5px; color:#f8fafc; font-weight:600;">${sh['price']:,.1f}</td>
@@ -1912,35 +2013,37 @@ while True:
 
 {trade_box_html}
 
-<!-- 100% HYPERLIQUID L2 ORDER BOOK & SPIKE VACUUM RADAR BOX -->
+<!-- PRO 5-STAGE INSTITUTIONAL VACUUM & SWEEP RADAR BOX -->
 <div style="background:#1e293b; border:2px solid #38bdf8; border-radius:12px; padding:14px; margin-bottom:14px; box-shadow:0 4px 15px rgba(56,189,248,0.15);">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
-<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 HYPERLIQUID L2 ORDER BOOK & SPIKE RADAR</span>
-<span style="font-size:12px; color:#facc15; font-weight:700;">Live Spread: ${spread:.1f} (Avg: ${avg_spread:.1f})</span>
+<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 PRO INSTITUTIONAL VACUUM & SWEEP RADAR (5-STAGE)</span>
+<span style="font-size:12px; color:{score_col}; font-weight:800;">Spike Score: {spike_score}/100 ({score_side}) | 5s Sweep: {vel_5s:+.1f}p</span>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:6px; background:#0b1324; padding:7px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
-<span>🟢 Bid Depth (15L): <b style="color:#22c55e;">{bid_pct:.1f}% ({bid_vol:.2f} BTC)</b> @ ${best_bid:,.1f}</span>
-<span>🔴 Ask Depth (15L): <b style="color:#ef4444;">{ask_pct:.1f}% ({ask_vol:.2f} BTC)</b> @ ${best_ask:,.1f}</span>
+<span>🟢 5s Sustained Bid: <b style="color:#22c55e;">{bid_pct:.1f}% ({bid_vol:.1f} BTC)</b></span>
+<span>🔴 5s Sustained Ask: <b style="color:#ef4444;">{ask_pct:.1f}% ({ask_vol:.1f} BTC)</b></span>
+<span>⚡ Ask/Bid Vacuum: <b style="color:#facc15;">{ask_vac_pct}% / {bid_vac_pct}%</b></span>
 </div>
 <div style="width:100%; background:#ef4444; height:10px; border-radius:5px; overflow:hidden; margin-bottom:8px;">
 <div style="width:{bid_pct}%; background:#22c55e; height:100%;"></div>
 </div>
-<div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-bottom:8px; background:#0f172a; padding:6px 10px; border-radius:6px;">
+<div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-bottom:8px; background:#0f172a; padding:6px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
 <span>🛡️ Buy Whale Wall: <b style="color:#4ade80;">${bid_wall_px:,.1f} ({bid_wall_sz:.2f} BTC)</b></span>
 <span>🧱 Sell Whale Wall: <b style="color:#f87171;">${ask_wall_px:,.1f} ({ask_wall_sz:.2f} BTC)</b></span>
+<span>📏 Spread: <b style="color:#facc15;">${spread:.1f}</b></span>
 </div>
 <div style="background:{spike_box_bg}; color:#ffffff; padding:9px; border-radius:8px; font-size:12px; font-weight:bold; text-align:center; border:1px solid #334155; margin-bottom:10px;">
 {spike_status}
 </div>
-<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 Spike Signal History & Cross-Check Move Tracker</div>
+<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 High-Conviction Spike History (Triggers Only on Score ≥ 85)</div>
 <div style="max-height:150px; overflow-y:auto;">
 <table style="width:100%; border-collapse:collapse;">
 <thead>
 <tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
 <th style="padding:5px;">समय</th>
 <th style="padding:5px;">सिग्नल प्राइस</th>
-<th style="padding:5px;">स्प्रेड (Buy/Sell)</th>
-<th style="padding:5px;">स्पाइक सिग्नल</th>
+<th style="padding:5px;">स्कोर (Buy/Sell)</th>
+<th style="padding:5px;">प्रो स्पाइक सिग्नल</th>
 <th style="padding:5px; text-align:right;">अधिकतम मूव (Cross-Check)</th>
 </tr>
 </thead>
