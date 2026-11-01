@@ -16,16 +16,39 @@ header, footer, #MainMenu { visibility: hidden; }
 .t-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
 @media (min-width: 960px) { .t-grid { grid-template-columns: 1.15fr 0.85fr; } }
 
-/* टैब के बटन्स और उनके अंदर के टेक्स्ट को सफ़ेद करने के लिए */
-.stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+/* टैब बार और दोनों टैब के टेक्स्ट को 100% चमकीला सफ़ेद (White) और साफ़ दिखाने के लिए */
+div[data-baseweb="tab-list"] {
+    background-color: #111827 !important;
+    padding: 6px 8px !important;
+    border-radius: 10px !important;
+    border: 1px solid #334155 !important;
+    gap: 8px !important;
+}
+button[data-baseweb="tab"],
+button[data-baseweb="tab"] *,
+div[data-baseweb="tab-list"] button,
+div[data-baseweb="tab-list"] button * {
     color: #ffffff !important;
-    font-size: 15px !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+    font-size: 14px !important;
     font-weight: 700 !important;
 }
-
-/* एक्टिव (चयनित) टैब का टेक्स्ट स्काई ब्लू और बॉर्डर दिखेगा */
-.stTabs [data-baseweb="tab-list"] button[aria-selected="true"] [data-testid="stMarkdownContainer"] p {
+button[data-baseweb="tab"] {
+    background-color: #1e293b !important;
+    border: 1px solid #475569 !important;
+    border-radius: 8px !important;
+    padding: 8px 14px !important;
+}
+/* जो टैब चालू (Active) है उसका बॉर्डर और टेक्स्ट हाईलाइट रहेगा */
+button[data-baseweb="tab"][aria-selected="true"] {
+    background-color: #0f172a !important;
+    border: 2px solid #38bdf8 !important;
+}
+button[data-baseweb="tab"][aria-selected="true"],
+button[data-baseweb="tab"][aria-selected="true"] * {
     color: #38bdf8 !important;
+    -webkit-text-fill-color: #38bdf8 !important;
 }
 </style>""", unsafe_allow_html=True)
 
@@ -1060,7 +1083,6 @@ function drawCanvasOverlays(pane) {
 
   const ts = pane.chart.timeScale();
   const plotWidth = ts.width() > 0 ? ts.width() : (canvas.width - 65);
-  const lastCandleTime = pane.candles[pane.candles.length - 1].time;
 
   if (pane.inds.has("ob") && pane.smcZones && pane.smcZones.obs) {
     pane.smcZones.obs.forEach(ob => {
