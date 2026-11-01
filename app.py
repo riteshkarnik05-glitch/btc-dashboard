@@ -40,7 +40,6 @@ button[data-baseweb="tab"] {
     border-radius: 8px !important;
     padding: 8px 14px !important;
 }
-/* जो टैब चालू (Active) है उसका बॉर्डर और टेक्स्ट हाईलाइट रहेगा */
 button[data-baseweb="tab"][aria-selected="true"] {
     background-color: #0f172a !important;
     border: 2px solid #38bdf8 !important;
@@ -477,7 +476,63 @@ def process_single_closed_bar(eng, kline):
     eng["bar_count"] += 1
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (AI-RENKO EXCLUSIVE BTC)
+# LIVE ORDER BOOK & SPIKE RADAR BACKGROUND WORKER
+# ============================================================================
+def fetch_binance_depth_and_spread(eng):
+    try:
+        r = requests.get("https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=50", timeout=4)
+        if r.status_code == 200:
+            data = r.json()
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
+            if bids and asks:
+                best_bid = float(bids[0][0])
+                best_ask = float(asks[0][0])
+                spread = best_ask - best_bid
+
+                # Compute Total Depth Volume (Top 20 Bids vs Asks)
+                bid_vol = sum(float(b[1]) for b in bids[:20])
+                ask_vol = sum(float(a[1]) for a in asks[:20])
+                tot_depth = bid_vol + ask_vol
+                bid_depth_pct = int((bid_vol / tot_depth) * 100) if tot_depth > 0 else 50
+                ask_depth_pct = 100 - bid_depth_pct
+
+                eng["order_book"] = {
+                    "best_bid": best_bid,
+                    "best_ask": best_ask,
+                    "spread": spread,
+                    "bid_pct": bid_depth_pct,
+                    "ask_pct": ask_depth_pct
+                }
+
+                # Spike Radar Logic: Detect Spread Expansion & Imbalance Vacuum
+                if eng["last_spread"] is not None:
+                    spread_jump = spread - eng["last_spread"]
+                    # If spread widens abruptly by > $2.5 and imbalance is skewed (>62%)
+                    if spread_jump >= 2.0 or spread >= 12.0:
+                        spike_dir = "UPWARD SPIKE (BULLISH VACUUM)" if bid_depth_pct >= 60 else ("DOWNWARD SPIKE (BEARISH VACUUM)" if ask_depth_pct >= 60 else "NEUTRAL SPREAD EXPANSION")
+                        col = "#22c55e" if "UPWARD" in spike_dir else ("#ef4444" if "DOWNWARD" in spike_dir else "#f59e0b")
+                        
+                        # Avoid duplicate spam within 30 seconds
+                        now_ts = time.time()
+                        if now_ts - eng["last_spike_alert_ts"] > 30:
+                            ist_t = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
+                            eng["spike_history"].insert(0, {
+                                "time": ist_t,
+                                "price": best_bid,
+                                "spread": f"{spread:.1f}",
+                                "direction": spike_dir,
+                                "color": col
+                            })
+                            eng["spike_history"] = eng["spike_history"][:15]
+                            eng["last_spike_alert_ts"] = now_ts
+                            eng["last_spike_status"] = f"⚡ ALERT: {spike_dir} @ ${best_bid:,.1f} (Spread: ${spread:.1f})"
+                eng["last_spread"] = spread
+    except Exception:
+        pass
+
+# ============================================================================
+# 24x7 BACKGROUND WORKER (AI-RENKO EXCLUSIVE BTC + ORDER BOOK)
 # ============================================================================
 def background_worker(eng):
     primary_urls = [
@@ -485,10 +540,16 @@ def background_worker(eng):
         "https://api.binance.com/api/v3"
     ]
     last_1d_fetch = 0
+    last_ob_fetch = 0
 
     while True:
         try:
             now_ts = time.time()
+
+            # Fetch Order Book Depth & Spread every 2 seconds
+            if now_ts - last_ob_fetch >= 2:
+                fetch_binance_depth_and_spread(eng)
+                last_ob_fetch = now_ts
 
             if now_ts - last_1d_fetch > 300 or eng["macro_range"] is None:
                 for base in primary_urls:
@@ -606,6 +667,11 @@ def get_server_engine():
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है",
         "last_result_color": "#334155",
         "history": [],
+        "order_book": {"best_bid": 0, "best_ask": 0, "spread": 0, "bid_pct": 50, "ask_pct": 50},
+        "last_spread": None,
+        "last_spike_alert_ts": 0,
+        "last_spike_status": "🟢 मॉनिटर सक्रिय है (कोई स्पाइक वैक्यूम नहीं)",
+        "spike_history": [],
         "error": None
     }
     thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
@@ -1572,7 +1638,7 @@ countSel.addEventListener("change", () => {
     components.html(multi_chart_html, height=820, scrolling=False)
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (AI-RENKO PRO)
+# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (AI-RENKO PRO + SPIKE RADAR)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
@@ -1592,6 +1658,15 @@ while True:
     sell_pct = int(round(eng["sell_dom_pct"]))
     imbalance = (eng["buy_dom_pct"] - eng["sell_dom_pct"]) / 100.0
     ist_time = eng["ist_time"]
+
+    # Order Book & Spike Radar Data
+    ob = eng["order_book"]
+    best_bid = ob["best_bid"]
+    best_ask = ob["best_ask"]
+    spread = ob["spread"]
+    bid_pct = ob["bid_pct"]
+    ask_pct = ob["ask_pct"]
+    spike_status = eng["last_spike_status"]
 
     tot_trades = eng["wins"] + eng["losses"]
     win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
@@ -1652,6 +1727,19 @@ while True:
 <div style="color:#94a3b8; font-size:12px; margin-top:4px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
 
+    # Spike Radar History Rows
+    spike_rows_html = ""
+    if not eng["spike_history"]:
+        spike_rows_html = """<tr><td colspan="4" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई स्पाइक सिग्नल रिकॉर्ड नहीं हुआ है</td></tr>"""
+    else:
+        for sh in eng["spike_history"]:
+            spike_rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:12px;">
+<td style="padding:7px 6px; color:#94a3b8;">{sh['time']}</td>
+<td style="padding:7px 6px; color:#f8fafc; font-weight:600;">${sh['price']:,.1f}</td>
+<td style="padding:7px 6px; color:#cbd5e1;">${sh['spread']}</td>
+<td style="padding:7px 6px; color:{sh['color']}; font-weight:bold;">{sh['direction']}</td>
+</tr>"""
+
     rows_html = ""
     if not eng["history"]:
         rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई ट्रेड क्लोज नहीं हुआ है</td></tr>"""
@@ -1693,7 +1781,40 @@ while True:
 <div style="width:{buy_pct}%; background:#22c55e; height:100%;"></div>
 </div>
 </div>
+
 {trade_box_html}
+
+<!-- SPIKE RADAR & ORDER BOOK IMBALANCE MONITOR BOX -->
+<div style="background:#1e293b; border:2px solid #38bdf8; border-radius:12px; padding:14px; margin-bottom:14px; box-shadow:0 4px 15px rgba(56,189,248,0.15);">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 LIVE ORDER BOOK & SPIKE RADAR</span>
+<span style="font-size:12px; color:#facc15; font-weight:600;">Spread: ${spread:.1f}</span>
+</div>
+<div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:8px; background:#0b1324; padding:6px 10px; border-radius:6px;">
+<span>🟢 Bid Depth: <b style="color:#22c55e;">{bid_pct}%</b> (${best_bid:,.1f})</span>
+<span>🔴 Ask Depth: <b style="color:#ef4444;">{ask_pct}%</b> (${best_ask:,.1f})</span>
+</div>
+<div style="background:#0f172a; color:#f8fafc; padding:10px; border-radius:8px; font-size:12px; font-weight:bold; text-align:center; border:1px dashed #334155; margin-bottom:10px;">
+{spike_status}
+</div>
+<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 Spike Signal History (Cross-Check Log)</div>
+<div style="max-height: 140px; overflow-y: auto;">
+<table style="width:100%; border-collapse:collapse;">
+<thead>
+<tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
+<th style="padding:5px;">समय</th>
+<th style="padding:5px;">प्राइस</th>
+<th style="padding:5px;">स्प्रेड</th>
+<th style="padding:5px;">स्पाइक दिशा</th>
+</tr>
+</thead>
+<tbody>
+{spike_rows_html}
+</tbody>
+</table>
+</div>
+</div>
+
 <div style="background:{eng['last_result_color']}; color:#ffffff; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:bold; text-align:center; margin-bottom:14px;">
 पिछला परिणाम: {eng['last_result']}
 </div>
