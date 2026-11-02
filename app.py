@@ -923,9 +923,9 @@ with tab_charts:
     display: flex; align-items: center; justify-content: space-between; padding: 0 6px; gap: 5px; z-index: 20;
   }
   .ctrl-left { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; }
-  .pane-ctrl select.tf-sel { width: 75px; }
-  .btc-lbl { font-size: 12px; font-weight: 700; color: #f59e0b; background: rgba(245, 158, 11, 0.15); padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(245, 158, 11, 0.3); }
-  .sig-pill { font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: #1e293b; color: #cbd5e1; border: 1px solid #334155; white-space: nowrap; }
+  .pane-ctrl select.tf-sel { width: 68px; }
+  .btc-lbl { font-size: 11.5px; font-weight: 700; color: #f59e0b; background: rgba(245, 158, 11, 0.15); padding: 3px 7px; border-radius: 4px; border: 1px solid rgba(245, 158, 11, 0.3); white-space: nowrap; }
+  .sig-pill { font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: #1e293b; color: #cbd5e1; border: 1px solid #334155; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ind-dropdown { position: relative; display: inline-block; }
   .ind-btn {
     background: #1e293b; color: #38bdf8; border: 1px solid #334155; border-radius: 4px;
@@ -933,7 +933,7 @@ with tab_charts:
   }
   .ind-btn:hover { background: #334155; color: #ffffff; }
   .ind-menu {
-    display: none; position: absolute; right: 0; top: 26px; width: 250px;
+    display: none; position: absolute; right: 0; top: 26px; width: 255px;
     background: #131722; border: 1px solid #363a45; border-radius: 6px;
     box-shadow: 0 10px 25px rgba(0,0,0,0.75); padding: 6px 0; z-index: 100;
     max-height: 320px; overflow-y: auto;
@@ -1035,15 +1035,15 @@ function getGridDims(count) {
 
 function saveConfig(count) {
   try {
-    localStorage.setItem("btc_mc_count_v3", String(count));
+    localStorage.setItem("btc_mc_count_v4", String(count));
     const cfg = activePanes.map(p => ({ tf: p.tf, inds: Array.from(p.inds) }));
-    localStorage.setItem("btc_mc_cfg_v3", JSON.stringify(cfg));
+    localStorage.setItem("btc_mc_cfg_v4", JSON.stringify(cfg));
   } catch (e) {}
 }
 
 function loadSavedConfigs() {
   try {
-    const saved = JSON.parse(localStorage.getItem("btc_mc_cfg_v3") || "null");
+    const saved = JSON.parse(localStorage.getItem("btc_mc_cfg_v4") || "null");
     if (Array.isArray(saved) && saved.length > 0) {
       for (let i = 0; i < 8; i++) {
         if (saved[i] && saved[i].tf) {
@@ -1058,11 +1058,13 @@ function loadSavedConfigs() {
 }
 
 function ensureVolumeFallback(candles) {
-  return candles.map(c => {
+  const uniqueMap = new Map();
+  candles.forEach(c => {
     const rawV = Number(c.volume) || 0;
     const synV = Math.max(1, Math.round((c.high - c.low) * 1000));
-    return { ...c, volume: rawV > 0 ? rawV : synV };
+    uniqueMap.set(c.time, { ...c, volume: rawV > 0 ? rawV : synV });
   });
+  return Array.from(uniqueMap.values()).sort((a, b) => a.time - b.time);
 }
 
 async function fetchBtcHistory(tf) {
@@ -1082,20 +1084,21 @@ async function fetchBtcHistory(tf) {
       if (r.ok) {
         const data = await r.json();
         if (Array.isArray(data) && data.length > 0) {
-          data.sort((a, b) => a.t - b.t);
           const candles = ensureVolumeFallback(data.map(k => ({
-            time: Math.floor(k.t / 1000) + 19800,
+            time: Math.floor(Number(k.t) / 1000) + 19800,
             open: parseFloat(k.o),
             high: parseFloat(k.h),
             low: parseFloat(k.l),
             close: parseFloat(k.c),
             volume: parseFloat(k.v)
           })));
-          return { candles, prevClose: candles[0].open };
+          if (candles.length > 0) {
+            return { candles, prevClose: candles[0].open };
+          }
         }
       }
     } catch (e) {}
-    await new Promise(res => setTimeout(res, 600));
+    await new Promise(res => setTimeout(res, 500));
   }
   return null;
 }
@@ -1286,7 +1289,7 @@ function calcRSI(candles, period = 14) {
 }
 
 // ============================================================================
-# UPGRADED #1: FVG SMART-MONEY PULLBACK & REJECTION SIGNALS + BOX MITIGATION
+// UPGRADED 1: FVG SMART-MONEY PULLBACK & REJECTION SIGNALS + BOX MITIGATION
 // ============================================================================
 function detectFVGAndOBWithSignals(candles) {
   const fvgs = [];
@@ -1305,42 +1308,36 @@ function detectFVGAndOBWithSignals(candles) {
     const rng1 = Math.max(c1.high - c1.low, 0.0001);
 
     // Bullish FVG: c2.low > c0.high with displacement body
-    if (c2.low > c0.high && (body1 / rng1) > 0.42 && (c2.low - c0.high) > 0) {
+    if (c2.low > c0.high && (body1 / rng1) > 0.40 && (c2.low - c0.high) > 0) {
       const top = c2.low;
       const bot = c0.high;
       let endTime = lastTime;
       let mitigated = false;
       let signaled = false;
-      let sigTime = null;
-      let sigPrice = null;
 
       for (let k = i + 1; k < candles.length; k++) {
         const ck = candles[k];
-        // If candle closes below bottom of Bull FVG -> Zone broken/mitigated
         if (ck.close < bot) {
           endTime = ck.time;
           mitigated = true;
           break;
         }
-        // Pullback Entry Signal: Price dips into Bullish FVG zone and prints Bullish Rejection
+        // Pullback Entry Signal inside Bullish FVG
         if (!signaled && ck.low <= top && ck.close >= bot && (ck.close > ck.open || (ck.close - ck.low) > (ck.high - ck.low) * 0.55)) {
           signaled = true;
-          sigTime = ck.time;
-          sigPrice = ck.close;
-          const sigObj = {
+          fvgMarkers.push({
             time: ck.time,
             position: "belowBar",
             color: "#00e676",
             shape: "arrowUp",
             text: "🎯 FVG BUY"
-          };
-          fvgMarkers.push(sigObj);
-          lastFvgSig = { type: "FVG BUY 🟢", price: ck.close, zone: `${bot.toFixed(0)}-${top.toFixed(0)}` };
+          });
+          lastFvgSig = { type: "FVG BUY 🟢", price: ck.close };
         }
       }
 
       if (!mitigated || (candles.length - i) <= 90) {
-        fvgs.push({ type: "bull", startTime: c1.time, endTime, top, bot, mitigated, signaled, sigTime, sigPrice });
+        fvgs.push({ type: "bull", startTime: c1.time, endTime, top, bot, mitigated, signaled });
       }
 
       for (let b = i - 2; b >= Math.max(0, i - 5); b--) {
@@ -1352,42 +1349,36 @@ function detectFVGAndOBWithSignals(candles) {
     }
 
     // Bearish FVG: c2.high < c0.low with displacement body
-    if (c2.high < c0.low && (body1 / rng1) > 0.42 && (c0.low - c2.high) > 0) {
+    if (c2.high < c0.low && (body1 / rng1) > 0.40 && (c0.low - c2.high) > 0) {
       const top = c0.low;
       const bot = c2.high;
       let endTime = lastTime;
       let mitigated = false;
       let signaled = false;
-      let sigTime = null;
-      let sigPrice = null;
 
       for (let k = i + 1; k < candles.length; k++) {
         const ck = candles[k];
-        // If candle closes above top of Bear FVG -> Zone broken/mitigated
         if (ck.close > top) {
           endTime = ck.time;
           mitigated = true;
           break;
         }
-        // Pullback Entry Signal: Price rallies into Bearish FVG zone and prints Bearish Rejection
+        // Pullback Entry Signal inside Bearish FVG
         if (!signaled && ck.high >= bot && ck.close <= top && (ck.close < ck.open || (ck.high - ck.close) > (ck.high - ck.low) * 0.55)) {
           signaled = true;
-          sigTime = ck.time;
-          sigPrice = ck.close;
-          const sigObj = {
+          fvgMarkers.push({
             time: ck.time,
             position: "aboveBar",
             color: "#ff1744",
             shape: "arrowDown",
             text: "🎯 FVG SELL"
-          };
-          fvgMarkers.push(sigObj);
-          lastFvgSig = { type: "FVG SELL 🔴", price: ck.close, zone: `${bot.toFixed(0)}-${top.toFixed(0)}` };
+          });
+          lastFvgSig = { type: "FVG SELL 🔴", price: ck.close };
         }
       }
 
       if (!mitigated || (candles.length - i) <= 90) {
-        fvgs.push({ type: "bear", startTime: c1.time, endTime, top, bot, mitigated, signaled, sigTime, sigPrice });
+        fvgs.push({ type: "bear", startTime: c1.time, endTime, top, bot, mitigated, signaled });
       }
 
       for (let b = i - 2; b >= Math.max(0, i - 5); b--) {
@@ -1408,7 +1399,7 @@ function detectFVGAndOBWithSignals(candles) {
 }
 
 // ============================================================================
-# UPGRADED #2: VOLUME PROFILE (VPVR) — POC / VAH / VAL + BUY/SELL SIGNALS
+// UPGRADED 2: VOLUME PROFILE (VPVR) — POC / VAH / VAL + BUY/SELL SIGNALS
 // ============================================================================
 function computeProfileLevels(sliceCandles, numBins = 24) {
   let minP = Infinity, maxP = -Infinity;
@@ -1444,7 +1435,6 @@ function computeProfileLevels(sliceCandles, numBins = 24) {
     }
   }
 
-  // 70% Value Area (VAH & VAL)
   let vaVol = totBins[pocIdx];
   let valIdx = pocIdx, vahIdx = pocIdx;
   const targetVa = totalVol * 0.70;
@@ -1485,15 +1475,11 @@ function calcVPVRSignals(candles) {
     const prevC = candles[i - 1];
     const { pocPrice, vahPrice, valPrice } = prof;
 
-    // 1. VAL Support Bounce Buy: Price dips to/below VAL and closes back above VAL with green candle
     const valBounce = (c.low <= valPrice && c.close > valPrice && c.close > c.open);
-    // 2. POC Bullish Reclaim/Retest Buy: Price retests POC from above or reclaims POC strongly
-    const pocBullBounce = (prevC.close >= pocPrice && c.low <= pocPrice && c.close > pocPrice && c.close > c.open && (c.close - c.open) > ( vahPrice - valPrice ) * 0.08);
+    const pocBullBounce = (prevC.close >= pocPrice && c.low <= pocPrice && c.close > pocPrice && c.close > c.open && (c.close - c.open) > (vahPrice - valPrice) * 0.08);
 
-    // 3. VAH Resistance Reject Sell: Price pokes to/above VAH and closes back below VAH with red candle
     const vahReject = (c.high >= vahPrice && c.close < vahPrice && c.close < c.open);
-    // 4. POC Bearish Reject Sell: Price tests POC from below and rejects downward with red candle
-    const pocBearReject = (prevC.close <= pocPrice && c.high >= pocPrice && c.close < pocPrice && c.close < c.open && (c.open - c.close) > ( vahPrice - valPrice ) * 0.08);
+    const pocBearReject = (prevC.close <= pocPrice && c.high >= pocPrice && c.close < pocPrice && c.close < c.open && (c.open - c.close) > (vahPrice - valPrice) * 0.08);
 
     if (valBounce || pocBullBounce) {
       const tag = valBounce ? "🟢 VP BUY (VAL)" : "🟢 VP BUY (POC)";
@@ -1524,7 +1510,7 @@ function calcVPVRSignals(candles) {
 }
 
 // ============================================================================
-# CUSTOM HTML5 CANVAS OVERLAY RENDERER (VPVR + VAH/POC/VAL + FVG + OB)
+// CUSTOM HTML5 CANVAS OVERLAY RENDERER (VPVR + VAH/POC/VAL + FVG + OB)
 // ============================================================================
 function drawCanvasOverlays(pane) {
   const canvas = pane.canvas;
@@ -1540,9 +1526,7 @@ function drawCanvasOverlays(pane) {
 
   const ts = pane.chart.timeScale();
   const plotWidth = ts.width() > 0 ? ts.width() : (canvas.width - 65);
-  const lastCandleTime = pane.candles[pane.candles.length - 1].time;
 
-  // 1. Order Blocks (OB)
   if (pane.inds.has("ob") && pane.smcZones && pane.smcZones.obs) {
     pane.smcZones.obs.forEach(ob => {
       let x1 = ts.timeToCoordinate(ob.startTime);
@@ -1564,7 +1548,6 @@ function drawCanvasOverlays(pane) {
     });
   }
 
-  // 2. Fair Value Gaps (FVG) + Active Buy/Sell Zone Labels
   if (pane.inds.has("fvg") && pane.smcZones && pane.smcZones.fvgs) {
     pane.smcZones.fvgs.forEach(fvg => {
       let x1 = ts.timeToCoordinate(fvg.startTime);
@@ -1601,7 +1584,6 @@ function drawCanvasOverlays(pane) {
     });
   }
 
-  // 3. Volume Profile (VPVR) + VAH (Sell Zone), POC (Pivot), VAL (Buy Zone)
   if (pane.inds.has("vpvr")) {
     const logRange = ts.getVisibleLogicalRange();
     let startIdx = 0;
@@ -1616,7 +1598,6 @@ function drawCanvasOverlays(pane) {
       if (prof) {
         const { minP, step, numBins, upBins, dnBins, totBins, maxBinVol, pocIdx, pocPrice, vahPrice, valPrice } = prof;
 
-        // Shade Value Area (Between VAL and VAH)
         const yVah = pane.candleSeries.priceToCoordinate(vahPrice);
         const yVal = pane.candleSeries.priceToCoordinate(valPrice);
         if (yVah !== null && yVal !== null) {
@@ -1649,7 +1630,6 @@ function drawCanvasOverlays(pane) {
           }
         }
 
-        // Draw VAH Line (Resistance / Sell Zone)
         if (yVah !== null) {
           ctx.beginPath();
           ctx.strokeStyle = "rgba(239, 68, 68, 0.85)";
@@ -1664,7 +1644,6 @@ function drawCanvasOverlays(pane) {
           ctx.fillText(`🔴 VAH (Sell Zone): $${vahPrice.toFixed(0)}`, 8, yVah - 4);
         }
 
-        // Draw POC Line (Max Volume Magnet / Pivot)
         const yPoc = pane.candleSeries.priceToCoordinate(pocPrice);
         if (yPoc !== null) {
           ctx.beginPath();
@@ -1680,7 +1659,6 @@ function drawCanvasOverlays(pane) {
           ctx.fillText(`⚡ POC (Magnet): $${pocPrice.toFixed(0)}`, 8, yPoc - 4);
         }
 
-        // Draw VAL Line (Support / Buy Zone)
         if (yVal !== null) {
           ctx.beginPath();
           ctx.strokeStyle = "rgba(34, 197, 94, 0.85)";
@@ -1723,7 +1701,6 @@ function updatePaneIndicators(pane) {
   let allMarkers = [];
   let latestSignalSummary = [];
 
-  // [1] VPVR Buy/Sell Signals (VAL Bounce, VAH Reject, POC Reclaim)
   if (pane.inds.has("vpvr")) {
     const vpOut = calcVPVRSignals(pane.candles);
     allMarkers = allMarkers.concat(vpOut.vpMarkers);
@@ -1732,7 +1709,6 @@ function updatePaneIndicators(pane) {
     }
   }
 
-  // [2] & [3] FVG Pullback Signals & Order Blocks
   if (pane.inds.has("fvg") || pane.inds.has("ob")) {
     const smcOut = detectFVGAndOBWithSignals(pane.candles);
     pane.smcZones = smcOut;
@@ -1746,18 +1722,15 @@ function updatePaneIndicators(pane) {
     pane.smcZones = { fvgs: [], obs: [], fvgMarkers: [] };
   }
 
-  // [4] Supertrend (10, 3)
   if (pane.inds.has("st")) {
     const stOut = calcSupertrend(pane.candles, 10, 3.0);
     pane.seriesMap.st.setData(stOut.line);
     allMarkers = allMarkers.concat(stOut.markers);
   } else { pane.seriesMap.st.setData([]); }
 
-  // [5] Intraday VWAP
   if (pane.inds.has("vwap")) { pane.seriesMap.vwap.setData(calcVWAP(pane.candles)); }
   else { pane.seriesMap.vwap.setData([]); }
 
-  // [6] EMA Ribbon
   if (pane.inds.has("ema")) {
     pane.seriesMap.ema9.setData(calcEMA(pane.candles, 9));
     pane.seriesMap.ema21.setData(calcEMA(pane.candles, 21));
@@ -1768,7 +1741,6 @@ function updatePaneIndicators(pane) {
     pane.seriesMap.ema50.setData([]); pane.seriesMap.ema200.setData([]);
   }
 
-  // [7] Bollinger Bands
   if (pane.inds.has("bb")) {
     const bb = calcBollinger(pane.candles, 20, 2.0);
     pane.seriesMap.bbBasis.setData(bb.basis);
@@ -1778,7 +1750,6 @@ function updatePaneIndicators(pane) {
     pane.seriesMap.bbBasis.setData([]); pane.seriesMap.bbUpper.setData([]); pane.seriesMap.bbLower.setData([]);
   }
 
-  // [8] CPR
   if (pane.inds.has("cpr")) {
     const cpr = calcCPR(pane.candles);
     pane.seriesMap.cprP.setData(cpr.pArr);
@@ -1788,25 +1759,21 @@ function updatePaneIndicators(pane) {
     pane.seriesMap.cprP.setData([]); pane.seriesMap.cprTC.setData([]); pane.seriesMap.cprBC.setData([]);
   }
 
-  // [9] Market Structure
   if (pane.inds.has("ms")) {
     allMarkers = allMarkers.concat(calcMarketStructure(pane.candles));
   }
 
-  // Sort markers chronologically & deduplicate same-timestamp collisions
   allMarkers.sort((a, b) => a.time - b.time);
   pane.candleSeries.setMarkers(allMarkers);
 
-  // Update Header Signal Pill
   if (latestSignalSummary.length > 0) {
-    pane.sigPillEl.textContent = "Last: " + latestSignalSummary.join(" | ");
+    pane.sigPillEl.textContent = latestSignalSummary[latestSignalSummary.length - 1];
     pane.sigPillEl.style.color = latestSignalSummary[latestSignalSummary.length - 1].includes("BUY") ? "#4ade80" : "#f87171";
   } else {
     pane.sigPillEl.textContent = "Signals: Active";
     pane.sigPillEl.style.color = "#94a3b8";
   }
 
-  // [10] RSI (14)
   if (hasRsi) {
     pane.seriesMap.rsi.setData(calcRSI(pane.candles, 14));
     if (!pane.rsiLinesCreated) {
@@ -1899,7 +1866,7 @@ function buildGrid(count) {
 
     const sigPill = document.createElement("span");
     sigPill.className = "sig-pill";
-    sigPill.textContent = "Scanning VPVR/FVG...";
+    sigPill.textContent = "Scanning...";
 
     leftGroup.appendChild(btcBadge);
     leftGroup.appendChild(tfSel);
@@ -2106,7 +2073,7 @@ setInterval(() => {
 }, 30000);
 
 loadSavedConfigs();
-const savedCount = parseInt(localStorage.getItem("btc_mc_count_v3") || "4", 10);
+const savedCount = parseInt(localStorage.getItem("btc_mc_count_v4") || "4", 10);
 const validCount = [1, 2, 4, 6, 8].includes(savedCount) ? savedCount : 4;
 const countSel = document.getElementById("count-select");
 countSel.value = String(validCount);
