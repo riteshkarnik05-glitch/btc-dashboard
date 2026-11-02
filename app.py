@@ -53,6 +53,22 @@ button[data-baseweb="tab"][aria-selected="true"] * {
     color: #38bdf8 !important;
     -webkit-text-fill-color: #38bdf8 !important;
 }
+
+/* रीसेट बटन की कस्टम स्टाइलिंग */
+div.stButton > button {
+    background-color: #1e293b !important;
+    color: #facc15 !important;
+    border: 1px solid #eab308 !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    font-size: 12px !important;
+    padding: 6px 12px !important;
+    width: 100% !important;
+}
+div.stButton > button:hover {
+    background-color: #eab308 !important;
+    color: #0f172a !important;
+}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
@@ -618,7 +634,7 @@ def process_single_closed_bar(eng, kline):
     eng["bar_count"] += 1
 
 # ============================================================================
-# STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR (WITH 3-MINUTE PERMANENT AUTO-LOCK)
+# STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR + PEAK SPREAD HIGH-WATER MARK
 # ============================================================================
 def fetch_l2_orderbook_and_spike_radar(eng):
     bids = []
@@ -644,6 +660,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         return
 
     now_ts = time.time()
+    ist_t = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
     best_bid, best_bid_sz = bids[0][0], bids[0][1]
     best_ask, best_ask_sz = asks[0][0], asks[0][1]
     mid_price = (best_bid + best_ask) / 2.0
@@ -741,6 +758,15 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         "ask_wall_sz": max_ask_wall[1]
     }
 
+    # Evaluate directional setup on current tick
+    bull_pull_ok = (ask_jump >= MIN_LIQ_PULL_PTS) and (ask_jump > bid_drop * 1.3)
+    bull_book_ok = (bid_pct >= MIN_BOOK_IMBALANCE) or (bid_pct >= 58.0 and bid_vol_5 >= ask_vol_5 * 1.8 and micro_skew > 0)
+    bull_flow_ok = (eng["buy_dom_pct"] >= 50.0)
+
+    bear_pull_ok = (bid_drop >= MIN_LIQ_PULL_PTS) and (bid_drop > ask_jump * 1.3)
+    bear_book_ok = (ask_pct >= MIN_BOOK_IMBALANCE) or (ask_pct >= 58.0 and ask_vol_5 >= bid_vol_5 * 1.8 and micro_skew < 0)
+    bear_flow_ok = (eng["sell_dom_pct"] >= 50.0)
+
     # STEP 2: STRICT PRE-SPIKE DIRECTION TRACING (ONLY WHEN SPREAD >= $8.0)
     time_since_last = now_ts - eng["last_spike_alert_ts"]
     spike_dir_text = None
@@ -748,14 +774,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     col = "#38bdf8"
 
     if spread_gate_open and len(hist) >= 6 and time_since_last >= SIGNAL_COOLDOWN_SEC:
-        bull_pull_ok = (ask_jump >= MIN_LIQ_PULL_PTS) and (ask_jump > bid_drop * 1.3)
-        bull_book_ok = (bid_pct >= MIN_BOOK_IMBALANCE) or (bid_pct >= 58.0 and bid_vol_5 >= ask_vol_5 * 1.8 and micro_skew > 0)
-        bull_flow_ok = (eng["buy_dom_pct"] >= 50.0)
-
-        bear_pull_ok = (bid_drop >= MIN_LIQ_PULL_PTS) and (bid_drop > ask_jump * 1.3)
-        bear_book_ok = (ask_pct >= MIN_BOOK_IMBALANCE) or (ask_pct >= 58.0 and ask_vol_5 >= bid_vol_5 * 1.8 and micro_skew < 0)
-        bear_flow_ok = (eng["sell_dom_pct"] >= 50.0)
-
         if bull_pull_ok and bull_book_ok and bull_flow_ok:
             spike_dir_text = f"🚀 PRE-SPIKE BUY (Spread: ${spread:.1f} | Ask Pull: +${ask_jump:.1f} | {bid_pct:.0f}% Bid)"
             dir_code = 1
@@ -765,8 +783,46 @@ def fetch_l2_orderbook_and_spike_radar(eng):
             dir_code = -1
             col = "#ef4444"
 
+    # ========================================================================
+    # PEAK SPREAD HIGH-WATER MARK TRACKER (UPDATES ONLY WHEN NEW HIGHER SPREAD HITS)
+    # ========================================================================
+    eng.setdefault("max_spread_record", {
+        "spread": 0.0,
+        "time": "--:--:--",
+        "price": 0.0,
+        "signal": "अभी कोई रिकॉर्ड नहीं",
+        "color": "#94a3b8"
+    })
+
+    if spread > eng["max_spread_record"]["spread"]:
+        if spike_dir_text:
+            peak_sig = spike_dir_text
+            peak_col = col
+        elif spread_gate_open and bull_pull_ok and bull_book_ok:
+            peak_sig = f"🚀 PRE-SPIKE BUY SETUP (Ask Pull +${ask_jump:.1f} | {bid_pct:.0f}% Bid)"
+            peak_col = "#22c55e"
+        elif spread_gate_open and bear_pull_ok and bear_book_ok:
+            peak_sig = f"🔻 PRE-SPIKE SELL SETUP (Bid Drop -${bid_drop:.1f} | {ask_pct:.0f}% Ask)"
+            peak_col = "#ef4444"
+        elif bid_pct >= 58.0 or ask_jump > bid_drop:
+            peak_sig = f"🟢 BUY Bias ({bid_pct:.0f}% Bid / {ask_pct:.0f}% Ask | Pull +${ask_jump:.1f})"
+            peak_col = "#4ade80"
+        elif ask_pct >= 58.0 or bid_drop > ask_jump:
+            peak_sig = f"🔴 SELL Bias ({ask_pct:.0f}% Ask / {bid_pct:.0f}% Bid | Drop -${bid_drop:.1f})"
+            peak_col = "#f87171"
+        else:
+            peak_sig = f"⚖️ Neutral Book (Bid {bid_pct:.0f}% / Ask {ask_pct:.0f}%)"
+            peak_col = "#cbd5e1"
+
+        eng["max_spread_record"] = {
+            "spread": spread,
+            "time": ist_t,
+            "price": mid_price,
+            "signal": peak_sig,
+            "color": peak_col
+        }
+
     if spike_dir_text:
-        ist_t = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
         alert_id = int(now_ts * 1000)
         eng["spike_history"].insert(0, {
             "time": ist_t,
@@ -851,7 +907,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_5000_spread8_audio_engine():
+def get_hl_5000_spread8_peak_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -939,6 +995,13 @@ def get_hl_5000_spread8_audio_engine():
             "ask_wall_px": 0.0,
             "ask_wall_sz": 0.0
         },
+        "max_spread_record": {
+            "spread": 0.0,
+            "time": "--:--:--",
+            "price": 0.0,
+            "signal": "अभी कोई रिकॉर्ड नहीं",
+            "color": "#94a3b8"
+        },
         "l2_tick_window": [],
         "last_spike_alert_ts": 0,
         "last_spike_alert_id": 0,
@@ -952,7 +1015,7 @@ def get_hl_5000_spread8_audio_engine():
     thread.start()
     return eng
 
-eng = get_hl_5000_spread8_audio_engine()
+eng = get_hl_5000_spread8_peak_engine()
 
 # ============================================================================
 # TWO TABS: TAB 1 = AI-RENKO PRO + AUDIO | TAB 2 = BTC MULTI-CHART PRO
@@ -963,8 +1026,10 @@ tab_renko, tab_charts = st.tabs([
 ])
 
 with tab_renko:
-    # Persistent Web Audio API Synthesizer & Auto-Unlock Bar (Zero Blink)
-    sound_bar_html = """<!DOCTYPE html>
+    top_col1, top_col2 = st.columns([0.74, 0.26])
+    with top_col1:
+        # Persistent Web Audio API Synthesizer & Auto-Unlock Bar (Zero Blink)
+        sound_bar_html = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -994,7 +1059,7 @@ with tab_renko:
     <span id="aud-status">🔔 $8.0+ Pre-Spike Sound Alert: स्टैंडबाय (एक बार 'टेस्ट/अनलॉक' बटन दबाएं)</span>
   </div>
   <div class="aud-btns">
-    <button id="unlock-btn" onclick="unlockAndTestAudio()">🔊 साउंड अनलॉक / टेस्ट करें (Test Beep)</button>
+    <button id="unlock-btn" onclick="unlockAndTestAudio()">🔊 साउंड अनलॉक / टेस्ट करें</button>
     <button id="mute-btn" onclick="toggleMute()">🔈 Mute: OFF</button>
   </div>
 </div>
@@ -1040,8 +1105,8 @@ function unlockAndTestAudio() {
   playSpikeChime(1);
   const btn = document.getElementById("unlock-btn");
   btn.className = "unlocked";
-  btn.textContent = "✅ साउंड एक्टिव है (Test Beep)";
-  document.getElementById("aud-status").textContent = "🔊 $8.0+ Pre-Spike Audio Alert: 100% ACTIVE (Buy: High Chime | Sell: Low Alarm)";
+  btn.textContent = "✅ साउंड एक्टिव है";
+  document.getElementById("aud-status").textContent = "🔊 $8.0+ Pre-Spike Audio Alert: 100% ACTIVE";
   document.getElementById("aud-status").style.color = "#4ade80";
 }
 
@@ -1076,7 +1141,18 @@ setInterval(() => {
 </script>
 </body>
 </html>"""
-    components.html(sound_bar_html, height=46, scrolling=False)
+        components.html(sound_bar_html, height=44, scrolling=False)
+
+    with top_col2:
+        if st.button("🔄 सर्वोच्च स्प्रेड रीसेट करें (Reset Max Spread)"):
+            eng["max_spread_record"] = {
+                "spread": 0.0,
+                "time": "--:--:--",
+                "price": 0.0,
+                "signal": "रीसेट किया गया (नए हाई की प्रतीक्षा...)",
+                "color": "#94a3b8"
+            }
+
     terminal = st.empty()
 
 with tab_charts:
@@ -2267,7 +2343,7 @@ countSel.addEventListener("change", () => {
     components.html(multi_chart_html, height=820, scrolling=False)
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (5000-BAR FIXED GRID + $8 AUDIO RADAR)
+# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (5000-BAR FIXED GRID + PEAK SPREAD)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
@@ -2313,7 +2389,20 @@ while True:
     alert_id = eng["last_spike_alert_id"]
     alert_dir = eng["last_spike_dir"]
 
-    # Embed HTML5 Auto-Play WAV Tag during the first 4 seconds of a new $8.0+ Pre-Spike Alert
+    # Peak Spread Record Data
+    max_rec = eng.get("max_spread_record", {
+        "spread": 0.0,
+        "time": "--:--:--",
+        "price": 0.0,
+        "signal": "अभी कोई रिकॉर्ड नहीं",
+        "color": "#94a3b8"
+    })
+    peak_sp_val = max_rec["spread"]
+    peak_sp_time = max_rec["time"]
+    peak_sp_price = max_rec["price"]
+    peak_sp_sig = max_rec["signal"]
+    peak_sp_col = max_rec["color"]
+
     audio_autoplay_html = ""
     if time.time() - eng["last_spike_alert_ts"] <= 4.0 and alert_id > 0:
         wav_b64 = BUY_BEEP_B64 if alert_dir == 1 else SELL_BEEP_B64
@@ -2444,12 +2533,24 @@ while True:
 
 {trade_box_html}
 
-<!-- STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR BOX (WITH SOUND ALERT & 3-MIN LOCK) -->
+<!-- STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR BOX (WITH PEAK SPREAD TRACKER & 3-MIN LOCK) -->
 <div style="background:#1e293b; border:2px solid #38bdf8; border-radius:12px; padding:14px; margin-bottom:14px; box-shadow:0 4px 15px rgba(56,189,248,0.15);">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
 <span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR (🔊 AUDIO + 3M LOCK)</span>
 <span style="font-size:12px; color:{gate_col}; font-weight:800;">{gate_status_txt}</span>
 </div>
+
+<!-- 🏆 PEAK SPREAD HIGH-WATER MARK BANNER -->
+<div style="background:linear-gradient(90deg, #0f172a, #1e1b4b); border:1.5px solid #eab308; border-radius:8px; padding:8px 11px; margin-bottom:8px;">
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:3px;">
+<span style="font-size:12px; font-weight:800; color:#facc15;">🏆 अब तक का सर्वोच्च स्प्रेड (Max Spread): <span style="font-size:15px; color:#ffffff;">${peak_sp_val:.1f}</span></span>
+<span style="font-size:11.5px; color:#cbd5e1;">🕒 समय: <b style="color:#f8fafc;">{peak_sp_time}</b> | प्राइस: <b style="color:#38bdf8;">${peak_sp_price:,.1f}</b></span>
+</div>
+<div style="font-size:11.5px; color:#94a3b8;">
+उस समय का सिग्नल / झुकाव: <b style="color:{peak_sp_col};">{peak_sp_sig}</b>
+</div>
+</div>
+
 <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:6px; background:#0b1324; padding:7px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
 <span>📏 Live Spread: <b style="color:#facc15;">${spread:.1f}</b> (Norm: ${normal_spread:.1f})</span>
 <span>⬆️ Ask Pull (3s): <b style="color:#4ade80;">+${ask_jump:.1f}</b> (Need ≥$4)</span>
