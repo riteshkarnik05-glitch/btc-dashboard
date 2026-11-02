@@ -5,6 +5,10 @@ import threading
 import json
 from datetime import datetime, timedelta
 import math
+import io
+import wave
+import struct
+import base64
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="AI-Renko Pro & BTC Multi-Chart Terminal", layout="wide")
@@ -52,6 +56,31 @@ button[data-baseweb="tab"][aria-selected="true"] * {
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
+# IN-MEMORY WAV BEEP GENERATOR (FOR ZERO-DEPENDENCY AUTOPLAY AUDIO)
+# ============================================================================
+def build_beep_wav_b64(freqs, tone_ms=140, pause_ms=45):
+    sample_rate = 22050
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        frames = bytearray()
+        for f in freqs:
+            n_tone = int(sample_rate * (tone_ms / 1000.0))
+            for i in range(n_tone):
+                env = min(1.0, i / 150.0, (n_tone - i) / 150.0)
+                val = int(26000.0 * env * math.sin(2.0 * math.pi * f * (i / float(sample_rate))))
+                frames.extend(struct.pack("<h", val))
+            n_pause = int(sample_rate * (pause_ms / 1000.0))
+            frames.extend(b"\x00\x00" * n_pause)
+        wf.writeframes(bytes(frames))
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])   # Ascending Bullish Siren
+SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])      # Descending Bearish Alarm
+
+# ============================================================================
 # 10-QUANTITY & PINE SCRIPT PARAMETERS
 # ============================================================================
 TOTAL_QTY            = 10
@@ -85,9 +114,12 @@ ANTI_WICK_SL         = True
 BROK_PER_QTY         = 1.5
 MINTICK              = 0.1
 
-# PRE-SPIKE SPREAD RADAR PARAMETERS
-MIN_SPREAD_TRIGGER   = 3.0    # न्यूनतम स्प्रेड ($) जिसके नीचे कोई सिग्नल नहीं आएगा
-SPREAD_MULT_TRIGGER  = 3.0    # सामान्य स्प्रेड से कितने गुना चौड़ा होने पर गेट खुलेगा
+# STRICT $8.0 PRE-SPIKE SPREAD RADAR PARAMETERS
+MIN_SPREAD_TRIGGER   = 8.0    # न्यूनतम स्प्रेड ($8.0) जिसके नीचे कोई सिग्नल नहीं आएगा
+SPREAD_MULT_TRIGGER  = 7.0    # सामान्य स्प्रेड से कम से कम 7 गुना चौड़ा होने पर गेट खुलेगा
+MIN_LIQ_PULL_PTS     = 4.0    # स्प्रेड खुलते समय कम से कम $4.0 का Ask Pull या Bid Drop होना चाहिए
+MIN_BOOK_IMBALANCE   = 64.0   # ऑर्डर बुक में एक तरफ कम से कम 64% का दबाव होना चाहिए
+SIGNAL_COOLDOWN_SEC  = 180    # दो स्पाइक सिग्नल्स के बीच 3 मिनट (180 सेकंड) का लॉक
 EVAL_LOCK_SECONDS    = 180    # 3 मिनट (180 सेकंड) बाद क्रॉस-चेक पॉइंट्स हमेशा के लिए लॉक हो जाएंगे
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -146,11 +178,6 @@ def fetch_hl_klines(interval="1m", num_bars=20):
     return None
 
 def fetch_hl_5000_fixed_anchor():
-    """
-    Fetches ~5,000 1-minute candles (3.5 Days) anchored strictly to 00:00 UTC
-    (05:30 AM IST) 3 days ago, split across 2 batch requests so Hyperliquid
-    never truncates the starting anchor bar regardless of time of day.
-    """
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
     anchor_start_ms = (today_00_utc_sec - (3 * 86400)) * 1000
@@ -330,7 +357,6 @@ def process_single_closed_bar(eng, kline):
     brick_step_dn = False
 
     if idx == 0:
-        # Fixed Price Grid Rounding: snaps first brick to exact multiple of box_size
         grid_top = round(c / box_size) * box_size
         eng["brick_top"] = grid_top
         eng["brick_bot"] = grid_top - box_size
@@ -592,7 +618,7 @@ def process_single_closed_bar(eng, kline):
     eng["bar_count"] += 1
 
 # ============================================================================
-# 3-STEP SPREAD-FIRST PRE-SPIKE RADAR (WITH 3-MINUTE PERMANENT AUTO-LOCK)
+# STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR (WITH 3-MINUTE PERMANENT AUTO-LOCK)
 # ============================================================================
 def fetch_l2_orderbook_and_spike_radar(eng):
     bids = []
@@ -655,14 +681,14 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     hist = eng["l2_tick_window"]
     if len(hist) >= 5:
         sorted_sp = sorted(x["spread"] for x in hist)
-        calm_slice = sorted_sp[:max(3, int(len(sorted_sp) * 0.75))]
+        calm_slice = sorted_sp[:max(3, int(len(sorted_sp) * 0.70))]
         normal_spread = sum(calm_slice) / float(len(calm_slice))
     else:
         normal_spread = 1.0
 
-    if len(hist) >= 2:
-        ref_ask = min(hist[-1]["ask"], hist[-2]["ask"])
-        ref_bid = max(hist[-1]["bid"], hist[-2]["bid"])
+    if len(hist) >= 3:
+        ref_ask = min(x["ask"] for x in hist[-3:])
+        ref_bid = max(x["bid"] for x in hist[-3:])
         ask_jump = max(0.0, best_ask - ref_ask)
         bid_drop = max(0.0, ref_bid - best_bid)
     else:
@@ -683,7 +709,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     if len(hist) > 30:
         hist.pop(0)
 
-    # STEP 1: HARD SPREAD GATEKEEPER
+    # STEP 1: STRICT $8.0 HARD SPREAD GATEKEEPER
     req_spread = max(MIN_SPREAD_TRIGGER, normal_spread * SPREAD_MULT_TRIGGER)
     spread_gate_open = (spread >= req_spread)
 
@@ -715,29 +741,33 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         "ask_wall_sz": max_ask_wall[1]
     }
 
-    # STEP 2: PRE-SPIKE DIRECTION TRACING (ONLY WHEN SPREAD GATE IS OPEN)
+    # STEP 2: STRICT PRE-SPIKE DIRECTION TRACING (ONLY WHEN SPREAD >= $8.0)
     time_since_last = now_ts - eng["last_spike_alert_ts"]
     spike_dir_text = None
     dir_code = 0
     col = "#38bdf8"
 
-    if spread_gate_open and len(hist) >= 5:
-        bull_pull = (ask_jump > bid_drop) or (bid_vol_5 >= ask_vol_5 * 1.35)
-        bear_pull = (bid_drop > ask_jump) or (ask_vol_5 >= bid_vol_5 * 1.35)
+    if spread_gate_open and len(hist) >= 6 and time_since_last >= SIGNAL_COOLDOWN_SEC:
+        bull_pull_ok = (ask_jump >= MIN_LIQ_PULL_PTS) and (ask_jump > bid_drop * 1.3)
+        bull_book_ok = (bid_pct >= MIN_BOOK_IMBALANCE) or (bid_pct >= 58.0 and bid_vol_5 >= ask_vol_5 * 1.8 and micro_skew > 0)
+        bull_flow_ok = (eng["buy_dom_pct"] >= 50.0)
 
-        if bull_pull and (bid_pct >= 58.0 or (bid_pct >= 53.0 and micro_skew > 0)):
-            if time_since_last >= 60:
-                spike_dir_text = f"🚀 PRE-SPIKE BUY (Spread: ${spread:.1f} | Ask Pulled +${ask_jump:.1f} | {bid_pct:.0f}% Bid)"
-                dir_code = 1
-                col = "#22c55e"
-        elif bear_pull and (ask_pct >= 58.0 or (ask_pct >= 53.0 and micro_skew < 0)):
-            if time_since_last >= 60:
-                spike_dir_text = f"🔻 PRE-SPIKE SELL (Spread: ${spread:.1f} | Bid Dropped -${bid_drop:.1f} | {ask_pct:.0f}% Ask)"
-                dir_code = -1
-                col = "#ef4444"
+        bear_pull_ok = (bid_drop >= MIN_LIQ_PULL_PTS) and (bid_drop > ask_jump * 1.3)
+        bear_book_ok = (ask_pct >= MIN_BOOK_IMBALANCE) or (ask_pct >= 58.0 and ask_vol_5 >= bid_vol_5 * 1.8 and micro_skew < 0)
+        bear_flow_ok = (eng["sell_dom_pct"] >= 50.0)
+
+        if bull_pull_ok and bull_book_ok and bull_flow_ok:
+            spike_dir_text = f"🚀 PRE-SPIKE BUY (Spread: ${spread:.1f} | Ask Pull: +${ask_jump:.1f} | {bid_pct:.0f}% Bid)"
+            dir_code = 1
+            col = "#22c55e"
+        elif bear_pull_ok and bear_book_ok and bear_flow_ok:
+            spike_dir_text = f"🔻 PRE-SPIKE SELL (Spread: ${spread:.1f} | Bid Drop: -${bid_drop:.1f} | {ask_pct:.0f}% Ask)"
+            dir_code = -1
+            col = "#ef4444"
 
     if spike_dir_text:
         ist_t = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
+        alert_id = int(now_ts * 1000)
         eng["spike_history"].insert(0, {
             "time": ist_t,
             "sig_ts": now_ts,
@@ -753,22 +783,26 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         })
         eng["spike_history"] = eng["spike_history"][:20]
         eng["last_spike_alert_ts"] = now_ts
+        eng["last_spike_alert_id"] = alert_id
         eng["last_spike_dir"] = dir_code
-        eng["last_spike_status"] = f"⚡ {ist_t}: {spike_dir_text} @ ${mid_price:,.1f}"
+        eng["last_spike_status"] = f"🔊⚡ {ist_t}: {spike_dir_text} @ ${mid_price:,.1f}"
         eng["last_spike_color"] = col
     elif now_ts - eng["last_spike_alert_ts"] > 15:
         if spread_gate_open:
-            eng["last_spike_status"] = f"⚠️ स्प्रेड चौड़ा हुआ (${spread:.1f})! ऑर्डर बुक दिशा की पुष्टि हो रही है (Bid {bid_pct:.0f}% / Ask {ask_pct:.0f}%)"
+            eng["last_spike_status"] = (
+                f"⚠️ स्प्रेड चौड़ा हुआ (${spread:.1f} ≥ ${req_spread:.1f})! "
+                f"एकतरफा ऑर्डर बुक (≥{MIN_BOOK_IMBALANCE:.0f}%) और Pull (≥${MIN_LIQ_PULL_PTS:.0f}) की जांच हो रही है..."
+            )
             eng["last_spike_color"] = "#b45309"
         else:
             eng["last_spike_status"] = (
-                f"🛡️ स्प्रेड सामान्य है (${spread:.1f}) — सिग्नल गेट बंद है "
-                f"(जब स्प्रेड ≥ ${req_spread:.1f} होगा तभी प्री-स्पाइक सिग्नल बनेगा)"
+                f"🛡️ स्प्रेड सामान्य है (${spread:.1f}) — सिग्नल गेट लॉक है "
+                f"(केवल Spread ≥ ${req_spread:.1f} और {MIN_BOOK_IMBALANCE:.0f}%+ इम्बैलेंस पर ही साउंड अलर्ट आएगा)"
             )
             eng["last_spike_color"] = "#0f172a"
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (5000 CANDLES FIXED-GRID LOCK + L2 SPREAD RADAR)
+# 24x7 BACKGROUND WORKER (5000 CANDLES FIXED-GRID LOCK + $8.0 SPREAD RADAR)
 # ============================================================================
 def background_worker(eng):
     last_1d_fetch = 0
@@ -778,7 +812,6 @@ def background_worker(eng):
         try:
             now_ts = time.time()
 
-            # 1. Always ensure Daily ATR-5 (macro_range) is fetched BEFORE initializing 5,000 Renko bars
             if now_ts - last_1d_fetch > 300 or eng["macro_range"] is None:
                 klines_1d = fetch_hl_klines("1d", 20)
                 if klines_1d:
@@ -787,7 +820,6 @@ def background_worker(eng):
                         eng["macro_range"] = d_val
                         last_1d_fetch = now_ts
 
-            # 2. Initialize 3.5-Day (~5,000 Candles) Fixed-Anchor Renko History
             if not eng["initialized"] and eng["macro_range"] is not None:
                 klines_init = fetch_hl_5000_fixed_anchor()
                 if klines_init and len(klines_init) > 100:
@@ -797,12 +829,10 @@ def background_worker(eng):
                     eng["initialized"] = True
                     last_kline_fetch = now_ts
 
-            # 3. Every 1 second: Fetch Hyperliquid L2 Order Book & Spread-First Radar
             fetch_l2_orderbook_and_spike_radar(eng)
             if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
                 eng["price"] = eng["order_book"]["mid_price"]
 
-            # 4. Every 2 seconds: Append newly closed 1-minute candles
             if eng["initialized"] and (now_ts - last_kline_fetch >= 2.0):
                 klines_live = fetch_hl_klines("1m", 8)
                 if klines_live and len(klines_live) >= 2:
@@ -821,7 +851,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_5000_fixed_grid_engine():
+def get_hl_5000_spread8_audio_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -895,9 +925,9 @@ def get_hl_5000_fixed_grid_engine():
             "micro_price": 0.0,
             "spread": 0.0,
             "normal_spread": 1.0,
-            "req_spread": 3.0,
+            "req_spread": 8.0,
             "spread_gate_open": False,
-            "gate_status_txt": "🔒 GATE LOCKED",
+            "gate_status_txt": "🔒 GATE LOCKED (Trigger ≥ $8.0)",
             "ask_jump": 0.0,
             "bid_drop": 0.0,
             "bid_vol": 0.0,
@@ -911,8 +941,9 @@ def get_hl_5000_fixed_grid_engine():
         },
         "l2_tick_window": [],
         "last_spike_alert_ts": 0,
+        "last_spike_alert_id": 0,
         "last_spike_dir": 0,
-        "last_spike_status": "📡 Spread-First Pre-Spike Radar सिंक हो रहा है...",
+        "last_spike_status": "📡 $8.0 Spread-First Pre-Spike Radar सिंक हो रहा है...",
         "last_spike_color": "#0f172a",
         "spike_history": [],
         "error": None
@@ -921,17 +952,131 @@ def get_hl_5000_fixed_grid_engine():
     thread.start()
     return eng
 
-eng = get_hl_5000_fixed_grid_engine()
+eng = get_hl_5000_spread8_audio_engine()
 
 # ============================================================================
-# TWO TABS: TAB 1 = AI-RENKO PRO | TAB 2 = BTC MULTI-CHART PRO (VPVR + FVG SIGNALS)
+# TWO TABS: TAB 1 = AI-RENKO PRO + AUDIO | TAB 2 = BTC MULTI-CHART PRO
 # ============================================================================
 tab_renko, tab_charts = st.tabs([
-    "⚡ AI-Renko Pro Terminal (5000-Bar Fixed Grid • 10-Qty)",
+    "⚡ AI-Renko Pro Terminal (5000-Bar Fixed Grid • $8 Spread Audio Radar)",
     "📊 BTC Multi-Chart Pro (VPVR & FVG Live Signals)"
 ])
 
 with tab_renko:
+    # Persistent Web Audio API Synthesizer & Auto-Unlock Bar (Zero Blink)
+    sound_bar_html = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: transparent; font-family: sans-serif; overflow: hidden; }
+  .aud-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #111827; border: 1px solid #334155; border-radius: 10px;
+    padding: 6px 14px; color: #f8fafc; font-size: 12px;
+  }
+  .aud-left { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #38bdf8; }
+  .aud-btns { display: flex; align-items: center; gap: 8px; }
+  button {
+    background: #0284c7; color: #ffffff; border: 1px solid #38bdf8;
+    border-radius: 6px; padding: 5px 11px; font-size: 11.5px; font-weight: 700;
+    cursor: pointer; transition: 0.15s;
+  }
+  button:hover { background: #0369a1; }
+  button.unlocked { background: #15803d; border-color: #4ade80; }
+  button.muted { background: #7f1d1d; border-color: #f87171; }
+</style>
+</head>
+<body>
+<div class="aud-bar">
+  <div class="aud-left">
+    <span id="aud-status">🔔 $8.0+ Pre-Spike Sound Alert: स्टैंडबाय (एक बार 'टेस्ट/अनलॉक' बटन दबाएं)</span>
+  </div>
+  <div class="aud-btns">
+    <button id="unlock-btn" onclick="unlockAndTestAudio()">🔊 साउंड अनलॉक / टेस्ट करें (Test Beep)</button>
+    <button id="mute-btn" onclick="toggleMute()">🔈 Mute: OFF</button>
+  </div>
+</div>
+<script>
+let audioCtx = null;
+let isMuted = false;
+let lastPlayedAlertId = "0";
+
+function ensureAudioCtx() {
+  if (!audioCtx) {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AudioContext();
+  }
+  if (audioCtx.state === "suspended") {
+    audioCtx.resume();
+  }
+}
+
+function playSpikeChime(dirCode) {
+  if (isMuted) return;
+  try {
+    ensureAudioCtx();
+    const notes = dirCode === 1 ? [880, 1175, 1568, 1568] : [987, 740, 523, 523];
+    let startTime = audioCtx.currentTime;
+    notes.forEach((freq, idx) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = dirCode === 1 ? "triangle" : "sawtooth";
+      osc.frequency.setValueAtTime(freq, startTime + idx * 0.17);
+      gain.gain.setValueAtTime(0.001, startTime + idx * 0.17);
+      gain.gain.exponentialRampToValueAtTime(0.35, startTime + idx * 0.17 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + idx * 0.17 + 0.14);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(startTime + idx * 0.17);
+      osc.stop(startTime + idx * 0.17 + 0.15);
+    });
+  } catch (e) {}
+}
+
+function unlockAndTestAudio() {
+  ensureAudioCtx();
+  playSpikeChime(1);
+  const btn = document.getElementById("unlock-btn");
+  btn.className = "unlocked";
+  btn.textContent = "✅ साउंड एक्टिव है (Test Beep)";
+  document.getElementById("aud-status").textContent = "🔊 $8.0+ Pre-Spike Audio Alert: 100% ACTIVE (Buy: High Chime | Sell: Low Alarm)";
+  document.getElementById("aud-status").style.color = "#4ade80";
+}
+
+function toggleMute() {
+  isMuted = !isMuted;
+  const mBtn = document.getElementById("mute-btn");
+  if (isMuted) {
+    mBtn.className = "muted";
+    mBtn.textContent = "🔇 Muted: ON";
+  } else {
+    mBtn.className = "";
+    mBtn.textContent = "🔈 Mute: OFF";
+    playSpikeChime(1);
+  }
+}
+
+setInterval(() => {
+  try {
+    const hook = window.parent.document.getElementById("hl-spike-audio-hook");
+    if (hook) {
+      const alertId = hook.getAttribute("data-alert-id") || "0";
+      const alertDir = parseInt(hook.getAttribute("data-alert-dir") || "1", 10);
+      if (alertId !== "0" && alertId !== lastPlayedAlertId) {
+        if (lastPlayedAlertId !== "0") {
+          playSpikeChime(alertDir);
+        }
+        lastPlayedAlertId = alertId;
+      }
+    }
+  } catch (e) {}
+}, 500);
+</script>
+</body>
+</html>"""
+    components.html(sound_bar_html, height=46, scrolling=False)
     terminal = st.empty()
 
 with tab_charts:
@@ -1332,9 +1477,6 @@ function calcRSI(candles, period = 14) {
   return res;
 }
 
-// ============================================================================
-// UPGRADED 1: FVG SMART-MONEY PULLBACK & REJECTION SIGNALS + BOX MITIGATION
-// ============================================================================
 function detectFVGAndOBWithSignals(candles) {
   const fvgs = [];
   const obs = [];
@@ -1438,9 +1580,6 @@ function detectFVGAndOBWithSignals(candles) {
   };
 }
 
-// ============================================================================
-// UPGRADED 2: VOLUME PROFILE (VPVR) — POC / VAH / VAL + BUY/SELL SIGNALS
-// ============================================================================
 function computeProfileLevels(sliceCandles, numBins = 24) {
   let minP = Infinity, maxP = -Infinity;
   sliceCandles.forEach(c => {
@@ -1549,9 +1688,6 @@ function calcVPVRSignals(candles) {
   return { vpMarkers, lastVpSig };
 }
 
-// ============================================================================
-// CUSTOM HTML5 CANVAS OVERLAY RENDERER (VPVR + VAH/POC/VAL + FVG + OB)
-// ============================================================================
 function drawCanvasOverlays(pane) {
   const canvas = pane.canvas;
   if (!canvas || !pane.chartBox) return;
@@ -2131,11 +2267,11 @@ countSel.addEventListener("change", () => {
     components.html(multi_chart_html, height=820, scrolling=False)
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (5000-BAR FIXED GRID + SPREAD RADAR)
+# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (5000-BAR FIXED GRID + $8 AUDIO RADAR)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: पिछले 3.5 दिन (~5000 कैंडल्स) का Fixed-Grid डेटा और Spread-First Radar सिंक हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: पिछले 3.5 दिन (~5000 कैंडल्स) का Fixed-Grid डेटा और $8.0 Spread Audio Radar सिंक हो रहा है...")
         time.sleep(1)
         continue
 
@@ -2174,6 +2310,14 @@ while True:
     ask_wall_sz = ob["ask_wall_sz"]
     spike_status = eng["last_spike_status"]
     spike_box_bg = eng["last_spike_color"]
+    alert_id = eng["last_spike_alert_id"]
+    alert_dir = eng["last_spike_dir"]
+
+    # Embed HTML5 Auto-Play WAV Tag during the first 4 seconds of a new $8.0+ Pre-Spike Alert
+    audio_autoplay_html = ""
+    if time.time() - eng["last_spike_alert_ts"] <= 4.0 and alert_id > 0:
+        wav_b64 = BUY_BEEP_B64 if alert_dir == 1 else SELL_BEEP_B64
+        audio_autoplay_html = f'<audio autoplay="true" src="data:audio/wav;base64,{wav_b64}"></audio>'
 
     gate_col = "#22c55e" if spread_gate_open else "#facc15"
 
@@ -2238,7 +2382,7 @@ while True:
 
     spike_rows_html = ""
     if not eng["spike_history"]:
-        spike_rows_html = f"""<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई स्प्रेड-वैक्यूम स्पाइक (Spread ≥ ${req_spread:.1f}) नहीं आया है</td></tr>"""
+        spike_rows_html = f"""<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई $8.0+ स्प्रेड-वैक्यूम स्पाइक (Spread ≥ ${req_spread:.1f}) नहीं आया है</td></tr>"""
     else:
         for sh in eng["spike_history"]:
             mv_col = "#4ade80" if sh["max_fav"] >= 25.0 else ("#f87171" if sh["curr_move"] < 0 else "#cbd5e1")
@@ -2273,6 +2417,8 @@ while True:
     setup_str = f"TP1(5Q): +{box_size * TP1_BRICKS:.0f}p | TP2(5Q): +{box_size * TP2_BRICKS:.0f}p | SL: -{box_size * SL_BRICKS:.0f}p"
 
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
+<div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
+{audio_autoplay_html}
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
 <div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [5000-BAR FIXED GRID LOCK • 10-QTY]</div>
@@ -2298,16 +2444,16 @@ while True:
 
 {trade_box_html}
 
-<!-- 3-STEP SPREAD-FIRST PRE-SPIKE RADAR BOX (WITH 3-MINUTE AUTO-LOCK) -->
+<!-- STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR BOX (WITH SOUND ALERT & 3-MIN LOCK) -->
 <div style="background:#1e293b; border:2px solid #38bdf8; border-radius:12px; padding:14px; margin-bottom:14px; box-shadow:0 4px 15px rgba(56,189,248,0.15);">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
-<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 SPREAD-FIRST PRE-SPIKE RADAR (3-MINUTE LOCK)</span>
+<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR (🔊 AUDIO + 3M LOCK)</span>
 <span style="font-size:12px; color:{gate_col}; font-weight:800;">{gate_status_txt}</span>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:6px; background:#0b1324; padding:7px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
 <span>📏 Live Spread: <b style="color:#facc15;">${spread:.1f}</b> (Norm: ${normal_spread:.1f})</span>
-<span>⬆️ Ask Pull: <b style="color:#4ade80;">+${ask_jump:.1f}</b></span>
-<span>⬇️ Bid Drop: <b style="color:#f87171;">-${bid_drop:.1f}</b></span>
+<span>⬆️ Ask Pull (3s): <b style="color:#4ade80;">+${ask_jump:.1f}</b> (Need ≥$4)</span>
+<span>⬇️ Bid Drop (3s): <b style="color:#f87171;">-${bid_drop:.1f}</b> (Need ≥$4)</span>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:6px; background:#0b1324; padding:6px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
 <span>🟢 L2 Bid Depth (15L): <b style="color:#22c55e;">{bid_pct:.1f}% ({bid_vol:.1f} BTC)</b></span>
@@ -2323,7 +2469,7 @@ while True:
 <div style="background:{spike_box_bg}; color:#ffffff; padding:9px; border-radius:8px; font-size:12px; font-weight:bold; text-align:center; border:1px solid #334155; margin-bottom:10px;">
 {spike_status}
 </div>
-<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 Pre-Spike Signal History (Auto-Locks 3 Minutes After Signal)</div>
+<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 High-Spread Pre-Spike History (Triggers Only When Spread ≥ $8.0)</div>
 <div style="max-height:150px; overflow-y:auto;">
 <table style="width:100%; border-collapse:collapse;">
 <thead>
