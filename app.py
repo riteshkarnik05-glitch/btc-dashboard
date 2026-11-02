@@ -96,9 +96,9 @@ def fmt_pts(pts):
     return f"{pts:,.1f}"
 
 # ============================================================================
-# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHER
+# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHERS (FIXED 3.5-DAY ANCHOR + LIVE)
 # ============================================================================
-def fetch_hl_klines(interval="1m", num_bars=1000):
+def fetch_hl_klines(interval="1m", num_bars=20):
     tf_ms_map = {
         "1m": 60 * 1000,
         "5m": 5 * 60 * 1000,
@@ -110,39 +110,96 @@ def fetch_hl_klines(interval="1m", num_bars=1000):
     end_time = int(time.time() * 1000)
     start_time = end_time - (num_bars * step_ms)
 
-    try:
-        r = requests.post(
-            HYPERLIQUID_INFO_URL,
-            json={
-                "type": "candleSnapshot",
-                "req": {
-                    "coin": "BTC",
-                    "interval": interval,
-                    "startTime": start_time,
-                    "endTime": end_time
-                }
-            },
-            headers={"Content-Type": "application/json"},
-            timeout=8
-        )
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, list) and len(data) > 0:
-                data.sort(key=lambda x: int(x["t"]))
-                klines = []
-                for k in data:
-                    t_ms = int(k["t"])
-                    o_val = float(k["o"])
-                    h_val = float(k["h"])
-                    l_val = float(k["l"])
-                    c_val = float(k["c"])
-                    v_raw = float(k.get("v", 0.0))
-                    v_safe = v_raw if v_raw > 0 else max(0.01, (h_val - l_val) * 0.1)
-                    klines.append([t_ms, o_val, h_val, l_val, c_val, v_safe])
-                return klines
-    except Exception:
-        pass
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                HYPERLIQUID_INFO_URL,
+                json={
+                    "type": "candleSnapshot",
+                    "req": {
+                        "coin": "BTC",
+                        "interval": interval,
+                        "startTime": start_time,
+                        "endTime": end_time
+                    }
+                },
+                headers={"Content-Type": "application/json"},
+                timeout=8
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) > 0:
+                    data.sort(key=lambda x: int(x["t"]))
+                    klines = []
+                    for k in data:
+                        t_ms = int(k["t"])
+                        o_val = float(k["o"])
+                        h_val = float(k["h"])
+                        l_val = float(k["l"])
+                        c_val = float(k["c"])
+                        v_raw = float(k.get("v", 0.0))
+                        v_safe = v_raw if v_raw > 0 else max(0.01, (h_val - l_val) * 0.1)
+                        klines.append([t_ms, o_val, h_val, l_val, c_val, v_safe])
+                    return klines
+        except Exception:
+            time.sleep(0.4)
     return None
+
+def fetch_hl_5000_fixed_anchor():
+    """
+    Fetches ~5,000 1-minute candles (3.5 Days) anchored strictly to 00:00 UTC
+    (05:30 AM IST) 3 days ago, split across 2 batch requests so Hyperliquid
+    never truncates the starting anchor bar regardless of time of day.
+    """
+    now_sec = int(time.time())
+    today_00_utc_sec = (now_sec // 86400) * 86400
+    anchor_start_ms = (today_00_utc_sec - (3 * 86400)) * 1000
+    now_ms = now_sec * 1000
+    mid_ms = anchor_start_ms + (2600 * 60 * 1000)
+
+    chunks = [(anchor_start_ms, min(mid_ms, now_ms))]
+    if now_ms > mid_ms:
+        chunks.append((mid_ms, now_ms))
+
+    merged = {}
+    for st_ms, en_ms in chunks:
+        for attempt in range(3):
+            try:
+                r = requests.post(
+                    HYPERLIQUID_INFO_URL,
+                    json={
+                        "type": "candleSnapshot",
+                        "req": {
+                            "coin": "BTC",
+                            "interval": "1m",
+                            "startTime": st_ms,
+                            "endTime": en_ms
+                        }
+                    },
+                    headers={"Content-Type": "application/json"},
+                    timeout=10
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        for k in data:
+                            t_ms = int(k["t"])
+                            if t_ms >= anchor_start_ms:
+                                o_val = float(k["o"])
+                                h_val = float(k["h"])
+                                l_val = float(k["l"])
+                                c_val = float(k["c"])
+                                v_raw = float(k.get("v", 0.0))
+                                v_safe = v_raw if v_raw > 0 else max(0.01, (h_val - l_val) * 0.1)
+                                merged[t_ms] = [t_ms, o_val, h_val, l_val, c_val, v_safe]
+                        break
+            except Exception:
+                time.sleep(0.5)
+
+    if not merged:
+        return None
+    sorted_times = sorted(merged.keys())
+    return [merged[t] for t in sorted_times]
 
 def calc_daily_atr5(klines_1d):
     if not klines_1d or len(klines_1d) < ATR_PERIOD + 2:
@@ -167,7 +224,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# STATEFUL INCREMENTAL BAR PROCESSOR (PERMANENT LOCK - HYPERLIQUID 1M)
+# STATEFUL INCREMENTAL BAR PROCESSOR (FIXED TIME & PRICE GRID LOCKED)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -179,7 +236,7 @@ def process_single_closed_bar(eng, kline):
     l = float(kline[3])
     c = float(kline[4])
     v = float(kline[5])
-    bar_ist = (datetime.utcfromtimestamp(bar_time / 1000.0) + timedelta(hours=5, minutes=30)).strftime("%I:%M %p")
+    bar_ist = (datetime.utcfromtimestamp(bar_time / 1000.0) + timedelta(hours=5, minutes=30)).strftime("%d %b %I:%M %p")
 
     idx = eng["bar_count"]
 
@@ -273,10 +330,13 @@ def process_single_closed_bar(eng, kline):
     brick_step_dn = False
 
     if idx == 0:
-        eng["brick_top"] = c
-        eng["brick_bot"] = c - box_size
+        # Fixed Price Grid Rounding: snaps first brick to exact multiple of box_size
+        grid_top = round(c / box_size) * box_size
+        eng["brick_top"] = grid_top
+        eng["brick_bot"] = grid_top - box_size
         eng["brick_dir"] = 1
         eng["brick_streak"] = 1
+        eng["anchor_time_str"] = bar_ist
     else:
         if eval_price >= eng["brick_top"] + box_size:
             steps = int(math.floor((eval_price - eng["brick_top"]) / box_size))
@@ -406,7 +466,7 @@ def process_single_closed_bar(eng, kline):
                     "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
                     "exit": exit_p, "status": "🚀 5Q TP1 + 5Q TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#38bdf8"
                 })
-                eng["history"] = eng["history"][:30]
+                eng["history"] = eng["history"][:40]
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
@@ -433,7 +493,7 @@ def process_single_closed_bar(eng, kline):
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
                         "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)}", "color": "#ef4444"
                     })
-                    eng["history"] = eng["history"][:30]
+                    eng["history"] = eng["history"][:40]
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
             else:
@@ -454,7 +514,7 @@ def process_single_closed_bar(eng, kline):
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
                         "exit": exit_p, "status": status_tag, "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#22c55e"
                     })
-                    eng["history"] = eng["history"][:30]
+                    eng["history"] = eng["history"][:40]
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
 
@@ -496,7 +556,7 @@ def process_single_closed_bar(eng, kline):
                 "time": bar_ist, "type": f"{old_label} (10Q)", "entry": eng["entry_price"],
                 "exit": c, "status": "✅ 5Q TP1 + 5Q FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)}", "color": "#22c55e"
             })
-            eng["history"] = eng["history"][:30]
+            eng["history"] = eng["history"][:40]
 
         is_long = trigger_flip_buy or trigger_cont_buy
         if is_long:
@@ -563,7 +623,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     mid_price = (best_bid + best_ask) / 2.0
     spread = max(0.1, best_ask - best_bid)
 
-    # Top-5 & Top-15 Order Book Volumes
     bid_vol_5 = sum(b[1] for b in bids[:5])
     ask_vol_5 = sum(a[1] for a in asks[:5])
     bid_vol_15 = sum(b[1] for b in bids[:15])
@@ -572,12 +631,10 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     bid_pct = round((bid_vol_15 / tot_depth_15) * 100.0, 1) if tot_depth_15 > 0 else 50.0
     ask_pct = round(100.0 - bid_pct, 1)
 
-    # Volume-Weighted Micro-Price
     top_sz = best_bid_sz + best_ask_sz
     micro_price = ((best_bid * best_ask_sz) + (best_ask * best_bid_sz)) / top_sz if top_sz > 0 else mid_price
     micro_skew = micro_price - mid_price
 
-    # Whale Walls (Top 20)
     max_bid_wall = max(bids, key=lambda x: x[1])
     max_ask_wall = max(asks, key=lambda x: x[1])
 
@@ -595,17 +652,14 @@ def fetch_l2_orderbook_and_spike_radar(eng):
             else:
                 item["rem_sec"] = int(EVAL_LOCK_SECONDS - elapsed)
 
-    # Calculate Normal Baseline Spread from previous calm ticks (before adding current tick)
     hist = eng["l2_tick_window"]
     if len(hist) >= 5:
         sorted_sp = sorted(x["spread"] for x in hist)
-        # Use lower 75% of recent spreads so a spike doesn't corrupt the calm baseline
         calm_slice = sorted_sp[:max(3, int(len(sorted_sp) * 0.75))]
         normal_spread = sum(calm_slice) / float(len(calm_slice))
     else:
         normal_spread = 1.0
 
-    # Measure Asymmetric Liquidity Pull (How much Ask jumped UP vs Bid dropped DOWN)
     if len(hist) >= 2:
         ref_ask = min(hist[-1]["ask"], hist[-2]["ask"])
         ref_bid = max(hist[-1]["bid"], hist[-2]["bid"])
@@ -615,7 +669,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         ask_jump = 0.0
         bid_drop = 0.0
 
-    # Save current tick to rolling window (last 30 ticks)
     hist.append({
         "ts": now_ts,
         "mid": mid_price,
@@ -630,9 +683,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     if len(hist) > 30:
         hist.pop(0)
 
-    # ========================================================================
-    # STEP 1: HARD SPREAD GATEKEEPER (NO SPREAD EXPANSION = ZERO SIGNALS)
-    # ========================================================================
+    # STEP 1: HARD SPREAD GATEKEEPER
     req_spread = max(MIN_SPREAD_TRIGGER, normal_spread * SPREAD_MULT_TRIGGER)
     spread_gate_open = (spread >= req_spread)
 
@@ -664,16 +715,13 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         "ask_wall_sz": max_ask_wall[1]
     }
 
-    # ========================================================================
     # STEP 2: PRE-SPIKE DIRECTION TRACING (ONLY WHEN SPREAD GATE IS OPEN)
-    # ========================================================================
     time_since_last = now_ts - eng["last_spike_alert_ts"]
     spike_dir_text = None
     dir_code = 0
     col = "#38bdf8"
 
     if spread_gate_open and len(hist) >= 5:
-        # Check which side pulled liquidity & which side of the Order Book is pushing
         bull_pull = (ask_jump > bid_drop) or (bid_vol_5 >= ask_vol_5 * 1.35)
         bear_pull = (bid_drop > ask_jump) or (ask_vol_5 >= bid_vol_5 * 1.35)
 
@@ -720,7 +768,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
             eng["last_spike_color"] = "#0f172a"
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (100% HYPERLIQUID UNIFIED FEED)
+# 24x7 BACKGROUND WORKER (5000 CANDLES FIXED-GRID LOCK + L2 SPREAD RADAR)
 # ============================================================================
 def background_worker(eng):
     last_1d_fetch = 0
@@ -730,10 +778,7 @@ def background_worker(eng):
         try:
             now_ts = time.time()
 
-            fetch_l2_orderbook_and_spike_radar(eng)
-            if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
-                eng["price"] = eng["order_book"]["mid_price"]
-
+            # 1. Always ensure Daily ATR-5 (macro_range) is fetched BEFORE initializing 5,000 Renko bars
             if now_ts - last_1d_fetch > 300 or eng["macro_range"] is None:
                 klines_1d = fetch_hl_klines("1d", 20)
                 if klines_1d:
@@ -742,16 +787,24 @@ def background_worker(eng):
                         eng["macro_range"] = d_val
                         last_1d_fetch = now_ts
 
-            if not eng["initialized"]:
-                klines_init = fetch_hl_klines("1m", 1000)
-                if klines_init and len(klines_init) > 50:
+            # 2. Initialize 3.5-Day (~5,000 Candles) Fixed-Anchor Renko History
+            if not eng["initialized"] and eng["macro_range"] is not None:
+                klines_init = fetch_hl_5000_fixed_anchor()
+                if klines_init and len(klines_init) > 100:
                     for b in klines_init[:-1]:
                         process_single_closed_bar(eng, b)
                     eng["price"] = float(klines_init[-1][4])
                     eng["initialized"] = True
                     last_kline_fetch = now_ts
-            elif now_ts - last_kline_fetch >= 2.0:
-                klines_live = fetch_hl_klines("1m", 6)
+
+            # 3. Every 1 second: Fetch Hyperliquid L2 Order Book & Spread-First Radar
+            fetch_l2_orderbook_and_spike_radar(eng)
+            if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
+                eng["price"] = eng["order_book"]["mid_price"]
+
+            # 4. Every 2 seconds: Append newly closed 1-minute candles
+            if eng["initialized"] and (now_ts - last_kline_fetch >= 2.0):
+                klines_live = fetch_hl_klines("1m", 8)
                 if klines_live and len(klines_live) >= 2:
                     for b in klines_live[:-1]:
                         process_single_closed_bar(eng, b)
@@ -768,11 +821,12 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_spread_first_engine():
+def get_hl_5000_fixed_grid_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
         "last_bar_time": 0,
+        "anchor_time_str": "--",
         "prev_close": 0.0,
         "tr_sum": 0.0,
         "atr14": 15.0,
@@ -867,13 +921,13 @@ def get_hl_spread_first_engine():
     thread.start()
     return eng
 
-eng = get_hl_spread_first_engine()
+eng = get_hl_5000_fixed_grid_engine()
 
 # ============================================================================
 # TWO TABS: TAB 1 = AI-RENKO PRO | TAB 2 = BTC MULTI-CHART PRO (VPVR + FVG SIGNALS)
 # ============================================================================
 tab_renko, tab_charts = st.tabs([
-    "⚡ AI-Renko Pro Terminal (10-Qty • Spread-First Radar)",
+    "⚡ AI-Renko Pro Terminal (5000-Bar Fixed Grid • 10-Qty)",
     "📊 BTC Multi-Chart Pro (VPVR & FVG Live Signals)"
 ])
 
@@ -2077,11 +2131,11 @@ countSel.addEventListener("change", () => {
     components.html(multi_chart_html, height=820, scrolling=False)
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (SPREAD-FIRST PRE-SPIKE RADAR)
+# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (5000-BAR FIXED GRID + SPREAD RADAR)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: Hyperliquid से 1000 कैंडल्स और Spread-First Pre-Spike Radar सिंक हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: पिछले 3.5 दिन (~5000 कैंडल्स) का Fixed-Grid डेटा और Spread-First Radar सिंक हो रहा है...")
         time.sleep(1)
         continue
 
@@ -2097,6 +2151,8 @@ while True:
     sell_pct = int(round(eng["sell_dom_pct"]))
     imbalance = (eng["buy_dom_pct"] - eng["sell_dom_pct"]) / 100.0
     ist_time = eng["ist_time"]
+    bar_count = eng["bar_count"]
+    anchor_str = eng["anchor_time_str"]
 
     ob = eng["order_book"]
     best_bid = ob["best_bid"]
@@ -2176,11 +2232,10 @@ while True:
 </div>"""
     else:
         trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (100% HYPERLIQUID • 10 QTY)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (5000-BAR FIXED GRID • 10 QTY)</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:4px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
 
-    # Pre-Spike History Rows with 3-Minute Auto-Lock
     spike_rows_html = ""
     if not eng["spike_history"]:
         spike_rows_html = f"""<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई स्प्रेड-वैक्यूम स्पाइक (Spread ≥ ${req_spread:.1f}) नहीं आया है</td></tr>"""
@@ -2220,12 +2275,12 @@ while True:
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [100% HYPERLIQUID LOCKED • 10-QTY]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [5000-BAR FIXED GRID LOCK • 10-QTY]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
 <div style="background:#1e293b; border:1px solid {st_badge_col}; color:{st_badge_col}; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:bold; display:inline-block; margin-bottom:4px;">{st_badge_text}</div>
-<div style="font-size:12px; color:#cbd5e1;">🔒 Hyperliquid Single-Feed | {ist_time}</div>
+<div style="font-size:11.5px; color:#cbd5e1;">🔒 Grid Anchor: {anchor_str} ({bar_count} Bars) | {ist_time}</div>
 </div>
 </div>
 <div class="t-grid">
@@ -2291,9 +2346,9 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (5Q TP1 Book + Cost SL + 5Q Trail)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (3.5-Day Fixed Anchor • 5Q TP1 + 5Q Trail)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">23H Range | 1 Brick</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Daily ATR-5 | 1 Brick</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (5Q @ TP1 + Cost SL + 5Q Trail)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:6px; color:#ffffff; font-weight:bold; text-align:right;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
@@ -2308,14 +2363,14 @@ while True:
 <div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%; box-sizing:border-box;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (Permanent Lock)</span>
+<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (3.5-Day Fixed Grid)</span>
 <span style="font-size:11px; color:#94a3b8;">Blocked Late: {eng['blocked_late']}</span>
 </div>
 <div style="max-height:460px; overflow-y:auto;">
 <table style="width:100%; border-collapse:collapse;">
 <thead>
 <tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
-<th style="padding:6px;">समय</th>
+<th style="padding:6px;">तारीख व समय</th>
 <th style="padding:6px;">ट्रेड</th>
 <th style="padding:6px;">Entry → Exit</th>
 <th style="padding:6px;">स्टेटस</th>
