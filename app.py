@@ -557,7 +557,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     mid_price = (best_bid + best_ask) / 2.0
     spread = max(0.1, best_ask - best_bid)
 
-    # Top-5 Near-Touch Liquidity (for Vacuum Detection) & Top-15 Total Depth
     bid_vol_5 = sum(b[1] for b in bids[:5])
     ask_vol_5 = sum(a[1] for a in asks[:5])
     bid_vol_15 = sum(b[1] for b in bids[:15])
@@ -566,16 +565,13 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     raw_bid_pct = round((bid_vol_15 / tot_depth) * 100.0, 1) if tot_depth > 0 else 50.0
     raw_ask_pct = round(100.0 - raw_bid_pct, 1)
 
-    # Volume-Weighted Micro-Price
     top_sz = best_bid_sz + best_ask_sz
     micro_price = ((best_bid * best_ask_sz) + (best_ask * best_bid_sz)) / top_sz if top_sz > 0 else mid_price
     micro_skew = micro_price - mid_price
 
-    # Largest Whale Wall Detection
     max_bid_wall = max(bids, key=lambda x: x[1])
     max_ask_wall = max(asks, key=lambda x: x[1])
 
-    # Maintain 25-Tick Rolling History for Anti-Spoofing & Vacuum Baselines
     hist = eng["l2_tick_window"]
     hist.append({
         "ts": time.time(),
@@ -592,31 +588,25 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     if len(hist) > 25:
         hist.pop(0)
 
-    # Update Cross-Check Post-Signal Move for previously logged spike signals
     for item in eng["spike_history"]:
         sig_p = item["price"]
         fav_move = (mid_price - sig_p) if item["dir_code"] == 1 else (sig_p - mid_price)
         item["max_fav"] = max(item["max_fav"], fav_move)
         item["curr_move"] = fav_move
 
-    # Calculate 5-Tick Sustained Averages (Filters out 1-second HFT spoofing)
     recent_5 = hist[-5:] if len(hist) >= 5 else hist
     sustained_bid_pct = sum(x["bid_pct"] for x in recent_5) / float(len(recent_5))
     sustained_ask_pct = 100.0 - sustained_bid_pct
     avg_spread = sum(x["spread"] for x in hist) / float(len(hist))
 
-    # Baseline Top-5 Liquidity over the last 25 ticks
     base_bid_v5 = max(0.01, sum(x["bid_v5"] for x in hist) / float(len(hist)))
     base_ask_v5 = max(0.01, sum(x["ask_v5"] for x in hist) / float(len(hist)))
 
-    # Opposite Side Liquidity Ratio (< 0.65 means 35%+ orders pulled/eaten = Vacuum!)
     ask_vacuum_ratio = ask_vol_5 / base_ask_v5
     bid_vacuum_ratio = bid_vol_5 / base_bid_v5
 
-    # Directional Sweep Velocity over the last 5 ticks (5 seconds)
     if len(hist) >= 6:
         price_vel_5s = mid_price - hist[-6]["mid"]
-        # Count how many of the last 5 ticks stepped monotonically without pullback
         up_steps = sum(1 for k in range(-5, 0) if hist[k]["ask"] >= hist[k - 1]["ask"] and hist[k]["mid"] >= hist[k - 1]["mid"])
         dn_steps = sum(1 for k in range(-5, 0) if hist[k]["bid"] <= hist[k - 1]["bid"] and hist[k]["mid"] <= hist[k - 1]["mid"])
     else:
@@ -624,13 +614,9 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         up_steps = 0
         dn_steps = 0
 
-    # ========================================================================
-    # 5-FACTOR INSTITUTIONAL CONFLUENCE SCORING (0 to 100)
-    # ========================================================================
     bull_score = 0
     bear_score = 0
 
-    # Factor 1: Sustained 5-Tick L2 Depth Imbalance (Max 30 pts) — No single-tick spoofs
     if sustained_bid_pct >= 74.0 and all(x["bid_pct"] >= 65.0 for x in recent_5):
         bull_score += 30
     elif sustained_bid_pct >= 68.0:
@@ -641,7 +627,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     elif sustained_ask_pct >= 68.0:
         bear_score += 15
 
-    # Factor 2: Opposite-Side Liquidity Vacuum / Thinning (Max 25 pts)
     if ask_vacuum_ratio <= 0.62 and bid_vol_5 > ask_vol_5 * 2.2:
         bull_score += 25
     elif ask_vacuum_ratio <= 0.78 and bid_vol_5 > ask_vol_5 * 1.6:
@@ -652,7 +637,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     elif bid_vacuum_ratio <= 0.78 and ask_vol_5 > bid_vol_5 * 1.6:
         bear_score += 12
 
-    # Factor 3: Real Taker Sweep Velocity & Level Stepping (Max 25 pts)
     if price_vel_5s >= 28.0 and up_steps >= 4:
         bull_score += 25
     elif price_vel_5s >= 16.0 and up_steps >= 4:
@@ -663,13 +647,11 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     elif price_vel_5s <= -16.0 and dn_steps >= 4:
         bear_score += 12
 
-    # Factor 4: Micro-Price Lead & Spread Stretch (Max 10 pts)
-    if micro_skew > 0.15 and (spread >= avg_spread * 1.3 or best_ask > hist[-2]["ask"] if len(hist) >= 2 else False):
+    if micro_skew > 0.15 and (spread >= avg_spread * 1.3 or (best_ask > hist[-2]["ask"] if len(hist) >= 2 else False)):
         bull_score += 10
-    if micro_skew < -0.15 and (spread >= avg_spread * 1.3 or best_bid < hist[-2]["bid"] if len(hist) >= 2 else False):
+    if micro_skew < -0.15 and (spread >= avg_spread * 1.3 or (best_bid < hist[-2]["bid"] if len(hist) >= 2 else False)):
         bear_score += 10
 
-    # Factor 5: Macro Renko & 3-Bar Candle Flow Alignment (Max 10 pts, Blocks counter-trend flip-flops)
     if eng["buy_dom_pct"] >= 53.0 and (eng["st_trend"] == 1 or mid_price > eng["ema21"]):
         bull_score += 10
     if eng["sell_dom_pct"] >= 53.0 and (eng["st_trend"] == -1 or mid_price < eng["ema21"]):
@@ -702,9 +684,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         "score_side": score_side
     }
 
-    # STRICT INSTITUTIONAL TRIGGER:
-    # Requires Confluence Score >= 85/100 AND real directional velocity (>= $22 in 5s)
-    # Plus 180s (3 min) cooldown for same direction, and 90s minimum lock between any signals
     now_ts = time.time()
     time_since_last = now_ts - eng["last_spike_alert_ts"]
 
@@ -759,12 +738,10 @@ def background_worker(eng):
         try:
             now_ts = time.time()
 
-            # 1. Every 1 second: Fetch Hyperliquid L2 Order Book & Run 5-Stage Spike Engine
             fetch_l2_orderbook_and_spike_radar(eng)
             if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
                 eng["price"] = eng["order_book"]["mid_price"]
 
-            # 2. Every 5 minutes: Fetch Hyperliquid 1D Candles for Daily ATR-5 Auto Box Size
             if now_ts - last_1d_fetch > 300 or eng["macro_range"] is None:
                 klines_1d = fetch_hl_klines("1d", 20)
                 if klines_1d:
@@ -773,7 +750,6 @@ def background_worker(eng):
                         eng["macro_range"] = d_val
                         last_1d_fetch = now_ts
 
-            # 3. Initialize or Incrementally Update AI-Renko 1m Candles from Hyperliquid
             if not eng["initialized"]:
                 klines_init = fetch_hl_klines("1m", 1000)
                 if klines_init and len(klines_init) > 50:
@@ -904,11 +880,11 @@ def get_hl_pro_engine():
 eng = get_hl_pro_engine()
 
 # ============================================================================
-# TWO TABS: TAB 1 = AI-RENKO PRO | TAB 2 = BTC MULTI-CHART PRO (10 INDICATORS)
+# TWO TABS: TAB 1 = AI-RENKO PRO | TAB 2 = BTC MULTI-CHART PRO (VPVR + FVG SIGNALS)
 # ============================================================================
 tab_renko, tab_charts = st.tabs([
     "⚡ AI-Renko Pro Terminal (10-Qty • Hyperliquid Locked)",
-    "📊 BTC Multi-Chart Pro (10 Institutional Indicators)"
+    "📊 BTC Multi-Chart Pro (VPVR & FVG Live Signals)"
 ])
 
 with tab_renko:
@@ -928,7 +904,7 @@ with tab_charts:
     display: flex; align-items: center; justify-content: space-between; padding: 0 14px;
   }
   .top-title { font-size: 14px; font-weight: 700; color: #e2e8f0; display: flex; align-items: center; gap: 10px; }
-  .top-badge { font-size: 11px; background: #1e293b; color: #38bdf8; border: 1px solid #334155; padding: 2px 8px; border-radius: 4px; }
+  .top-badge { font-size: 11px; background: #1e293b; color: #4ade80; border: 1px solid #22c55e; padding: 2px 8px; border-radius: 4px; }
   .top-controls { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #94a3b8; }
   select {
     background: #1e222d; color: #e2e8f0; border: 1px solid #363a45; border-radius: 4px;
@@ -949,6 +925,7 @@ with tab_charts:
   .ctrl-left { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; }
   .pane-ctrl select.tf-sel { width: 75px; }
   .btc-lbl { font-size: 12px; font-weight: 700; color: #f59e0b; background: rgba(245, 158, 11, 0.15); padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(245, 158, 11, 0.3); }
+  .sig-pill { font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: #1e293b; color: #cbd5e1; border: 1px solid #334155; white-space: nowrap; }
   .ind-dropdown { position: relative; display: inline-block; }
   .ind-btn {
     background: #1e293b; color: #38bdf8; border: 1px solid #334155; border-radius: 4px;
@@ -956,10 +933,10 @@ with tab_charts:
   }
   .ind-btn:hover { background: #334155; color: #ffffff; }
   .ind-menu {
-    display: none; position: absolute; right: 0; top: 26px; width: 235px;
+    display: none; position: absolute; right: 0; top: 26px; width: 250px;
     background: #131722; border: 1px solid #363a45; border-radius: 6px;
     box-shadow: 0 10px 25px rgba(0,0,0,0.75); padding: 6px 0; z-index: 100;
-    max-height: 310px; overflow-y: auto;
+    max-height: 320px; overflow-y: auto;
   }
   .ind-menu.open { display: block; }
   .ind-item {
@@ -996,8 +973,8 @@ with tab_charts:
 <body>
 <div class="top-bar">
   <div class="top-title">
-    <span>BTC Multi-chart Pro</span>
-    <span class="top-badge">⚡ 100% Hyperliquid Live Feed + 10 Indicators</span>
+    <span>BTC Multi-Chart Pro</span>
+    <span class="top-badge">🎯 VPVR (VAL/POC/VAH) & FVG Pullback Buy/Sell Signals Active</span>
   </div>
   <div class="top-controls">
     <span>Number of charts</span>
@@ -1014,8 +991,8 @@ with tab_charts:
 
 <script>
 const INDICATOR_LIST = [
-  { id: "vpvr", label: "1. Volume Profile (VPVR)", short: "VPVR", cat: "Canvas Smart Money" },
-  { id: "fvg",  label: "2. Fair Value Gap (FVG)",  short: "FVG",  cat: "Canvas Smart Money" },
+  { id: "vpvr", label: "1. Volume Profile + Signals (VP BUY/SELL)", short: "VPVR🎯", cat: "Signal Upgraded Smart Money" },
+  { id: "fvg",  label: "2. Fair Value Gap + Signals (FVG BUY/SELL)", short: "FVG🎯",  cat: "Signal Upgraded Smart Money" },
   { id: "ob",   label: "3. Order Blocks (OB)",     short: "OB",   cat: "Canvas Smart Money" },
   { id: "st",   label: "4. Supertrend (10, 3)",    short: "ST",   cat: "Trend & Overlays" },
   { id: "vwap", label: "5. Intraday VWAP",         short: "VWAP", cat: "Trend & Overlays" },
@@ -1029,14 +1006,14 @@ const INDICATOR_LIST = [
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"];
 
 const DEFAULT_PANES = [
-  { tf: "1m", inds: ["vpvr", "st", "vwap"] },
-  { tf: "5m", inds: ["vpvr", "st", "fvg", "ob"] },
-  { tf: "15m", inds: ["ema", "bb", "ms", "rsi"] },
-  { tf: "1h", inds: ["st", "cpr", "vwap"] },
-  { tf: "5m", inds: ["st", "vwap"] },
+  { tf: "1m",  inds: ["vpvr", "fvg"] },
+  { tf: "5m",  inds: ["vpvr", "fvg", "st"] },
+  { tf: "15m", inds: ["vpvr", "fvg", "vwap"] },
+  { tf: "1h",  inds: ["vpvr", "fvg", "ema"] },
+  { tf: "5m",  inds: ["vpvr", "fvg"] },
   { tf: "15m", inds: ["vpvr", "st", "cpr"] },
-  { tf: "1h", inds: ["ema", "bb"] },
-  { tf: "1d", inds: ["st", "vwap"] }
+  { tf: "1h",  inds: ["fvg", "ema", "bb"] },
+  { tf: "1d",  inds: ["vpvr", "fvg"] }
 ];
 
 let activePanes = [];
@@ -1058,15 +1035,15 @@ function getGridDims(count) {
 
 function saveConfig(count) {
   try {
-    localStorage.setItem("btc_mc_count", String(count));
+    localStorage.setItem("btc_mc_count_v3", String(count));
     const cfg = activePanes.map(p => ({ tf: p.tf, inds: Array.from(p.inds) }));
-    localStorage.setItem("btc_mc_cfg", JSON.stringify(cfg));
+    localStorage.setItem("btc_mc_cfg_v3", JSON.stringify(cfg));
   } catch (e) {}
 }
 
 function loadSavedConfigs() {
   try {
-    const saved = JSON.parse(localStorage.getItem("btc_mc_cfg") || "null");
+    const saved = JSON.parse(localStorage.getItem("btc_mc_cfg_v3") || "null");
     if (Array.isArray(saved) && saved.length > 0) {
       for (let i = 0; i < 8; i++) {
         if (saved[i] && saved[i].tf) {
@@ -1219,9 +1196,9 @@ function calcSupertrend(candles, period = 10, factor = 3.0) {
       else if (prevTrend === 1 && c.close < lowerBand) trend = -1;
 
       if (trend === 1 && prevTrend === -1) {
-        markers.push({ time: c.time, position: "belowBar", color: "#00e676", shape: "arrowUp", text: "BUY" });
+        markers.push({ time: c.time, position: "belowBar", color: "#00e676", shape: "arrowUp", text: "ST BUY" });
       } else if (trend === -1 && prevTrend === 1) {
-        markers.push({ time: c.time, position: "aboveBar", color: "#ff1744", shape: "arrowDown", text: "SELL" });
+        markers.push({ time: c.time, position: "aboveBar", color: "#ff1744", shape: "arrowDown", text: "ST SELL" });
       }
     }
     line.push({
@@ -1308,10 +1285,16 @@ function calcRSI(candles, period = 14) {
   return res;
 }
 
-function detectFVGAndOB(candles) {
+// ============================================================================
+# UPGRADED #1: FVG SMART-MONEY PULLBACK & REJECTION SIGNALS + BOX MITIGATION
+// ============================================================================
+function detectFVGAndOBWithSignals(candles) {
   const fvgs = [];
   const obs = [];
-  if (candles.length < 5) return { fvgs, obs };
+  const fvgMarkers = [];
+  let lastFvgSig = null;
+
+  if (candles.length < 5) return { fvgs, obs, fvgMarkers, lastFvgSig };
   const lastTime = candles[candles.length - 1].time;
 
   for (let i = 2; i < candles.length; i++) {
@@ -1321,8 +1304,45 @@ function detectFVGAndOB(candles) {
     const body1 = Math.abs(c1.close - c1.open);
     const rng1 = Math.max(c1.high - c1.low, 0.0001);
 
-    if (c2.low > c0.high && (body1 / rng1) > 0.45) {
-      fvgs.push({ type: "bull", startTime: c1.time, endTime: lastTime, top: c2.low, bot: c0.high, mitigated: false });
+    // Bullish FVG: c2.low > c0.high with displacement body
+    if (c2.low > c0.high && (body1 / rng1) > 0.42 && (c2.low - c0.high) > 0) {
+      const top = c2.low;
+      const bot = c0.high;
+      let endTime = lastTime;
+      let mitigated = false;
+      let signaled = false;
+      let sigTime = null;
+      let sigPrice = null;
+
+      for (let k = i + 1; k < candles.length; k++) {
+        const ck = candles[k];
+        // If candle closes below bottom of Bull FVG -> Zone broken/mitigated
+        if (ck.close < bot) {
+          endTime = ck.time;
+          mitigated = true;
+          break;
+        }
+        // Pullback Entry Signal: Price dips into Bullish FVG zone and prints Bullish Rejection
+        if (!signaled && ck.low <= top && ck.close >= bot && (ck.close > ck.open || (ck.close - ck.low) > (ck.high - ck.low) * 0.55)) {
+          signaled = true;
+          sigTime = ck.time;
+          sigPrice = ck.close;
+          const sigObj = {
+            time: ck.time,
+            position: "belowBar",
+            color: "#00e676",
+            shape: "arrowUp",
+            text: "🎯 FVG BUY"
+          };
+          fvgMarkers.push(sigObj);
+          lastFvgSig = { type: "FVG BUY 🟢", price: ck.close, zone: `${bot.toFixed(0)}-${top.toFixed(0)}` };
+        }
+      }
+
+      if (!mitigated || (candles.length - i) <= 90) {
+        fvgs.push({ type: "bull", startTime: c1.time, endTime, top, bot, mitigated, signaled, sigTime, sigPrice });
+      }
+
       for (let b = i - 2; b >= Math.max(0, i - 5); b--) {
         if (candles[b].close < candles[b].open) {
           obs.push({ type: "bull", startTime: candles[b].time, endTime: lastTime, top: candles[b].high, bot: candles[b].low });
@@ -1330,8 +1350,46 @@ function detectFVGAndOB(candles) {
         }
       }
     }
-    if (c2.high < c0.low && (body1 / rng1) > 0.45) {
-      fvgs.push({ type: "bear", startTime: c1.time, endTime: lastTime, top: c0.low, bot: c2.high, mitigated: false });
+
+    // Bearish FVG: c2.high < c0.low with displacement body
+    if (c2.high < c0.low && (body1 / rng1) > 0.42 && (c0.low - c2.high) > 0) {
+      const top = c0.low;
+      const bot = c2.high;
+      let endTime = lastTime;
+      let mitigated = false;
+      let signaled = false;
+      let sigTime = null;
+      let sigPrice = null;
+
+      for (let k = i + 1; k < candles.length; k++) {
+        const ck = candles[k];
+        // If candle closes above top of Bear FVG -> Zone broken/mitigated
+        if (ck.close > top) {
+          endTime = ck.time;
+          mitigated = true;
+          break;
+        }
+        // Pullback Entry Signal: Price rallies into Bearish FVG zone and prints Bearish Rejection
+        if (!signaled && ck.high >= bot && ck.close <= top && (ck.close < ck.open || (ck.high - ck.close) > (ck.high - ck.low) * 0.55)) {
+          signaled = true;
+          sigTime = ck.time;
+          sigPrice = ck.close;
+          const sigObj = {
+            time: ck.time,
+            position: "aboveBar",
+            color: "#ff1744",
+            shape: "arrowDown",
+            text: "🎯 FVG SELL"
+          };
+          fvgMarkers.push(sigObj);
+          lastFvgSig = { type: "FVG SELL 🔴", price: ck.close, zone: `${bot.toFixed(0)}-${top.toFixed(0)}` };
+        }
+      }
+
+      if (!mitigated || (candles.length - i) <= 90) {
+        fvgs.push({ type: "bear", startTime: c1.time, endTime, top, bot, mitigated, signaled, sigTime, sigPrice });
+      }
+
       for (let b = i - 2; b >= Math.max(0, i - 5); b--) {
         if (candles[b].close > candles[b].open) {
           obs.push({ type: "bear", startTime: candles[b].time, endTime: lastTime, top: candles[b].high, bot: candles[b].low });
@@ -1340,9 +1398,134 @@ function detectFVGAndOB(candles) {
       }
     }
   }
-  return { fvgs: fvgs.slice(-14), obs: obs.slice(-10) };
+
+  return {
+    fvgs: fvgs.slice(-16),
+    obs: obs.slice(-10),
+    fvgMarkers,
+    lastFvgSig
+  };
 }
 
+// ============================================================================
+# UPGRADED #2: VOLUME PROFILE (VPVR) — POC / VAH / VAL + BUY/SELL SIGNALS
+// ============================================================================
+function computeProfileLevels(sliceCandles, numBins = 24) {
+  let minP = Infinity, maxP = -Infinity;
+  sliceCandles.forEach(c => {
+    if (c.low < minP) minP = c.low;
+    if (c.high > maxP) maxP = c.high;
+  });
+  if (maxP <= minP) return null;
+
+  const step = (maxP - minP) / numBins;
+  const upBins = new Array(numBins).fill(0);
+  const dnBins = new Array(numBins).fill(0);
+  let totalVol = 0;
+
+  sliceCandles.forEach(c => {
+    const mid = (c.high + c.low + c.close) / 3.0;
+    let bIdx = Math.floor((mid - minP) / step);
+    if (bIdx < 0) bIdx = 0;
+    if (bIdx >= numBins) bIdx = numBins - 1;
+    const v = Math.max(1, c.volume);
+    if (c.close >= c.open) upBins[bIdx] += v;
+    else dnBins[bIdx] += v;
+    totalVol += v;
+  });
+
+  let maxBinVol = 0, pocIdx = 0;
+  const totBins = new Array(numBins).fill(0);
+  for (let b = 0; b < numBins; b++) {
+    totBins[b] = upBins[b] + dnBins[b];
+    if (totBins[b] > maxBinVol) {
+      maxBinVol = totBins[b];
+      pocIdx = b;
+    }
+  }
+
+  // 70% Value Area (VAH & VAL)
+  let vaVol = totBins[pocIdx];
+  let valIdx = pocIdx, vahIdx = pocIdx;
+  const targetVa = totalVol * 0.70;
+  while (vaVol < targetVa && (valIdx > 0 || vahIdx < numBins - 1)) {
+    const nextUp = vahIdx < numBins - 1 ? totBins[vahIdx + 1] : -1;
+    const nextDn = valIdx > 0 ? totBins[valIdx - 1] : -1;
+    if (nextUp >= nextDn && vahIdx < numBins - 1) {
+      vahIdx++;
+      vaVol += totBins[vahIdx];
+    } else if (valIdx > 0) {
+      valIdx--;
+      vaVol += totBins[valIdx];
+    } else break;
+  }
+
+  const pocPrice = minP + (pocIdx + 0.5) * step;
+  const vahPrice = minP + (vahIdx + 0.85) * step;
+  const valPrice = minP + (valIdx + 0.15) * step;
+
+  return { minP, maxP, step, numBins, upBins, dnBins, totBins, maxBinVol, pocIdx, pocPrice, vahPrice, valPrice };
+}
+
+function calcVPVRSignals(candles) {
+  const vpMarkers = [];
+  let lastVpSig = null;
+  if (candles.length < 40) return { vpMarkers, lastVpSig };
+
+  const lookback = 50;
+  let lastSigIdx = -10;
+
+  for (let i = lookback; i < candles.length; i++) {
+    if (i - lastSigIdx < 7) continue;
+    const prevSlice = candles.slice(i - lookback, i);
+    const prof = computeProfileLevels(prevSlice, 20);
+    if (!prof) continue;
+
+    const c = candles[i];
+    const prevC = candles[i - 1];
+    const { pocPrice, vahPrice, valPrice } = prof;
+
+    // 1. VAL Support Bounce Buy: Price dips to/below VAL and closes back above VAL with green candle
+    const valBounce = (c.low <= valPrice && c.close > valPrice && c.close > c.open);
+    // 2. POC Bullish Reclaim/Retest Buy: Price retests POC from above or reclaims POC strongly
+    const pocBullBounce = (prevC.close >= pocPrice && c.low <= pocPrice && c.close > pocPrice && c.close > c.open && (c.close - c.open) > ( vahPrice - valPrice ) * 0.08);
+
+    // 3. VAH Resistance Reject Sell: Price pokes to/above VAH and closes back below VAH with red candle
+    const vahReject = (c.high >= vahPrice && c.close < vahPrice && c.close < c.open);
+    // 4. POC Bearish Reject Sell: Price tests POC from below and rejects downward with red candle
+    const pocBearReject = (prevC.close <= pocPrice && c.high >= pocPrice && c.close < pocPrice && c.close < c.open && (c.open - c.close) > ( vahPrice - valPrice ) * 0.08);
+
+    if (valBounce || pocBullBounce) {
+      const tag = valBounce ? "🟢 VP BUY (VAL)" : "🟢 VP BUY (POC)";
+      vpMarkers.push({
+        time: c.time,
+        position: "belowBar",
+        color: "#22c55e",
+        shape: "arrowUp",
+        text: tag
+      });
+      lastSigIdx = i;
+      lastVpSig = { type: tag, price: c.close };
+    } else if (vahReject || pocBearReject) {
+      const tag = vahReject ? "🔴 VP SELL (VAH)" : "🔴 VP SELL (POC)";
+      vpMarkers.push({
+        time: c.time,
+        position: "aboveBar",
+        color: "#ef4444",
+        shape: "arrowDown",
+        text: tag
+      });
+      lastSigIdx = i;
+      lastVpSig = { type: tag, price: c.close };
+    }
+  }
+
+  return { vpMarkers, lastVpSig };
+}
+
+// ============================================================================
+# CUSTOM HTML5 CANVAS OVERLAY RENDERER (VPVR + VAH/POC/VAL + FVG + OB)
+// ============================================================================
 function drawCanvasOverlays(pane) {
   const canvas = pane.canvas;
   if (!canvas || !pane.chartBox) return;
@@ -1357,7 +1540,9 @@ function drawCanvasOverlays(pane) {
 
   const ts = pane.chart.timeScale();
   const plotWidth = ts.width() > 0 ? ts.width() : (canvas.width - 65);
+  const lastCandleTime = pane.candles[pane.candles.length - 1].time;
 
+  // 1. Order Blocks (OB)
   if (pane.inds.has("ob") && pane.smcZones && pane.smcZones.obs) {
     pane.smcZones.obs.forEach(ob => {
       let x1 = ts.timeToCoordinate(ob.startTime);
@@ -1379,6 +1564,7 @@ function drawCanvasOverlays(pane) {
     });
   }
 
+  // 2. Fair Value Gaps (FVG) + Active Buy/Sell Zone Labels
   if (pane.inds.has("fvg") && pane.smcZones && pane.smcZones.fvgs) {
     pane.smcZones.fvgs.forEach(fvg => {
       let x1 = ts.timeToCoordinate(fvg.startTime);
@@ -1387,19 +1573,35 @@ function drawCanvasOverlays(pane) {
       const y2 = pane.candleSeries.priceToCoordinate(fvg.bot);
       if (y1 === null || y2 === null) return;
       if (x1 === null) x1 = 0;
-      if (x2 === null) x2 = plotWidth;
+      if (x2 === null || !fvg.mitigated) x2 = plotWidth;
       const left = Math.max(0, Math.min(x1, x2));
-      const right = Math.min(plotWidth, Math.max(x1, x2, left + 20));
+      const right = Math.min(plotWidth, Math.max(x1, x2, left + 24));
       if (right <= 0 || left >= plotWidth) return;
       const topY = Math.min(y1, y2);
-      const hY = Math.max(2, Math.abs(y2 - y1));
-      ctx.fillStyle = fvg.type === "bull" ? "rgba(0, 230, 118, 0.18)" : "rgba(255, 23, 68, 0.18)";
-      ctx.strokeStyle = fvg.type === "bull" ? "rgba(0, 230, 118, 0.55)" : "rgba(255, 23, 68, 0.55)";
+      const hY = Math.max(3, Math.abs(y2 - y1));
+
+      const isBull = fvg.type === "bull";
+      const alphaFill = fvg.mitigated ? "0.08" : "0.22";
+      const alphaBorder = fvg.mitigated ? "0.30" : "0.80";
+
+      ctx.fillStyle = isBull ? `rgba(0, 230, 118, ${alphaFill})` : `rgba(255, 23, 68, ${alphaFill})`;
+      ctx.strokeStyle = isBull ? `rgba(0, 230, 118, ${alphaBorder})` : `rgba(255, 23, 68, ${alphaBorder})`;
+      ctx.lineWidth = fvg.signaled ? 1.6 : 1.0;
       ctx.fillRect(left, topY, right - left, hY);
       ctx.strokeRect(left, topY, right - left, hY);
+
+      ctx.fillStyle = isBull ? "#4ade80" : "#f87171";
+      ctx.font = "bold 9.5px sans-serif";
+      const zoneLbl = isBull
+        ? (fvg.signaled ? "✓ FVG BUY TRIGGERED" : "🟢 BULL FVG (BUY ZONE)")
+        : (fvg.signaled ? "✓ FVG SELL TRIGGERED" : "🔴 BEAR FVG (SELL ZONE)");
+      if (right - left > 55) {
+        ctx.fillText(zoneLbl, left + 5, topY + Math.min(hY - 3, 11));
+      }
     });
   }
 
+  // 3. Volume Profile (VPVR) + VAH (Sell Zone), POC (Pivot), VAL (Buy Zone)
   if (pane.inds.has("vpvr")) {
     const logRange = ts.getVisibleLogicalRange();
     let startIdx = 0;
@@ -1409,32 +1611,19 @@ function drawCanvasOverlays(pane) {
       endIdx = Math.min(pane.candles.length - 1, Math.ceil(logRange.to));
     }
     const vis = pane.candles.slice(startIdx, endIdx + 1);
-    if (vis.length >= 3) {
-      let minP = Infinity, maxP = -Infinity;
-      vis.forEach(c => {
-        if (c.low < minP) minP = c.low;
-        if (c.high > maxP) maxP = c.high;
-      });
-      if (maxP > minP) {
-        const numBins = 24;
-        const step = (maxP - minP) / numBins;
-        const upBins = new Array(numBins).fill(0);
-        const dnBins = new Array(numBins).fill(0);
-        vis.forEach(c => {
-          const mid = (c.high + c.low + c.close) / 3.0;
-          let bIdx = Math.floor((mid - minP) / step);
-          if (bIdx < 0) bIdx = 0;
-          if (bIdx >= numBins) bIdx = numBins - 1;
-          const v = Math.max(1, c.volume);
-          if (c.close >= c.open) upBins[bIdx] += v;
-          else dnBins[bIdx] += v;
-        });
-        let maxBinVol = 0, pocIdx = 0;
-        const totBins = new Array(numBins).fill(0);
-        for (let b = 0; b < numBins; b++) {
-          totBins[b] = upBins[b] + dnBins[b];
-          if (totBins[b] > maxBinVol) { maxBinVol = totBins[b]; pocIdx = b; }
+    if (vis.length >= 5) {
+      const prof = computeProfileLevels(vis, 24);
+      if (prof) {
+        const { minP, step, numBins, upBins, dnBins, totBins, maxBinVol, pocIdx, pocPrice, vahPrice, valPrice } = prof;
+
+        // Shade Value Area (Between VAL and VAH)
+        const yVah = pane.candleSeries.priceToCoordinate(vahPrice);
+        const yVal = pane.candleSeries.priceToCoordinate(valPrice);
+        if (yVah !== null && yVal !== null) {
+          ctx.fillStyle = "rgba(56, 189, 248, 0.04)";
+          ctx.fillRect(0, Math.min(yVah, yVal), plotWidth, Math.abs(yVal - yVah));
         }
+
         const maxBarW = plotWidth * 0.22;
         for (let b = 0; b < numBins; b++) {
           const pTop = minP + (b + 1) * step;
@@ -1447,22 +1636,63 @@ function drawCanvasOverlays(pane) {
           const totW = maxBinVol > 0 ? (totBins[b] / maxBinVol) * maxBarW : 0;
           const upW = totBins[b] > 0 ? (upBins[b] / totBins[b]) * totW : 0;
           const dnW = totW - upW;
+
           ctx.fillStyle = "rgba(38, 166, 154, 0.38)";
           ctx.fillRect(plotWidth - totW, topCoord, upW, barH);
           ctx.fillStyle = "rgba(239, 83, 80, 0.38)";
           ctx.fillRect(plotWidth - dnW, topCoord, dnW, barH);
+
+          if (b === pocIdx) {
+            ctx.strokeStyle = "#ffeb3b";
+            ctx.lineWidth = 1.2;
+            ctx.strokeRect(plotWidth - totW, topCoord, totW, barH);
+          }
         }
-        const pocPrice = minP + (pocIdx + 0.5) * step;
+
+        // Draw VAH Line (Resistance / Sell Zone)
+        if (yVah !== null) {
+          ctx.beginPath();
+          ctx.strokeStyle = "rgba(239, 68, 68, 0.85)";
+          ctx.lineWidth = 1.3;
+          ctx.setLineDash([4, 4]);
+          ctx.moveTo(0, yVah);
+          ctx.lineTo(plotWidth, yVah);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#f87171";
+          ctx.font = "bold 10px sans-serif";
+          ctx.fillText(`🔴 VAH (Sell Zone): $${vahPrice.toFixed(0)}`, 8, yVah - 4);
+        }
+
+        // Draw POC Line (Max Volume Magnet / Pivot)
         const yPoc = pane.candleSeries.priceToCoordinate(pocPrice);
         if (yPoc !== null) {
           ctx.beginPath();
-          ctx.strokeStyle = "rgba(255, 235, 59, 0.85)";
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([4, 4]);
+          ctx.strokeStyle = "rgba(255, 235, 59, 0.90)";
+          ctx.lineWidth = 1.6;
+          ctx.setLineDash([3, 3]);
           ctx.moveTo(0, yPoc);
           ctx.lineTo(plotWidth, yPoc);
           ctx.stroke();
           ctx.setLineDash([]);
+          ctx.fillStyle = "#fde047";
+          ctx.font = "bold 10px sans-serif";
+          ctx.fillText(`⚡ POC (Magnet): $${pocPrice.toFixed(0)}`, 8, yPoc - 4);
+        }
+
+        // Draw VAL Line (Support / Buy Zone)
+        if (yVal !== null) {
+          ctx.beginPath();
+          ctx.strokeStyle = "rgba(34, 197, 94, 0.85)";
+          ctx.lineWidth = 1.3;
+          ctx.setLineDash([4, 4]);
+          ctx.moveTo(0, yVal);
+          ctx.lineTo(plotWidth, yVal);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#4ade80";
+          ctx.font = "bold 10px sans-serif";
+          ctx.fillText(`🟢 VAL (Buy Zone): $${valPrice.toFixed(0)}`, 8, yVal + 12);
         }
       }
     }
@@ -1491,15 +1721,43 @@ function updatePaneIndicators(pane) {
   });
 
   let allMarkers = [];
+  let latestSignalSummary = [];
+
+  // [1] VPVR Buy/Sell Signals (VAL Bounce, VAH Reject, POC Reclaim)
+  if (pane.inds.has("vpvr")) {
+    const vpOut = calcVPVRSignals(pane.candles);
+    allMarkers = allMarkers.concat(vpOut.vpMarkers);
+    if (vpOut.lastVpSig) {
+      latestSignalSummary.push(`${vpOut.lastVpSig.type} @ $${vpOut.lastVpSig.price.toFixed(0)}`);
+    }
+  }
+
+  // [2] & [3] FVG Pullback Signals & Order Blocks
+  if (pane.inds.has("fvg") || pane.inds.has("ob")) {
+    const smcOut = detectFVGAndOBWithSignals(pane.candles);
+    pane.smcZones = smcOut;
+    if (pane.inds.has("fvg")) {
+      allMarkers = allMarkers.concat(smcOut.fvgMarkers);
+      if (smcOut.lastFvgSig) {
+        latestSignalSummary.push(`${smcOut.lastFvgSig.type} @ $${smcOut.lastFvgSig.price.toFixed(0)}`);
+      }
+    }
+  } else {
+    pane.smcZones = { fvgs: [], obs: [], fvgMarkers: [] };
+  }
+
+  // [4] Supertrend (10, 3)
   if (pane.inds.has("st")) {
     const stOut = calcSupertrend(pane.candles, 10, 3.0);
     pane.seriesMap.st.setData(stOut.line);
     allMarkers = allMarkers.concat(stOut.markers);
   } else { pane.seriesMap.st.setData([]); }
 
+  // [5] Intraday VWAP
   if (pane.inds.has("vwap")) { pane.seriesMap.vwap.setData(calcVWAP(pane.candles)); }
   else { pane.seriesMap.vwap.setData([]); }
 
+  // [6] EMA Ribbon
   if (pane.inds.has("ema")) {
     pane.seriesMap.ema9.setData(calcEMA(pane.candles, 9));
     pane.seriesMap.ema21.setData(calcEMA(pane.candles, 21));
@@ -1510,6 +1768,7 @@ function updatePaneIndicators(pane) {
     pane.seriesMap.ema50.setData([]); pane.seriesMap.ema200.setData([]);
   }
 
+  // [7] Bollinger Bands
   if (pane.inds.has("bb")) {
     const bb = calcBollinger(pane.candles, 20, 2.0);
     pane.seriesMap.bbBasis.setData(bb.basis);
@@ -1519,6 +1778,7 @@ function updatePaneIndicators(pane) {
     pane.seriesMap.bbBasis.setData([]); pane.seriesMap.bbUpper.setData([]); pane.seriesMap.bbLower.setData([]);
   }
 
+  // [8] CPR
   if (pane.inds.has("cpr")) {
     const cpr = calcCPR(pane.candles);
     pane.seriesMap.cprP.setData(cpr.pArr);
@@ -1528,13 +1788,25 @@ function updatePaneIndicators(pane) {
     pane.seriesMap.cprP.setData([]); pane.seriesMap.cprTC.setData([]); pane.seriesMap.cprBC.setData([]);
   }
 
+  // [9] Market Structure
   if (pane.inds.has("ms")) {
     allMarkers = allMarkers.concat(calcMarketStructure(pane.candles));
   }
 
+  // Sort markers chronologically & deduplicate same-timestamp collisions
   allMarkers.sort((a, b) => a.time - b.time);
   pane.candleSeries.setMarkers(allMarkers);
 
+  // Update Header Signal Pill
+  if (latestSignalSummary.length > 0) {
+    pane.sigPillEl.textContent = "Last: " + latestSignalSummary.join(" | ");
+    pane.sigPillEl.style.color = latestSignalSummary[latestSignalSummary.length - 1].includes("BUY") ? "#4ade80" : "#f87171";
+  } else {
+    pane.sigPillEl.textContent = "Signals: Active";
+    pane.sigPillEl.style.color = "#94a3b8";
+  }
+
+  // [10] RSI (14)
   if (hasRsi) {
     pane.seriesMap.rsi.setData(calcRSI(pane.candles, 14));
     if (!pane.rsiLinesCreated) {
@@ -1543,10 +1815,6 @@ function updatePaneIndicators(pane) {
       pane.rsiLinesCreated = true;
     }
   } else { pane.seriesMap.rsi.setData([]); }
-
-  if (pane.inds.has("fvg") || pane.inds.has("ob")) {
-    pane.smcZones = detectFVGAndOB(pane.candles);
-  } else { pane.smcZones = { fvgs: [], obs: [] }; }
 
   requestAnimationFrame(() => drawCanvasOverlays(pane));
 }
@@ -1605,7 +1873,7 @@ function buildGrid(count) {
   grid.style.gridTemplateRows = `repeat(${dims.rows}, 1fr)`;
 
   for (let i = 0; i < count; i++) {
-    const def = DEFAULT_PANES[i] || { tf: "5m", inds: ["vpvr", "st"] };
+    const def = DEFAULT_PANES[i] || { tf: "5m", inds: ["vpvr", "fvg"] };
     const paneEl = document.createElement("div");
     paneEl.className = "pane";
 
@@ -1629,8 +1897,13 @@ function buildGrid(count) {
       tfSel.appendChild(opt);
     });
 
+    const sigPill = document.createElement("span");
+    sigPill.className = "sig-pill";
+    sigPill.textContent = "Scanning VPVR/FVG...";
+
     leftGroup.appendChild(btcBadge);
     leftGroup.appendChild(tfSel);
+    leftGroup.appendChild(sigPill);
 
     const indDrop = document.createElement("div");
     indDrop.className = "ind-dropdown";
@@ -1660,7 +1933,7 @@ function buildGrid(count) {
     tickerEl.innerHTML = `
       <div class="tk-left">
         <span class="dot dot-crypto"></span>
-        <span>BTC-USD (Hyperliquid)</span>
+        <span>BTC-USD</span>
         <div class="ind-tags"></div>
       </div>
       <div class="tk-right"><span class="tk-price up-col">--</span><span class="tk-chg up-col">--</span></div>
@@ -1726,13 +1999,14 @@ function buildGrid(count) {
       chart, candleSeries, volSeries, seriesMap,
       chartBox, canvas,
       indBtnEl: indBtn,
+      sigPillEl: sigPill,
       indTagsEl: tickerEl.querySelector(".ind-tags"),
       tickerEl,
       dotEl: tickerEl.querySelector(".dot"),
       priceEl: tickerEl.querySelector(".tk-price"),
       chgEl: tickerEl.querySelector(".tk-chg"),
       candles: [], prevClose: 0, lastPrice: null,
-      smcZones: { fvgs: [], obs: [] },
+      smcZones: { fvgs: [], obs: [], fvgMarkers: [] },
       rsiLinesCreated: false
     };
 
@@ -1832,7 +2106,7 @@ setInterval(() => {
 }, 30000);
 
 loadSavedConfigs();
-const savedCount = parseInt(localStorage.getItem("btc_mc_count") || "4", 10);
+const savedCount = parseInt(localStorage.getItem("btc_mc_count_v3") || "4", 10);
 const validCount = [1, 2, 4, 6, 8].includes(savedCount) ? savedCount : 4;
 const countSel = document.getElementById("count-select");
 countSel.value = String(validCount);
@@ -1871,7 +2145,6 @@ while True:
     imbalance = (eng["buy_dom_pct"] - eng["sell_dom_pct"]) / 100.0
     ist_time = eng["ist_time"]
 
-    # Hyperliquid Pro 5-Factor Order Book Data
     ob = eng["order_book"]
     best_bid = ob["best_bid"]
     best_ask = ob["best_ask"]
@@ -1954,7 +2227,6 @@ while True:
 <div style="color:#94a3b8; font-size:12px; margin-top:4px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
 
-    # Spike Radar History Rows
     spike_rows_html = ""
     if not eng["spike_history"]:
         spike_rows_html = """<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी कोई हाई-कन्विक्शन स्पाइक (Score ≥ 85) ट्रिगर नहीं हुआ है</td></tr>"""
