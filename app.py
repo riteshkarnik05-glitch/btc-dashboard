@@ -63,7 +63,7 @@ BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])   # Ascending Bullis
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])      # Descending Bearish Alarm
 
 # ============================================================================
-# PARAMETERS (LOW-LOSS VERSION: REAL SL + BE SHIELD + TIME STOP + COOLDOWN)
+# PARAMETERS (PINE-FAITHFUL BASE + OPTIONAL LOSS-REDUCTION SWITCHES)
 # ============================================================================
 TOTAL_QTY            = 10
 TP1_BOOK_QTY         = 7
@@ -93,18 +93,28 @@ RUNNER_LOCK_BRICKS   = 0.35
 MID_LOCK_BRICKS      = 1.25
 TP2_BRICKS           = 2.20
 
-# --- NEW LOSS-REDUCTION PARAMETERS ---
-SL_BRICKS            = 0.80   # पहले 1.20 था: अब छोटा SL
-HARD_EXTRA_BRICKS    = 0.30   # SL के आगे हार्ड स्टॉप (wick crash सुरक्षा)
-ANTI_WICK_SL         = True   # SL कैंडल-क्लोज पर चेक होगा, हार्ड स्टॉप wick पर
-BE_TRIGGER_BRICKS    = 0.50   # इतना फेवर में जाते ही SL ऊपर खिसकेगा
-BE_SHIELD_LOSS_BRICKS = 0.25  # SL अब entry से सिर्फ इतना नीचे/ऊपर
-TIME_STOP_BARS       = 10     # इतने बार तक ट्रेड न चले तो exit
-TIME_STOP_MIN_BRICKS = 0.25   # टाइम-स्टॉप पर कम से कम इतना फेवर चाहिए
-COOLDOWN_AFTER_SL_BARS = 10   # एक लॉस के बाद नई एंट्री रोक
-COOLDOWN_AFTER_2SL_BARS = 30  # लगातार 2+ लॉस के बाद लंबा ब्रेक
-MIN_CLOSE_POS        = 0.55   # BUY: close कैंडल रेंज के ऊपरी 45% में, SELL: निचले 45% में
-FLIP_VALID_BARS      = 3      # ST फ्लिप के इतने बार बाद तक ही flip-एंट्री मान्य
+# --- PINE जैसा SL (असली नुकसान दिखेगा, कोई फर्जी कैप नहीं) ---
+SL_BRICKS            = 1.40
+HARD_EXTRA_BRICKS    = 0.50
+ANTI_WICK_SL         = True
+
+# --- वैकल्पिक स्विच: Pine से सीधा मिलान करना हो तो इन्हें False कर दें ---
+USE_BE_SHIELD        = True
+BE_TRIGGER_BRICKS    = 0.60   # इतना फेवर में जाते ही SL खिसकेगा
+BE_SHIELD_LOSS_BRICKS = 0.40  # SL अब entry से इतना पीछे
+
+USE_COOLDOWN         = True
+COOLDOWN_AFTER_SL_BARS = 10   # एक लॉस के बाद इतने बार नई एंट्री बंद
+COOLDOWN_AFTER_2SL_BARS = 30  # लगातार 2+ लॉस के बाद
+
+USE_CLOSE_POS_FILTER = True
+MIN_CLOSE_POS        = 0.55   # BUY: close कैंडल के ऊपरी 45% में, SELL: निचले 45% में
+
+USE_TIME_STOP        = False  # 1m पर नुकसानदेह निकला, इसलिए बंद
+TIME_STOP_BARS       = 30
+TIME_STOP_MIN_BRICKS = 0.25
+
+FLIP_VALID_BARS      = 999    # 999 = Pine जैसा (flip सिग्नल की कोई समय-सीमा नहीं)
 
 BROK_PER_QTY         = 1.5
 MINTICK              = 0.1
@@ -247,7 +257,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# STATEFUL INCREMENTAL BAR PROCESSOR (LOW-LOSS VERSION)
+# STATEFUL INCREMENTAL BAR PROCESSOR
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -430,14 +440,14 @@ def process_single_closed_bar(eng, kline):
         eng["pending_flip_sell"] = False
 
     # ========================================================================
-    # MANAGE ACTIVE 10-QTY TRADE (REAL SL + BE SHIELD + TIME STOP)
+    # MANAGE ACTIVE 10-QTY TRADE
     # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
         t_label = "LONG" if t_dir == 1 else "SHORT"
         eng["max_fav_price"] = max(eng["max_fav_price"], h) if t_dir == 1 else min(eng["max_fav_price"], l)
 
-        # 1. Hit TP1 -> Book 7 Qty & Lock 3 Qty at +0.35 Brick
+        # 1. TP1 -> Book 7 Qty & Lock 3 Qty
         hit_tp1_now = (not eng["tp1_reached"]) and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"]))
         if hit_tp1_now:
             eng["tp1_reached"] = True
@@ -504,14 +514,15 @@ def process_single_closed_bar(eng, kline):
             if not eng["tp1_reached"]:
                 entry_p = eng["entry_price"]
 
-                # --- BE SHIELD: 0.50 Brick फेवर में जाते ही SL छोटा कर दो ---
-                fav_pts_max = (eng["max_fav_price"] - entry_p) if t_dir == 1 else (entry_p - eng["max_fav_price"])
-                if (not eng["be_shield"]) and fav_pts_max >= box_size * BE_TRIGGER_BRICKS:
-                    eng["be_shield"] = True
-                    shield_px = (entry_p - box_size * BE_SHIELD_LOSS_BRICKS) if t_dir == 1 else (entry_p + box_size * BE_SHIELD_LOSS_BRICKS)
-                    eng["stop_price"] = max(eng["stop_price"], shield_px) if t_dir == 1 else min(eng["stop_price"], shield_px)
-                    new_hard = (eng["stop_price"] - box_size * HARD_EXTRA_BRICKS) if t_dir == 1 else (eng["stop_price"] + box_size * HARD_EXTRA_BRICKS)
-                    eng["hard_stop_price"] = max(eng["hard_stop_price"], new_hard) if t_dir == 1 else min(eng["hard_stop_price"], new_hard)
+                # --- BE SHIELD (वैकल्पिक) ---
+                if USE_BE_SHIELD and (not eng["be_shield"]):
+                    fav_pts_max = (eng["max_fav_price"] - entry_p) if t_dir == 1 else (entry_p - eng["max_fav_price"])
+                    if fav_pts_max >= box_size * BE_TRIGGER_BRICKS:
+                        eng["be_shield"] = True
+                        shield_px = (entry_p - box_size * BE_SHIELD_LOSS_BRICKS) if t_dir == 1 else (entry_p + box_size * BE_SHIELD_LOSS_BRICKS)
+                        eng["stop_price"] = max(eng["stop_price"], shield_px) if t_dir == 1 else min(eng["stop_price"], shield_px)
+                        new_hard = (eng["stop_price"] - box_size * 0.30) if t_dir == 1 else (eng["stop_price"] + box_size * 0.30)
+                        eng["hard_stop_price"] = max(eng["hard_stop_price"], new_hard) if t_dir == 1 else min(eng["hard_stop_price"], new_hard)
 
                 wick_hit_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
                 close_hit_sl = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
@@ -520,12 +531,11 @@ def process_single_closed_bar(eng, kline):
                 hard_crash = (l <= eng["hard_stop_price"]) if t_dir == 1 else (h >= eng["hard_stop_price"])
 
                 fav_close = (c - entry_p) if t_dir == 1 else (entry_p - c)
-                time_exit = ((idx - eng["entry_bar"]) >= TIME_STOP_BARS) and (fav_close < box_size * TIME_STOP_MIN_BRICKS)
+                time_exit = USE_TIME_STOP and ((idx - eng["entry_bar"]) >= TIME_STOP_BARS) and (fav_close < box_size * TIME_STOP_MIN_BRICKS)
 
                 sl_triggered = (close_hit_sl or brick_turned_bad or st_turned_bad or hard_crash) if ANTI_WICK_SL else (wick_hit_sl or st_turned_bad or hard_crash)
 
                 if sl_triggered or time_exit:
-                    # असली exit प्राइस (कोई फर्जी कैप नहीं)
                     if hard_crash:
                         exit_p = min(eng["hard_stop_price"], o) if t_dir == 1 else max(eng["hard_stop_price"], o)
                         tag = "🛑 HARD SL (10Q)"
@@ -596,8 +606,8 @@ def process_single_closed_bar(eng, kline):
     rsi_val = eng["rsi14"]
 
     candle_not_giant = (h - l) <= box_size * 1.85
-    close_pos_buy_ok = ((c - l) / rng) >= MIN_CLOSE_POS
-    close_pos_sell_ok = ((h - c) / rng) >= MIN_CLOSE_POS
+    close_pos_buy_ok = (not USE_CLOSE_POS_FILTER) or (((c - l) / rng) >= MIN_CLOSE_POS)
+    close_pos_sell_ok = (not USE_CLOSE_POS_FILTER) or (((h - c) / rng) >= MIN_CLOSE_POS)
 
     bull_filter_ok = candle_not_giant and close_pos_buy_ok and buy_dom_pct >= 50.0 and rsi_val < 76.0
     bear_filter_ok = candle_not_giant and close_pos_sell_ok and sell_dom_pct >= 50.0 and rsi_val > 24.0
@@ -618,7 +628,7 @@ def process_single_closed_bar(eng, kline):
     trigger_cont_buy = raw_cont_buy and late_safe
     trigger_cont_sell = raw_cont_sell and late_safe
 
-    cooldown_ok = idx >= eng["cooldown_until_bar"]
+    cooldown_ok = (not USE_COOLDOWN) or (idx >= eng["cooldown_until_bar"])
     can_open_trade = ((eng["trade_dir"] == 0) and cooldown_ok) or (eng["tp1_reached"] and (st_flip_buy or st_flip_sell))
 
     if can_open_trade and ((raw_cont_buy and not trigger_cont_buy) or (raw_cont_sell and not trigger_cont_sell)):
@@ -1302,7 +1312,7 @@ terminal = st.empty()
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: Low-Loss इंजन (Real SL + BE Shield + Time Stop) लोड हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: इंजन लोड हो रहा है...")
         time.sleep(1)
         continue
 
@@ -1433,10 +1443,10 @@ while True:
 </div>
 </div>"""
     else:
-        cool_left = max(0, eng["cooldown_until_bar"] - eng["bar_count"])
+        cool_left = max(0, eng["cooldown_until_bar"] - eng["bar_count"]) if USE_COOLDOWN else 0
         cool_txt = f" | ⏳ Cooldown: {cool_left} bars" if cool_left > 0 else ""
         trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (LOW-LOSS MODE){cool_txt}</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL{cool_txt}</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:4px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b> | Loss Streak: <b>{eng['loss_streak']}</b></div>
 </div>"""
 
@@ -1474,14 +1484,16 @@ while True:
 
     net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
     wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
-    setup_str = f"TP1(7Q): +{box_size * TP1_BRICKS:.0f}p | TP2(3Q): +{box_size * TP2_BRICKS:.0f}p | SL: -{box_size * SL_BRICKS:.0f}p (Shield -{box_size * BE_SHIELD_LOSS_BRICKS:.0f}p)"
+    shield_txt = f" (Shield -{box_size * BE_SHIELD_LOSS_BRICKS:.0f}p)" if USE_BE_SHIELD else ""
+    setup_str = f"TP1(7Q): +{box_size * TP1_BRICKS:.0f}p | TP2(3Q): +{box_size * TP2_BRICKS:.0f}p | SL: -{box_size * SL_BRICKS:.0f}p{shield_txt}"
+    sw_str = f"Shield {'ON' if USE_BE_SHIELD else 'OFF'} | Cooldown {'ON' if USE_COOLDOWN else 'OFF'} | CloseFilter {'ON' if USE_CLOSE_POS_FILTER else 'OFF'} | TimeStop {'ON' if USE_TIME_STOP else 'OFF'}"
 
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
 {audio_autoplay_html}
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [LOW-LOSS • REAL SL + BE SHIELD + TIME STOP]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [PINE-FAITHFUL • REAL LOSS ACCOUNTING]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
@@ -1571,11 +1583,12 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (Low-Loss: Real SL • BE Shield • Time Stop)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (Pine-Faithful • Real Loss)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Daily ATR-5 | 1 Brick</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (7Q @ 0.85B TP1 + 3Q Profit-Lock/Trail)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Switches</td><td style="padding:6px; color:#cbd5e1; font-weight:bold; text-align:right;">{sw_str}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:6px; color:#ffffff; font-weight:bold; text-align:right;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Win Rate % | TP2 Runners | Time Exits</td><td style="padding:6px; color:{wr_color}; font-weight:bold; text-align:right;">{win_rate:.1f}% | 🚀 {eng['tp2_hits']} | ⏱️ {eng['time_exits']}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts</td></tr>
