@@ -9,6 +9,8 @@ import io
 import wave
 import struct
 import base64
+import hmac
+import hashlib
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="AI-Renko Pro & Pre-Spike Terminal", layout="wide")
@@ -36,6 +38,98 @@ div.stButton > button:hover {
     color: #0f172a !important;
 }
 </style>""", unsafe_allow_html=True)
+
+# ============================================================================
+# DELTA EXCHANGE DEMO API & SERVER IP HELPER (ADDED WITHOUT TOUCHING CORE LOGIC)
+# ============================================================================
+DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9Wh8bFTs"
+DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
+DELTA_URLS       = [
+    "https://cdn-ind.testnet.deltaex.org",
+    "https://testnet-api.delta.exchange"
+]
+SPIKE_QTY        = 5
+
+@st.cache_data(ttl=300)
+def get_server_public_ip():
+    for url in ["https://api.ipify.org", "https://ipv4.icanhazip.com", "https://checkip.amazonaws.com"]:
+        try:
+            r = requests.get(url, timeout=4)
+            if r.status_code == 200 and r.text.strip():
+                return r.text.strip()
+        except Exception:
+            pass
+    return "IP लोड हो रहा है..."
+
+def delta_request(method, path, payload_dict=None):
+    body_str = json.dumps(payload_dict, separators=(',', ':')) if payload_dict else ""
+    last_err = ""
+    for base_url in DELTA_URLS:
+        try:
+            timestamp = str(int(time.time()))
+            sig_data = method.upper() + timestamp + path + body_str
+            signature = hmac.new(
+                DELTA_API_SECRET.encode("utf-8"),
+                sig_data.encode("utf-8"),
+                hashlib.sha256
+            ).hexdigest()
+            headers = {
+                "api-key": DELTA_API_KEY,
+                "timestamp": timestamp,
+                "signature": signature,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "python-rest-client"
+            }
+            url = base_url + path
+            if method.upper() == "GET":
+                r = requests.get(url, headers=headers, timeout=5)
+            else:
+                r = requests.post(url, data=body_str, headers=headers, timeout=5)
+            if r.status_code == 200:
+                return True, r.json()
+            last_err = f"HTTP {r.status_code}: {r.text[:120]}"
+        except Exception as e:
+            last_err = str(e)
+    return False, last_err
+
+def place_delta_demo_order(eng, side, qty, tag="Renko", reduce_only=False):
+    if not eng.get("initialized", False) or qty <= 0:
+        return False
+    try:
+        prod_id = eng.get("delta_btc_product_id", 27)
+        payload = {
+            "product_id": int(prod_id),
+            "size": int(qty),
+            "side": side.lower(),
+            "order_type": "market_order"
+        }
+        if reduce_only:
+            payload["reduce_only"] = True
+        ok, resp = delta_request("POST", "/v2/orders", payload)
+        ist_now = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
+        if ok:
+            eng["delta_status"] = f"✅ [{ist_now}] Delta Demo {tag}: {side.upper()} {qty} Qty सफल!"
+        else:
+            eng["delta_status"] = f"⚠️ [{ist_now}] Delta {tag} ({side.upper()} {qty}Q) अटका: {resp}"
+        return ok
+    except Exception as e:
+        eng["delta_status"] = f"⚠️ Delta Error: {str(e)}"
+        return False
+
+def init_delta_product_id(eng):
+    for base_url in DELTA_URLS:
+        try:
+            r = requests.get(base_url + "/v2/products", timeout=5)
+            if r.status_code == 200:
+                items = r.json().get("result", [])
+                for p in items:
+                    sym = str(p.get("symbol", "")).upper()
+                    if sym in ["BTCUSD", "BTCUSDT"]:
+                        eng["delta_btc_product_id"] = int(p["id"])
+                        return
+        except Exception:
+            pass
 
 # ============================================================================
 # IN-MEMORY WAV BEEP GENERATOR (FOR ZERO-DEPENDENCY AUTOPLAY AUDIO)
@@ -425,6 +519,7 @@ def process_single_closed_bar(eng, kline):
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
         t_label = "LONG" if t_dir == 1 else "SHORT"
+        close_side = "sell" if t_dir == 1 else "buy"
         eng["max_fav_price"] = max(eng["max_fav_price"], h) if t_dir == 1 else min(eng["max_fav_price"], l)
 
         # 1. Hit TP1 (0.85 Brick) -> Book 7 Qty Immediately & Lock 3 Qty at +0.35 Brick Profit!
@@ -439,6 +534,7 @@ def process_single_closed_bar(eng, kline):
             eng["open_qty"] = RUNNER_QTY
             runner_lock_pts = box_size * RUNNER_LOCK_BRICKS
             eng["stop_price"] = (eng["entry_price"] + runner_lock_pts) if t_dir == 1 else (eng["entry_price"] - runner_lock_pts)
+            place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag="Renko TP1 (7Q)", reduce_only=True)
 
         # 2. Hit Mid-Lock (1.25 Bricks) -> Lock 3 Qty Runner at TP1 (+0.85 Brick)
         hit_mid_now = eng["tp1_reached"] and (not eng["mid_reached"]) and ((h >= eng["mid_lock_price"]) if t_dir == 1 else (l <= eng["mid_lock_price"]))
@@ -487,6 +583,7 @@ def process_single_closed_bar(eng, kline):
                     "exit": exit_p, "status": "🚀 7Q TP1 + 3Q TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#38bdf8"
                 })
                 eng["history"] = eng["history"][:40]
+                place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko Trail Exit (3Q)", reduce_only=True)
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
@@ -526,6 +623,7 @@ def process_single_closed_bar(eng, kline):
                         "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)}", "color": "#ef4444"
                     })
                     eng["history"] = eng["history"][:40]
+                    place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko SL Exit (10Q)", reduce_only=True)
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
                     eng["trend_tp1_done"] = True
@@ -548,6 +646,7 @@ def process_single_closed_bar(eng, kline):
                         "exit": exit_p, "status": status_tag, "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#22c55e"
                     })
                     eng["history"] = eng["history"][:40]
+                    place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko Profit-Lock Exit (3Q)", reduce_only=True)
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
 
@@ -586,6 +685,7 @@ def process_single_closed_bar(eng, kline):
     if can_open_trade and (trigger_flip_buy or trigger_cont_buy or trigger_flip_sell or trigger_cont_sell):
         if eng["trade_dir"] != 0 and eng["tp1_reached"]:
             old_label = "LONG" if eng["trade_dir"] == 1 else "SHORT"
+            old_close_side = "sell" if eng["trade_dir"] == 1 else "buy"
             runner_pts = max(0.0, (c - eng["entry_price"]) if eng["trade_dir"] == 1 else (eng["entry_price"] - c))
             runner_pnl_3q = runner_pts * RUNNER_QTY
             eng["gross_profit"] += runner_pnl_3q
@@ -595,6 +695,7 @@ def process_single_closed_bar(eng, kline):
                 "exit": c, "status": "✅ 7Q TP1 + 3Q FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)}", "color": "#22c55e"
             })
             eng["history"] = eng["history"][:40]
+            place_delta_demo_order(eng, old_close_side, RUNNER_QTY, tag="Renko Flip Close (3Q)", reduce_only=True)
 
         is_long = trigger_flip_buy or trigger_cont_buy
         if is_long:
@@ -624,6 +725,9 @@ def process_single_closed_bar(eng, kline):
         eng["tp2_price"] = (c + eng["locked_tp2_pts"]) if is_long else (c - eng["locked_tp2_pts"])
         eng["stop_price"] = (c - eng["locked_sl_pts"]) if is_long else (c + eng["locked_sl_pts"])
         eng["hard_stop_price"] = (eng["stop_price"] - box_size * 0.35) if is_long else (eng["stop_price"] + box_size * 0.35)
+
+        entry_side = "buy" if is_long else "sell"
+        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko Entry (10Q)")
 
     eng["prev_close"] = c
     eng["last_bar_time"] = bar_time
@@ -926,6 +1030,9 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         eng["last_spike_dir"] = dir_code
         eng["last_spike_status"] = f"🔊⚡ {ist_t}: {spike_dir_text} @ ${mid_price:,.1f}"
         eng["last_spike_color"] = col
+
+        spike_side = "buy" if dir_code == 1 else "sell"
+        place_delta_demo_order(eng, spike_side, SPIKE_QTY, tag="Spike Entry (5Q)")
     elif now_ts - eng["last_spike_alert_ts"] > 15:
         if vac["armed"]:
             eng["last_spike_status"] = (
@@ -946,6 +1053,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
 def background_worker(eng):
     last_1d_fetch = 0
     last_kline_fetch = 0
+    init_delta_product_id(eng)
 
     while True:
         try:
@@ -1112,6 +1220,8 @@ def get_hl_5000_oneshot_div15_v2_engine():
         "last_spike_status": "📡 Pro 3-Engine Direction Radar सिंक हो रहा है...",
         "last_spike_color": "#0f172a",
         "spike_history": [],
+        "delta_btc_product_id": 27,
+        "delta_status": "🤖 Delta Demo Algo: Ready (Renko = 10Q | Spike = 5Q)",
         "error": None
     }
     thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
@@ -1119,11 +1229,12 @@ def get_hl_5000_oneshot_div15_v2_engine():
     return eng
 
 eng = get_hl_5000_oneshot_div15_v2_engine()
+server_ip = get_server_public_ip()
 
 # ============================================================================
-# SINGLE CLEAN TERMINAL HEADER (AUDIO UNLOCK BAR + RESET MAX SPREAD BUTTON)
+# SINGLE CLEAN TERMINAL HEADER (AUDIO UNLOCK BAR + SERVER IP + DELTA TEST)
 # ============================================================================
-top_col1, top_col2 = st.columns([0.74, 0.26])
+top_col1, top_col2, top_col3 = st.columns([0.52, 0.24, 0.24])
 with top_col1:
     sound_bar_html = """<!DOCTYPE html>
 <html>
@@ -1240,6 +1351,14 @@ setInterval(() => {
     components.html(sound_bar_html, height=44, scrolling=False)
 
 with top_col2:
+    if st.button("🔌 Delta API कनेक्शन टेस्ट करें"):
+        ok, resp = delta_request("GET", "/v2/wallet/balances")
+        if ok:
+            eng["delta_status"] = f"✅ Delta Demo API Connected! (Server IP {server_ip} Whitelisted)"
+        else:
+            eng["delta_status"] = f"⚠️ Delta API Error (IP {server_ip} को Delta में सेव करें): {resp}"
+
+with top_col3:
     if st.button("🔄 सर्वोच्च स्प्रेड रीसेट करें (Reset Max Spread)"):
         eng["max_spread_record"] = {
             "spread": 0.0,
@@ -1256,7 +1375,7 @@ terminal = st.empty()
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और True SL इंजन लोड हो रहा है...")
+        terminal.info(f"⏳ Dr Devendra AI-Renko PRO लोड हो रहा है... | 🌐 Server IP (Delta में सेव करें): {server_ip}")
         time.sleep(1)
         continue
 
@@ -1274,6 +1393,7 @@ while True:
     ist_time = eng["ist_time"]
     bar_count = eng["bar_count"]
     anchor_str = eng["anchor_time_str"]
+    delta_status_str = eng.get("delta_status", "🤖 Delta Demo Algo: Ready")
 
     ob = eng["order_book"]
     best_bid = ob["best_bid"]
@@ -1430,6 +1550,10 @@ while True:
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
 {audio_autoplay_html}
+<div style="display:flex; justify-content:space-between; align-items:center; background:#111827; border:1px solid #eab308; border-radius:10px; padding:8px 14px; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+<span style="font-size:12.5px; font-weight:800; color:#facc15;">🌐 Server IP (Delta में Whitelist करें): <span style="color:#ffffff; background:#1e293b; padding:2px 8px; border-radius:5px; border:1px solid #475569;">{server_ip}</span></span>
+<span style="font-size:12px; font-weight:700; color:#38bdf8;">{delta_status_str}</span>
+</div>
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
 <div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [DIVISOR 15 MEDIUM BRICK • ONE-SHOT LOCK]</div>
