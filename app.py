@@ -639,10 +639,6 @@ def process_single_closed_bar(eng, kline):
 # [1] $8+ VACUUM STEP-IN + [2] REAL TAKER TRADES (CVD) + [3] TOP-3 DEPLETION
 # ============================================================================
 def fetch_hl_taker_flow():
-    """
-    Fetches real executed market trades (recentTrades) from Hyperliquid
-    to compute aggressive Taker Buy ('B') vs Taker Sell ('A') volume & delta.
-    """
     taker_buy_v = 0.0
     taker_sell_v = 0.0
     try:
@@ -656,7 +652,6 @@ def fetch_hl_taker_flow():
             trades = r_tr.json()
             if isinstance(trades, list) and len(trades) > 0:
                 now_ms = int(time.time() * 1000)
-                # Filter trades from the last 12 seconds (or latest 35 trades)
                 for idx, t in enumerate(trades[:40]):
                     t_ms = int(t.get("time", 0))
                     if (now_ms - t_ms <= 12000) or idx < 15:
@@ -753,7 +748,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     else:
         normal_spread = 1.0
 
-    # Measure Top-3 Depletion Rate (How much Top-3 Ask or Top-3 Bid was eaten in last 3s)
     if len(hist) >= 3:
         ref_ask = min(x["ask"] for x in hist[-3:])
         ref_bid = max(x["bid"] for x in hist[-3:])
@@ -807,7 +801,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
             vac["vac_ask"] = best_ask
             vac["vac_mid"] = mid_price
         else:
-            # Update peak spread if vacuum widens further
             if spread > vac["peak_spread"]:
                 vac["peak_spread"] = spread
             vac["vac_bid"] = min(vac["vac_bid"], best_bid)
@@ -815,7 +808,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     elif vac["armed"] and (now_ts - vac["ts"] > VACUUM_WATCH_SEC):
         vac["armed"] = False
 
-    # Calculate Vacuum Step-In (How much Buyers stepped UP into the gap vs Sellers stepped DOWN)
     if vac["armed"]:
         bid_step_in = max(0.0, best_bid - vac["vac_bid"])
         ask_step_dn = max(0.0, vac["vac_ask"] - best_ask)
@@ -865,18 +857,10 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     # ========================================================================
     # ENGINE 2 & 3: PRO DIRECTION DECISION (STEP-IN + TAKER CVD + TOP-3 BOOK)
     # ========================================================================
-    # Bullish True Direction Check:
-    # 1. Taker Flow: Real Market Buys are dominating (>= 58% or positive net delta with Ask pull)
-    # 2. Step-In / Pull: Buyers stepped UP into the vacuum (`bid_step_in >= 1.5`) OR Sellers pulled Ask up sharply (`ask_jump >= 4.0` while Bid held firm)
-    # 3. Top-3 Near-Touch: Top-3 Bid >= 58% OR Top-3 Ask was eaten
     taker_bull_ok = (taker_buy_pct >= MIN_TAKER_DOM_PCT) or (taker_buy_pct >= 52.0 and micro_skew > 0)
     step_bull_ok  = (bid_step_in >= 1.5 and bid_step_in > ask_step_dn) or (ask_jump >= 4.0 and ask_jump > bid_drop * 1.4 and mid_price >= vac["vac_mid"])
     top3_bull_ok  = (top3_bid_pct >= MIN_TOP3_DOM_PCT) or ask_top3_eaten
 
-    # Bearish True Direction Check:
-    # 1. Taker Flow: Real Market Sells are dominating (>= 58% or negative net delta with Bid drop)
-    # 2. Step-Down / Drop: Sellers stepped DOWN into the vacuum (`ask_step_dn >= 1.5`) OR Buyers dropped Bid sharply (`bid_drop >= 4.0` while Ask held firm)
-    # 3. Top-3 Near-Touch: Top-3 Ask >= 58% OR Top-3 Bid was eaten
     taker_bear_ok = (taker_sell_pct >= MIN_TAKER_DOM_PCT) or (taker_sell_pct >= 52.0 and micro_skew < 0)
     step_bear_ok  = (ask_step_dn >= 1.5 and ask_step_dn > bid_step_in) or (bid_drop >= 4.0 and bid_drop > ask_jump * 1.4 and mid_price <= vac["vac_mid"])
     top3_bear_ok  = (top3_ask_pct >= MIN_TOP3_DOM_PCT) or bid_top3_eaten
@@ -885,9 +869,9 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     spike_dir_text = None
     dir_code = 0
     col = "#38bdf8"
+    trig_sp = vac["peak_spread"] if vac["armed"] else spread
 
     if vac["armed"] and len(hist) >= 5 and time_since_last >= SIGNAL_COOLDOWN_SEC:
-         trig_sp = vac["peak_spread"]
         if taker_bull_ok and step_bull_ok and top3_bull_ok:
             spike_dir_text = (
                 f"🚀 PRO PRE-SPIKE BUY (Spread: ${trig_sp:.1f} | "
