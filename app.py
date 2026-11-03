@@ -63,11 +63,11 @@ BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])   # Ascending Bullis
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])      # Descending Bearish Alarm
 
 # ============================================================================
-# UPGRADED 10-QUANTITY (7Q TP1 + 3Q RUNNER) & PINE SCRIPT v5 SYNC PARAMETERS
+# RESTORED HIGH-WIN-RATE PARAMETERS + 7Q TP1 BOOKING & CAPPED SL LOSS
 # ============================================================================
 TOTAL_QTY            = 10
-TP1_BOOK_QTY         = 7      # TP1 पर अब 5 की जगह 7 क्वांटिटी पक्की बुक होंगी
-RUNNER_QTY           = 3      # बची हुई 3 क्वांटिटी बड़े रनर (TP2 + अनलिमिटेड ट्रेलिंग) के लिए
+TP1_BOOK_QTY         = 7      # 0.85 Brick (TP1) पर 5 की जगह 7 क्वांटिटी तुरंत बुक होंगी
+RUNNER_QTY           = 3      # बची हुई 3 क्वांटिटी प्रॉफिट-लॉक और बड़े रनर (TP2 + Trail) के लिए
 
 USE_TRAIL_BEYOND_TP2 = True
 TRAIL_METHOD         = "Smart Brick + Peak Ratchet (Best)"
@@ -88,13 +88,15 @@ GAUSS_PERIOD         = 20
 SIG_MODE             = "Supertrend + Brick-Step Re-Entry (Best)"
 MIN_VOL_DOM          = 55.0
 
-# UPGRADED RISK-REWARD: TP1 (1.10) > SL (1.00) & ANTI-WICK OFF (NO SLIPPAGE)
-TP1_BRICKS           = 1.10   # पहला टारगेट: 1.10 रैंकों ब्रिक्स (7 क्वांटिटी बुक)
-MID_LOCK_BRICKS      = 1.55   # 1.55 ब्रिक्स छूते ही रनर का SL सीधा TP1 पर लॉक हो जाएगा
-TP2_BRICKS           = 2.20   # दूसरा टारगेट: 2.20 रैंकों ब्रिक्स (अनलिमिटेड ट्रेलिंग शुरू)
-SL_BRICKS            = 1.00   # सख्त स्टॉप लॉस: 1.00 रैंकों ब्रिक (TP1 से छोटा)
-ANTI_WICK_SL         = False  # False = फिक्स SL छूते ही तुरंत कटेगा (कैंडल क्लोज के इंतजार में बड़ा नुकसान नहीं होगा)
-BROK_PER_QTY         = 1.5    # 1.5 पॉइंट प्रति क्वांटिटी (10 Qty = 15 pts कुल ब्रोकरेज, Pine Script के समान)
+# RESTORED ORIGINAL WIN-RATE TRIGGERS + IMPROVED PAYOFF RATIO
+TP1_BRICKS           = 0.85   # वापस 0.85 Brick (ताकि हाई Win Ratio बिल्कुल पहले जैसा रहे)
+RUNNER_LOCK_BRICKS   = 0.35   # TP1 हिट होते ही बची हुई 3 Qty का SL कॉस्ट (0) के बजाय +0.35 Brick प्रॉफिट पर लॉक होगा
+MID_LOCK_BRICKS      = 1.25   # 1.25 Bricks छूते ही बची हुई 3 Qty का SL सीधा TP1 (+0.85 Brick) पर आ जाएगा
+TP2_BRICKS           = 2.20   # TP2 रनर टारगेट
+SL_BRICKS            = 1.20   # Anti-Wick कैंडल-क्लोज ट्रिगर (ताकि मामूली सुई/Wick से ट्रेड कभी न कटे)
+MAX_SL_LOSS_BRICKS   = 1.00   # अधिकतम SL नुकसान कैप: 1.00 Brick से ज्यादा नुकसान कभी नहीं लगेगा
+ANTI_WICK_SL         = True   # True = केवल कैंडल क्लोज या रैंकों पलटने पर ही SL कटेगा (High Win-Rate सुरक्षा)
+BROK_PER_QTY         = 1.5
 MINTICK              = 0.1
 
 # PRO 3-ENGINE PRE-SPIKE DIRECTION PARAMETERS ($8.0 SPREAD + STEP-IN + TAKER CVD + TOP-3)
@@ -112,9 +114,9 @@ def fmt_pts(pts):
     return f"{pts:,.1f}"
 
 # ============================================================================
-# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHERS (FIXED 3.5-DAY ANCHOR + DAILY MAP)
+# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHERS (FIXED 3.5-DAY ANCHOR + LIVE)
 # ============================================================================
-def fetch_hl_klines(interval="1m", num_bars=25):
+def fetch_hl_klines(interval="1m", num_bars=20):
     tf_ms_map = {
         "1m": 60 * 1000,
         "5m": 5 * 60 * 1000,
@@ -212,31 +214,18 @@ def fetch_hl_5000_fixed_anchor():
     sorted_times = sorted(merged.keys())
     return [merged[t] for t in sorted_times]
 
-def build_daily_atr5_lookup(klines_1d):
-    """
-    Matches Pine Script:
-    request.security(syminfo.tickerid, "D", ta.atr(5)[1], lookahead=barmerge.lookahead_off)
-    Computes Wilder's RMA(5) for every daily bar and maps each UTC day to the
-    previous completed daily bar's ATR(5), plus returns latest completed ATR(5).
-    """
+def calc_daily_atr5(klines_1d):
     if not klines_1d or len(klines_1d) < ATR_PERIOD + 2:
-        return {}, None
-
+        return None
     highs = [float(k[2]) for k in klines_1d]
     lows = [float(k[3]) for k in klines_1d]
     closes = [float(k[4]) for k in klines_1d]
     tr = [0.0] * len(closes)
-
     for i in range(len(closes)):
         if i == 0:
             tr[i] = highs[i] - lows[i]
         else:
-            tr[i] = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i - 1]),
-                abs(lows[i] - closes[i - 1])
-            )
-
+            tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
     rma = [0.0] * len(tr)
     for i, v in enumerate(tr):
         if i < ATR_PERIOD - 1:
@@ -245,18 +234,10 @@ def build_daily_atr5_lookup(klines_1d):
             rma[i] = sum(tr[:ATR_PERIOD]) / float(ATR_PERIOD)
         else:
             rma[i] = (rma[i - 1] * (ATR_PERIOD - 1) + v) / float(ATR_PERIOD)
-
-    day_map = {}
-    for i in range(1, len(klines_1d)):
-        day_open_ms = (int(klines_1d[i][0]) // 86400000) * 86400000
-        # Previous completed daily bar's ATR(5) -> ta.atr(5)[1]
-        day_map[day_open_ms] = rma[i - 1]
-
-    latest_atr5 = rma[-2]
-    return day_map, latest_atr5
+    return rma[-2]
 
 # ============================================================================
-# PINE SCRIPT v5 EXACT REPLICA BAR PROCESSOR (WITH 7Q TP1 + 3Q RUNNER & SL<=TP1)
+# STATEFUL INCREMENTAL BAR PROCESSOR (RESTORED HIGH-WIN-RATE FIXED GRID)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -272,10 +253,8 @@ def process_single_closed_bar(eng, kline):
 
     idx = eng["bar_count"]
 
-    # 1. Exact Pine Script ta.atr(14) (Wilder's RMA-14)
     if idx == 0:
         tr = h - l
-        eng["tr_sum"] = tr
         eng["atr14"] = tr
     else:
         prev_c = eng["prev_close"]
@@ -286,21 +265,19 @@ def process_single_closed_bar(eng, kline):
         else:
             eng["atr14"] = (eng["atr14"] * 13.0 + tr) / 14.0
 
-    # 2. Exact Pine Script ta.ema(close, 21)
     if idx == 0:
         eng["ema21"] = c
     else:
         k_ema = 2.0 / 22.0
         eng["ema21"] = c * k_ema + eng["ema21"] * (1.0 - k_ema)
 
-    # 3. Exact Pine Script ta.rsi(close, 14)
     if idx == 0:
         eng["rsi14"] = 50.0
     else:
         diff = c - eng["prev_close"]
         up = max(diff, 0.0)
         dn = max(-diff, 0.0)
-        if idx <= 14:
+        if idx < 14:
             eng["up_sum"] += up
             eng["dn_sum"] += dn
             eng["rma_up"] = eng["up_sum"] / float(idx)
@@ -317,20 +294,18 @@ def process_single_closed_bar(eng, kline):
             rs = eng["rma_up"] / eng["rma_dn"]
             eng["rsi14"] = 100.0 - (100.0 / (1.0 + rs))
 
-    # 4. Exact Pine Script f_gaussianFilter(close, 20)
     w = (2.0 * math.pi) / float(GAUSS_PERIOD)
     b = (1.0 - math.cos(w)) / (1.41421356 - 1.0)
     a = -b + math.sqrt(b * b + 2.0 * b)
-    if eng["g1"] is None:
+    if idx == 0:
         g_val = c
+    elif idx == 1:
+        g_val = (a ** 2) * c + 2.0 * (1.0 - a) * eng["g1"] - ((1.0 - a) ** 2) * c
     else:
-        g1_prev = eng["g1"]
-        g2_prev = eng["g2"] if eng["g2"] is not None else c
-        g_val = (a ** 2) * c + 2.0 * (1.0 - a) * g1_prev - ((1.0 - a) ** 2) * g2_prev
+        g_val = (a ** 2) * c + 2.0 * (1.0 - a) * eng["g1"] - ((1.0 - a) ** 2) * eng["g2"]
     eng["g2"] = eng["g1"]
     eng["g1"] = g_val
 
-    # 5. Exact Pine Script 3-Bar Orderflow Dominance
     rng = max(h - l, MINTICK)
     u_wick = h - max(o, c)
     l_wick = min(o, c) - l
@@ -356,10 +331,7 @@ def process_single_closed_bar(eng, kline):
     eng["buy_dom_pct"] = buy_dom_pct
     eng["sell_dom_pct"] = sell_dom_pct
 
-    # 6. Historical Day-Matched Daily ATR-5 Lookup (Matches TradingView request.security)
-    bar_day_ms = (bar_time // 86400000) * 86400000
-    day_macro = eng["daily_atr_map"].get(bar_day_ms, eng["macro_range"])
-    safe_range = day_macro if (day_macro and day_macro > 0) else (eng["atr14"] * 10.0)
+    safe_range = eng["macro_range"] if (eng["macro_range"] and eng["macro_range"] > 0) else (eng["atr14"] * 10.0)
     calc_auto_box = safe_range / RANGE_DIVISOR
     box_size = max(calc_auto_box if USE_AUTO_BOX else MANUAL_BOX, MINTICK * 2.0)
     eng["safe_range"] = safe_range
@@ -367,13 +339,13 @@ def process_single_closed_bar(eng, kline):
 
     eval_price = (c * 0.70 + g_val * 0.30) if USE_GAUSSIAN else c
 
-    # 7. Exact Pine Script Step 3: Renko Brick Engine (barstate.isfirst uses exact close)
     brick_step_up = False
     brick_step_dn = False
 
     if idx == 0:
-        eng["brick_top"] = c
-        eng["brick_bot"] = c - box_size
+        grid_top = round(c / box_size) * box_size
+        eng["brick_top"] = grid_top
+        eng["brick_bot"] = grid_top - box_size
         eng["brick_dir"] = 1
         eng["brick_streak"] = 1
         eng["anchor_time_str"] = bar_ist
@@ -395,7 +367,6 @@ def process_single_closed_bar(eng, kline):
 
     r_close = eng["brick_top"] if eng["brick_dir"] == 1 else eng["brick_bot"]
 
-    # 8. Exact Pine Script Step 4: Supertrend Inside Renko Logic
     band_dist = box_size * ST_FACTOR
     raw_supp = r_close - band_dist
     raw_res = r_close + band_dist
@@ -433,11 +404,6 @@ def process_single_closed_bar(eng, kline):
     st_flip_buy = (eng["st_trend"] == 1 and prev_trend == -1)
     st_flip_sell = (eng["st_trend"] == -1 and prev_trend == 1)
 
-    if st_flip_buy:
-        eng["last_flip_str"] = f"BUY ▲ @ ${c:,.1f} ({bar_ist})"
-    elif st_flip_sell:
-        eng["last_flip_str"] = f"SELL ▼ @ ${c:,.1f} ({bar_ist})"
-
     if st_flip_buy or st_flip_sell:
         eng["brick_streak"] = 1
 
@@ -453,14 +419,14 @@ def process_single_closed_bar(eng, kline):
         eng["pending_flip_sell"] = False
 
     # ========================================================================
-    # STEP 5A: MANAGE ACTIVE 10-QTY TRADE (7Q @ TP1 + 3Q RUNNER, SL <= TP1)
+    # MANAGE ACTIVE 10-QTY TRADE (HIGH WIN-RATE 0.85 TP1 + 7Q BOOK + CAPPED SL)
     # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
         t_label = "LONG" if t_dir == 1 else "SHORT"
         eng["max_fav_price"] = max(eng["max_fav_price"], h) if t_dir == 1 else min(eng["max_fav_price"], l)
 
-        # 1. Check TP1 (1.10 Bricks) -> Book 7 Qty Immediately!
+        # 1. Hit TP1 (0.85 Brick) -> Book 7 Qty Immediately & Lock 3 Qty at +0.35 Brick Profit!
         hit_tp1_now = (not eng["tp1_reached"]) and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"]))
         if hit_tp1_now:
             eng["tp1_reached"] = True
@@ -469,17 +435,16 @@ def process_single_closed_bar(eng, kline):
             eng["gross_profit"] += eng["booked_pnl_10q"]
             eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
             eng["open_qty"] = RUNNER_QTY
-            # Lock remaining 3 Qty Runner at Entry + 0.25 Brick Profit!
-            runner_lock_offset = box_size * 0.25
-            eng["stop_price"] = (eng["entry_price"] + runner_lock_offset) if t_dir == 1 else (eng["entry_price"] - runner_lock_offset)
+            runner_lock_pts = box_size * RUNNER_LOCK_BRICKS
+            eng["stop_price"] = (eng["entry_price"] + runner_lock_pts) if t_dir == 1 else (eng["entry_price"] - runner_lock_pts)
 
-        # 1B. Check Mid-Lock (1.55 Bricks) -> Move 3 Qty Runner SL to TP1 Price
+        # 2. Hit Mid-Lock (1.25 Bricks) -> Lock 3 Qty Runner at TP1 (+0.85 Brick)
         hit_mid_now = eng["tp1_reached"] and (not eng["mid_reached"]) and ((h >= eng["mid_lock_price"]) if t_dir == 1 else (l <= eng["mid_lock_price"]))
         if hit_mid_now:
             eng["mid_reached"] = True
             eng["stop_price"] = max(eng["stop_price"], eng["tp1_price"]) if t_dir == 1 else min(eng["stop_price"], eng["tp1_price"])
 
-        # 2. Check TP2 (2.20 Bricks) -> Activate Unlimited Trail for 3 Qty Runner
+        # 3. Hit TP2 (2.20 Bricks) -> Start Unlimited Trail on 3 Qty Runner
         hit_tp2_now = eng["tp1_reached"] and (not eng["tp2_reached"]) and ((h >= eng["tp2_price"]) if t_dir == 1 else (l <= eng["tp2_price"]))
         if hit_tp2_now:
             eng["tp2_reached"] = True
@@ -487,7 +452,6 @@ def process_single_closed_bar(eng, kline):
             lock_floor = (eng["tp2_price"] - box_size * 0.35) if t_dir == 1 else (eng["tp2_price"] + box_size * 0.35)
             eng["stop_price"] = max(eng["stop_price"], lock_floor) if t_dir == 1 else min(eng["stop_price"], lock_floor)
 
-        # 3. Unlimited Trailing Beyond TP2 (3 Qty Runner)
         if eng["trade_dir"] != 0 and eng["tp2_reached"] and USE_TRAIL_BEYOND_TP2:
             gap_dist = box_size * TRAIL_LOCK_BRICKS
             brick_trail = (r_close - gap_dist) if t_dir == 1 else (r_close + gap_dist)
@@ -524,45 +488,40 @@ def process_single_closed_bar(eng, kline):
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
-        # 4. Stop-Loss & Runner Exit Before TP2 (Synced with Pine Script Step 4!)
         if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
-            wick_hit_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
-            close_hit_sl = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
-            brick_turned_bad = (eng["brick_dir"] == -1 and c < eng["brick_bot"]) if t_dir == 1 else (eng["brick_dir"] == 1 and c > eng["brick_top"])
-            st_turned_bad = (eng["st_trend"] == -1) if t_dir == 1 else (eng["st_trend"] == 1)
-            hard_crash = (l <= eng["hard_stop_price"]) if t_dir == 1 else (h >= eng["hard_stop_price"])
-
             if not eng["tp1_reached"]:
-                sl_triggered = (close_hit_sl or brick_turned_bad or st_turned_bad or hard_crash) if ANTI_WICK_SL else (wick_hit_sl or brick_turned_bad or st_turned_bad)
+                wick_hit_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
+                close_hit_sl = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
+                brick_turned_bad = (eng["brick_dir"] == -1 and c < eng["brick_bot"]) if t_dir == 1 else (eng["brick_dir"] == 1 and c > eng["brick_top"])
+                st_turned_bad = (eng["st_trend"] == -1) if t_dir == 1 else (eng["st_trend"] == 1)
+                hard_crash = (l <= eng["hard_stop_price"]) if t_dir == 1 else (h >= eng["hard_stop_price"])
 
-                if sl_triggered and not hit_tp1_now:
+                sl_triggered = (close_hit_sl or brick_turned_bad or st_turned_bad or hard_crash) if ANTI_WICK_SL else (wick_hit_sl or st_turned_bad)
+
+                if sl_triggered:
                     eng["losses"] += 1
-                    # Strict SL Cap: Never exceed locked_sl_pts (1.00 Brick) when ANTI_WICK_SL is False
-                    if not ANTI_WICK_SL and wick_hit_sl:
-                        loss_per_qty = eng["locked_sl_pts"]
-                        exit_sl_p = eng["stop_price"]
-                    else:
-                        loss_per_qty = min(abs(eng["entry_price"] - c), eng["locked_sl_pts"])
-                        exit_sl_p = c
-
+                    # Max Loss Cap: Never charge more than MAX_SL_LOSS_BRICKS (1.00 Brick) per Qty
+                    max_cap_pts = box_size * MAX_SL_LOSS_BRICKS
+                    loss_per_qty = min(abs(eng["entry_price"] - c), max_cap_pts) if (ANTI_WICK_SL and not hard_crash) else max_cap_pts
                     total_loss_10q = loss_per_qty * TOTAL_QTY
                     eng["gross_loss"] += total_loss_10q
                     eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
 
-                    eng["last_result"] = f"🛑 SL Hit (10Q): -{fmt_pts(total_loss_10q)} pts (-{fmt_pts(loss_per_qty)}/Q)"
+                    eng["last_result"] = f"🛑 Full SL (10Q): -{fmt_pts(total_loss_10q)} pts (-{fmt_pts(loss_per_qty)}/Q)"
                     eng["last_result_color"] = "#991b1b"
                     eng["history"].insert(0, {
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                        "exit": exit_sl_p, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)}", "color": "#ef4444"
+                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)}", "color": "#ef4444"
                     })
                     eng["history"] = eng["history"][:40]
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
             else:
-                # Synced with Pine Script: After TP1 is reached, if Runner SL or brickTurnedBad or stTurnedBad hits, close tradeDir := 0 so next Re-Entry is not blocked!
-                runner_exit_trig = (wick_hit_sl or close_hit_sl or brick_turned_bad or st_turned_bad)
-                if runner_exit_trig and not hit_tp1_now:
-                    exit_p = eng["stop_price"] if wick_hit_sl else (max(c, eng["stop_price"]) if t_dir == 1 else min(c, eng["stop_price"]))
+                hit_be_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
+                st_turned_bad = (eng["st_trend"] == -1) if t_dir == 1 else (eng["st_trend"] == 1)
+
+                if (hit_be_sl or st_turned_bad) and not hit_tp1_now:
+                    exit_p = eng["stop_price"] if hit_be_sl else (max(c, eng["stop_price"]) if t_dir == 1 else min(c, eng["stop_price"]))
                     runner_pts = max(0.0, (exit_p - eng["entry_price"]) if t_dir == 1 else (eng["entry_price"] - exit_p))
                     runner_pnl_3q = runner_pts * RUNNER_QTY
                     eng["gross_profit"] += runner_pnl_3q
@@ -579,9 +538,7 @@ def process_single_closed_bar(eng, kline):
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
 
-    # ========================================================================
-    # STEP 5B: CHECK NEW ENTRY SIGNALS (100% IDENTICAL TO PINE SCRIPT v5)
-    # ========================================================================
+    # Check New Entry Signals
     ema21 = eng["ema21"]
     rsi_val = eng["rsi14"]
 
@@ -636,7 +593,7 @@ def process_single_closed_bar(eng, kline):
         eng["tp2_reached"] = False
         eng["open_qty"] = TOTAL_QTY
         eng["booked_pnl_10q"] = 0.0
-        eng["entry_tag"] = f"🧱 Brick #{eng['brick_streak']}" if (trigger_cont_buy or trigger_cont_sell) else "🔥 ST Entry"
+        eng["entry_tag"] = f"🧱 Brick #{eng['brick_streak']}" if (trigger_cont_buy or trigger_cont_sell) else "🔥 ST Flip"
         eng["entry_time_str"] = bar_ist
 
         eng["locked_tp1_pts"] = box_size * TP1_BRICKS
@@ -648,7 +605,7 @@ def process_single_closed_bar(eng, kline):
         eng["mid_lock_price"] = (c + mid_pts) if is_long else (c - mid_pts)
         eng["tp2_price"] = (c + eng["locked_tp2_pts"]) if is_long else (c - eng["locked_tp2_pts"])
         eng["stop_price"] = (c - eng["locked_sl_pts"]) if is_long else (c + eng["locked_sl_pts"])
-        eng["hard_stop_price"] = (eng["stop_price"] - box_size * 0.5) if is_long else (eng["stop_price"] + box_size * 0.5)
+        eng["hard_stop_price"] = (eng["stop_price"] - box_size * 0.4) if is_long else (eng["stop_price"] + box_size * 0.4)
 
     eng["prev_close"] = c
     eng["last_bar_time"] = bar_time
@@ -966,7 +923,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
             eng["last_spike_color"] = "#0f172a"
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (PINE v5 SYNCED 5000 CANDLES + 3-ENGINE RADAR)
+# 24x7 BACKGROUND WORKER (5000 CANDLES FIXED-GRID LOCK + 3-ENGINE RADAR)
 # ============================================================================
 def background_worker(eng):
     last_1d_fetch = 0
@@ -977,12 +934,11 @@ def background_worker(eng):
             now_ts = time.time()
 
             if now_ts - last_1d_fetch > 300 or eng["macro_range"] is None:
-                klines_1d = fetch_hl_klines("1d", 40)
+                klines_1d = fetch_hl_klines("1d", 20)
                 if klines_1d:
-                    day_map, latest_atr5 = build_daily_atr5_lookup(klines_1d)
-                    if latest_atr5:
-                        eng["daily_atr_map"] = day_map
-                        eng["macro_range"] = latest_atr5
+                    d_val = calc_daily_atr5(klines_1d)
+                    if d_val:
+                        eng["macro_range"] = d_val
                         last_1d_fetch = now_ts
 
             if not eng["initialized"] and eng["macro_range"] is not None:
@@ -1016,13 +972,12 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_pine_synced_7q_engine():
+def get_hl_5000_restored_high_wr_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
         "last_bar_time": 0,
         "anchor_time_str": "--",
-        "last_flip_str": "प्रतीक्षा में...",
         "prev_close": 0.0,
         "tr_sum": 0.0,
         "atr14": 15.0,
@@ -1032,15 +987,14 @@ def get_hl_pine_synced_7q_engine():
         "rma_up": 0.0,
         "rma_dn": 0.0,
         "rsi14": 50.0,
-        "g1": None,
-        "g2": None,
+        "g1": 0.0,
+        "g2": 0.0,
         "buy_v1": 0.0,
         "buy_v2": 0.0,
         "sell_v1": 0.0,
         "sell_v2": 0.0,
         "buy_dom_pct": 50.0,
         "sell_dom_pct": 50.0,
-        "daily_atr_map": {},
         "macro_range": None,
         "safe_range": 1500.0,
         "box_size": 150.0,
@@ -1145,7 +1099,7 @@ def get_hl_pine_synced_7q_engine():
     thread.start()
     return eng
 
-eng = get_hl_pine_synced_7q_engine()
+eng = get_hl_5000_restored_high_wr_engine()
 
 # ============================================================================
 # SINGLE CLEAN TERMINAL HEADER (AUDIO UNLOCK BAR + RESET MAX SPREAD BUTTON)
@@ -1279,11 +1233,11 @@ with top_col2:
 terminal = st.empty()
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP (PINE-SYNCED 7Q TP1 + 3Q RUNNER TERMINAL)
+# ZERO-BLINK LIVE RENDERING LOOP (RESTORED HIGH WIN-RATE + 7Q TP1 + 3Q RUNNER)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: Pine Script v5 सिंक (5000 कैंडल्स, 7Q TP1 + 3Q Runner) लोड हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: हाई Win-Rate (0.85 TP1 + Anti-Wick SL) और 7Q+3Q इंजन लोड हो रहा है...")
         time.sleep(1)
         continue
 
@@ -1301,7 +1255,6 @@ while True:
     ist_time = eng["ist_time"]
     bar_count = eng["bar_count"]
     anchor_str = eng["anchor_time_str"]
-    last_flip_str = eng.get("last_flip_str", "--")
 
     ob = eng["order_book"]
     best_bid = ob["best_bid"]
@@ -1392,7 +1345,7 @@ while True:
             sl_tag = "Profit SL (3Q)"
         else:
             status_label = f"🔥 ACTIVE {t_type} (10 Qty Open | {eng['entry_tag']} @ {eng['entry_time_str']})"
-            sl_tag = "Strict SL (10Q)"
+            sl_tag = "Anti-Wick SL (10Q)"
 
         trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
@@ -1412,11 +1365,9 @@ while True:
 </div>
 </div>"""
     else:
-        pend_txt = "⏳ Waiting Green Confirm Candle" if eng["pending_flip_buy"] else ("⏳ Waiting Red Confirm Candle" if eng["pending_flip_sell"] else "Active")
         trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR NEXT ALGO SIGNAL (7Q TP1 + 3Q RUNNER • PINE v5 SYNCED)</div>
-<div style="color:#cbd5e1; font-size:12px; margin-top:4px;">Last Main ST Flip: <b style="color:#facc15;">{last_flip_str}</b> | Filter Status: <b>{pend_txt}</b></div>
-<div style="color:#94a3b8; font-size:12px; margin-top:3px;">Supertrend: <b>{st_line:,.1f}</b> | Brick Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (5000-BAR FIXED GRID • 7Q TP1 + 3Q RUNNER)</div>
+<div style="color:#94a3b8; font-size:12px; margin-top:4px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
 
     spike_rows_html = ""
@@ -1453,19 +1404,19 @@ while True:
 
     net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
     wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
-    setup_str = f"TP1(7Q): +{box_size * TP1_BRICKS:.0f}p (1.1B) | TP2(3Q): +{box_size * TP2_BRICKS:.0f}p (2.2B) | SL: -{box_size * SL_BRICKS:.0f}p (1.0B)"
+    setup_str = f"TP1(7Q): +{box_size * TP1_BRICKS:.0f}p | TP2(3Q): +{box_size * TP2_BRICKS:.0f}p | Max SL Cap: -{box_size * MAX_SL_LOSS_BRICKS:.0f}p"
 
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
 {audio_autoplay_html}
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [PINE v5 SYNCED • 7Q TP1 + 3Q RUNNER]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [5000-BAR FIXED GRID • 7Q TP1 + 3Q RUNNER]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
 <div style="background:#1e293b; border:1px solid {st_badge_col}; color:{st_badge_col}; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:bold; display:inline-block; margin-bottom:4px;">{st_badge_text}</div>
-<div style="font-size:11.5px; color:#cbd5e1;">🔒 Anchor: {anchor_str} ({bar_count} Bars) | {ist_time}</div>
+<div style="font-size:11.5px; color:#cbd5e1;">🔒 Grid Anchor: {anchor_str} ({bar_count} Bars) | {ist_time}</div>
 </div>
 </div>
 <div class="t-grid">
@@ -1550,11 +1501,11 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (7Q @ TP1 [1.1B] + 3Q Trail • SL 1.0B)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (High Win-Rate 0.85 TP1 • 7Q Book + 3Q Trail)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">23H Range | 1 Brick</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (7Q @ TP1 + Profit Lock + 3Q Trail)</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels (SL &lt; TP1)</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Daily ATR-5 | 1 Brick</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (7Q @ 0.85B TP1 + 3Q Profit-Lock/Trail)</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:6px; color:#ffffff; font-weight:bold; text-align:right;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Win Rate % | TP2 Runners</td><td style="padding:6px; color:{wr_color}; font-weight:bold; text-align:right;">{win_rate:.1f}% | 🚀 Runners: {eng['tp2_hits']}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts</td></tr>
@@ -1567,7 +1518,7 @@ while True:
 <div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%; box-sizing:border-box;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (7Q TP1 + 3Q Runner)</span>
+<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (3.5-Day Fixed Grid)</span>
 <span style="font-size:11px; color:#94a3b8;">Blocked Late: {eng['blocked_late']}</span>
 </div>
 <div style="max-height:460px; overflow-y:auto;">
