@@ -39,17 +39,13 @@ div.stButton > button:hover {
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
-# DELTA EXCHANGE DEMO API CONFIGURATION (REPLACE WITH YOUR KEYS SAFELY)
+# DELTA EXCHANGE DEMO API CONFIGURATION
 # ============================================================================
 DELTA_API_KEY = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnv8WpQyIEJTCRZVP46OdbiaEUyeKLWLRTxDVDlcWL6sBgFH2E7eC"
-DELTA_BASE_URL = "https://testnet-api.delta.exchange"  # Delta Demo/Testnet API
+DELTA_BASE_URL = "https://testnet-api.delta.exchange"
 
 def place_delta_demo_order(product_id, size, side, order_type="market"):
-    """
-    Delta Exchange Testnet/Demo पर ऑटोमैटिक आर्डर प्लेस करने का फंक्शन
-    side: 'buy' या 'sell'
-    """
     try:
         path = "/v2/orders"
         url = DELTA_BASE_URL + path
@@ -84,7 +80,7 @@ def place_delta_demo_order(product_id, size, side, order_type="market"):
         return False, str(e)
 
 # ============================================================================
-# IN-MEMORY WAV BEEP GENERATOR (FOR ZERO-DEPENDENCY AUTOPLAY AUDIO)
+# IN-MEMORY WAV BEEP GENERATOR
 # ============================================================================
 def build_beep_wav_b64(freqs, tone_ms=140, pause_ms=45):
     sample_rate = 22050
@@ -109,10 +105,10 @@ BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])
 
 # ============================================================================
-# STRATEGY PARAMETERS (RENKO = 10 QTY, SPIKE = 5 QTY)
+# STRATEGY PARAMETERS
 # ============================================================================
-TOTAL_QTY            = 10     # रैंकों ट्रेड के लिए कुल क्वांटिटी
-SPIKE_QTY            = 5      # स्पाइक रडार सिग्नल के लिए क्वांटिटी
+TOTAL_QTY            = 10
+SPIKE_QTY            = 5
 TP1_BOOK_QTY         = 7
 RUNNER_QTY           = 3
 
@@ -154,7 +150,7 @@ SIGNAL_COOLDOWN_SEC  = 180
 EVAL_LOCK_SECONDS    = 180
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
-BTC_DELTA_PRODUCT_ID = 27  # Delta Exchange BTC-PERP Product ID (डिफ़ॉल्ट)
+BTC_DELTA_PRODUCT_ID = 27
 
 def fmt_pts(pts):
     return f"{pts:,.1f}"
@@ -570,9 +566,6 @@ def process_single_closed_bar(eng, kline):
         eng["stop_price"] = (c - eng["locked_sl_pts"]) if is_long else (c + eng["locked_sl_pts"])
         eng["hard_stop_price"] = (eng["stop_price"] - box_size * 0.35) if is_long else (eng["stop_price"] + box_size * 0.35)
 
-        # --------------------------------------------------------------------
-        # DELTA DEMO API EXECUTION (रैंकों ट्रेड के लिए 10 क्वांटिटी)
-        # --------------------------------------------------------------------
         delta_side = "buy" if is_long else "sell"
         success, res_msg = place_delta_demo_order(BTC_DELTA_PRODUCT_ID, TOTAL_QTY, delta_side)
         if success:
@@ -698,9 +691,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         eng["last_spike_status"] = f"🔊⚡ {ist_t}: {spike_dir_text}"
         eng["last_spike_color"] = col
 
-        # --------------------------------------------------------------------
-        # DELTA DEMO API EXECUTION (स्पाइक सिग्नल के लिए 5 क्वांटिटी)
-        # --------------------------------------------------------------------
         spike_side = "buy" if dir_code == 1 else "sell"
         success, res_msg = place_delta_demo_order(BTC_DELTA_PRODUCT_ID, SPIKE_QTY, spike_side)
         if success:
@@ -744,7 +734,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_delta_integrated_engine():
+def get_hl_delta_integrated_v2_engine():
     eng = {
         "initialized": False, "bar_count": 0, "last_bar_time": 0, "anchor_time_str": "--", "prev_close": 0.0,
         "tr_sum": 0.0, "atr14": 15.0, "ema21": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
@@ -765,7 +755,7 @@ def get_hl_delta_integrated_engine():
     threading.Thread(target=background_worker, args=(eng,), daemon=True).start()
     return eng
 
-eng = get_hl_delta_integrated_engine()
+eng = get_hl_delta_integrated_v2_engine()
 
 top_col1, top_col2 = st.columns([0.74, 0.26])
 with top_col1:
