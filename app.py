@@ -725,7 +725,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_delta_integrated_v6_engine():
+def get_hl_delta_integrated_v7_engine():
     eng = {
         "initialized": False, "bar_count": 0, "last_bar_time": 0, "anchor_time_str": "--", "prev_close": 0.0,
         "tr_sum": 0.0, "atr14": 15.0, "ema21": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
@@ -746,7 +746,7 @@ def get_hl_delta_integrated_v6_engine():
     threading.Thread(target=background_worker, args=(eng,), daemon=True).start()
     return eng
 
-eng = get_hl_delta_integrated_v6_engine()
+eng = get_hl_delta_integrated_v7_engine()
 
 top_col1, top_col2 = st.columns([0.74, 0.26])
 with top_col1:
@@ -863,13 +863,13 @@ while True:
 <div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 DELTA DEMO ALGO BACKTEST (Renko 10Q + Spike 5Q)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="color:#94a3b8;">Total Trades (W/L)</td><td style="text-align:right; font-weight:bold;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="color:#94a3b8;">Win Rate</td><td style="text-align:right; font-weight:bold; color:{wr_color};">{win_rate_val:.1f}%</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="color:#94a3b8;">Win Rate</td><td style="text-align:right; font-weight:bold; color:{wr_color};">{win_rate_val:.1f} percent</td></tr>
 <tr style="background:#0f172a;"><td style="color:#ffffff; font-weight:bold;">NET PROFIT</td><td style="text-align:right; font-weight:800; font-size:15px; color:{net_color};">{net_pnl:+,.1f} pts</td></tr></table></div></div>
 <div><div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%;">
 <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:10px;">📜 ट्रेड इतिहास और Delta Demo आर्डर लॉग</div>
 <div style="max-height:460px; overflow-y:auto;"><table style="width:100%; border-collapse:collapse;">
 <thead><tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;"><th style="padding:6px;">समय</th><th style="padding:6px;">ट्रेड</th><th style="padding:6px;">Entry → Exit</th><th style="padding:6px;">स्टेटस</th><th style="padding:6px; text-align:right;">PnL</th></tr></thead>
-<tbody>{rows_html}</tbody></table></div></div></div></div></div>"""
+(rows_html)</table></div></div></div></div></div>"""
 
     clean_html = "\n".join(line.strip() for line in raw_html.splitlines() if line.strip())
     terminal.markdown(clean_html, unsafe_allow_html=True)
