@@ -38,9 +38,6 @@ div.stButton > button:hover {
 }
 </style>""", unsafe_allow_html=True)
 
-# ============================================================================
-# DELTA EXCHANGE DEMO API CONFIGURATION
-# ============================================================================
 DELTA_API_KEY = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnv8WpQyIEJTCRZVP46OdbiaEUyeKLWLRTxDVDlcWL6sBgFH2E7eC"
 DELTA_BASE_URL = "https://testnet-api.delta.exchange"
@@ -79,9 +76,6 @@ def place_delta_demo_order(product_id, size, side, order_type="market"):
     except Exception as e:
         return False, str(e)
 
-# ============================================================================
-# IN-MEMORY WAV BEEP GENERATOR
-# ============================================================================
 def build_beep_wav_b64(freqs, tone_ms=140, pause_ms=45):
     sample_rate = 22050
     buf = io.BytesIO()
@@ -104,9 +98,6 @@ def build_beep_wav_b64(freqs, tone_ms=140, pause_ms=45):
 BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])
 
-# ============================================================================
-# STRATEGY PARAMETERS
-# ============================================================================
 TOTAL_QTY            = 10
 SPIKE_QTY            = 5
 TP1_BOOK_QTY         = 7
@@ -734,7 +725,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_delta_integrated_v3_engine():
+def get_hl_delta_integrated_v4_engine():
     eng = {
         "initialized": False, "bar_count": 0, "last_bar_time": 0, "anchor_time_str": "--", "prev_close": 0.0,
         "tr_sum": 0.0, "atr14": 15.0, "ema21": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
@@ -755,7 +746,7 @@ def get_hl_delta_integrated_v3_engine():
     threading.Thread(target=background_worker, args=(eng,), daemon=True).start()
     return eng
 
-eng = get_hl_delta_integrated_v3_engine()
+eng = get_hl_delta_integrated_v4_engine()
 
 top_col1, top_col2 = st.columns([0.74, 0.26])
 with top_col1:
@@ -846,8 +837,6 @@ while True:
 
     spike_rows_html = "".join([f"<tr style='border-bottom:1px solid #334155; font-size:11.5px;'><td style='padding:6px 5px; color:#94a3b8;'>{sh['time']}</td><td style='padding:6px 5px; color:#f8fafc;'>${sh['price']:,.1f}</td><td style='padding:6px 5px; color:#facc15;'>{sh['spread_info']}</td><td style='padding:6px 5px; color:{sh['color']}; font-weight:bold;'>{sh['direction']}</td><td style='padding:6px 5px; text-align:right; color:#4ade80;'>Max: +{sh['max_fav']:.1f}p</td></tr>" for sh in eng["spike_history"]]) or "<tr><td colspan='5' style='text-align:center; padding:12px; color:#64748b;'>कोई स्पाइक नहीं</td></tr>"
     rows_html = "".join([f"<tr style='border-bottom:1px solid #334155; font-size:12px;'><td style='padding:8px 6px; color:#94a3b8;'>{h['time']}</td><td style='padding:8px 6px; font-weight:bold; color:#f8fafc;'>{h['type']}</td><td style='padding:8px 6px; color:#cbd5e1;'>{h['entry']:,.1f} → {h['exit']:,.1f}</td><td style='padding:8px 6px; color:{h.get('color','#22c55e')}; font-weight:bold;'>{h['status']}</td><td style='padding:8px 6px; text-align:right; color:{h.get('color','#22c55e')};'>{h['pnl']} pts</td></tr>" for h in eng["history"]]) or "<tr><td colspan='5' style='text-align:center; padding:15px; color:#64748b;'>कोई ट्रेड नहीं</td></tr>"
-
-    net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
 
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
