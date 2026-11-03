@@ -40,15 +40,15 @@ div.stButton > button:hover {
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
-# DELTA EXCHANGE DEMO API & SERVER IP HELPER (ADDED WITHOUT TOUCHING CORE LOGIC)
+# DELTA EXCHANGE DEMO API & SERVER IP HELPER (RENKO ONLY ACTIVE, SPIKE OFF)
 # ============================================================================
-DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9Wh8bFTs"
+DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
 DELTA_URLS       = [
     "https://cdn-ind.testnet.deltaex.org",
     "https://testnet-api.delta.exchange"
 ]
-SPIKE_QTY        = 5
+# नोट: स्पाइक सिग्नल्स को डेल्टा पर भेजना बंद कर दिया गया है (केवल डैशबोर्ड टेस्टिंग के लिए)
 
 @st.cache_data(ttl=300)
 def get_server_public_ip():
@@ -1030,9 +1030,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         eng["last_spike_dir"] = dir_code
         eng["last_spike_status"] = f"🔊⚡ {ist_t}: {spike_dir_text} @ ${mid_price:,.1f}"
         eng["last_spike_color"] = col
-
-        spike_side = "buy" if dir_code == 1 else "sell"
-        place_delta_demo_order(eng, spike_side, SPIKE_QTY, tag="Spike Entry (5Q)")
+        # (स्पाइक ट्रेड अब डेल्टा पर नहीं भेजे जा रहे हैं, केवल डैशबोर्ड पर टेस्ट हो रहे हैं)
     elif now_ts - eng["last_spike_alert_ts"] > 15:
         if vac["armed"]:
             eng["last_spike_status"] = (
@@ -1221,7 +1219,7 @@ def get_hl_5000_oneshot_div15_v2_engine():
         "last_spike_color": "#0f172a",
         "spike_history": [],
         "delta_btc_product_id": 27,
-        "delta_status": "🤖 Delta Demo Algo: Ready (Renko = 10Q | Spike = 5Q)",
+        "delta_status": "🤖 Delta Demo Algo: Ready (Renko 10Q Active | Spike 5Q Dashboard Only)",
         "error": None
     }
     thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
@@ -1356,7 +1354,7 @@ with top_col2:
         if ok:
             eng["delta_status"] = f"✅ Delta Demo API Connected! (Server IP {server_ip} Whitelisted)"
         else:
-            eng["delta_status"] = f"⚠️ Delta API Error (IP {server_ip} को Delta में सेव करें): {resp}"
+            eng["delta_status"] = f"⚠️ Delta API Error: {resp}"
 
 with top_col3:
     if st.button("🔄 सर्वोच्च स्प्रेड रीसेट करें (Reset Max Spread)"):
@@ -1375,7 +1373,7 @@ terminal = st.empty()
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info(f"⏳ Dr Devendra AI-Renko PRO लोड हो रहा है... | 🌐 Server IP (Delta में सेव करें): {server_ip}")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और True SL इंजन लोड हो रहा है...")
         time.sleep(1)
         continue
 
