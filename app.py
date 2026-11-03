@@ -130,11 +130,12 @@ ANTI_WICK_SL         = True
 BROK_PER_QTY         = 1.5
 MINTICK              = 0.1
 
-# STRICT $8.0 PRE-SPIKE SPREAD RADAR PARAMETERS
-MIN_SPREAD_TRIGGER   = 8.0    # न्यूनतम स्प्रेड ($8.0) जिसके नीचे कोई सिग्नल नहीं आएगा
+# PRO 3-ENGINE PRE-SPIKE DIRECTION PARAMETERS ($8.0 SPREAD + STEP-IN + TAKER CVD + TOP-3)
+MIN_SPREAD_TRIGGER   = 8.0    # न्यूनतम स्प्रेड ($8.0) जिस पर वैक्यूम आर्म (Arm) होगा
 SPREAD_MULT_TRIGGER  = 7.0    # सामान्य स्प्रेड से कम से कम 7 गुना चौड़ा होने पर गेट खुलेगा
-MIN_LIQ_PULL_PTS     = 4.0    # स्प्रेड खुलते समय कम से कम $4.0 का Ask Pull या Bid Drop होना चाहिए
-MIN_BOOK_IMBALANCE   = 64.0   # ऑर्डर बुक में एक तरफ कम से कम 64% का दबाव होना चाहिए
+VACUUM_WATCH_SEC     = 3.5    # स्प्रेड खुलने के बाद अगले 3.5 सेकंड तक Step-In और Taker Flow को ट्रैक करेगा
+MIN_TAKER_DOM_PCT    = 58.0   # असली मार्केट ऑर्डर्स (Taker Buy/Sell) में कम से कम 58% एकतरफा प्रवाह
+MIN_TOP3_DOM_PCT     = 58.0   # Top-3 नजदीकी लेवल्स में कम से कम 58% का दबाव
 SIGNAL_COOLDOWN_SEC  = 180    # दो स्पाइक सिग्नल्स के बीच 3 मिनट (180 सेकंड) का लॉक
 EVAL_LOCK_SECONDS    = 180    # 3 मिनट (180 सेकंड) बाद क्रॉस-चेक पॉइंट्स हमेशा के लिए लॉक हो जाएंगे
 
@@ -634,8 +635,48 @@ def process_single_closed_bar(eng, kline):
     eng["bar_count"] += 1
 
 # ============================================================================
-# STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR + PEAK SPREAD HIGH-WATER MARK
+# PRO 3-ENGINE PRE-SPIKE DIRECTION RADAR:
+# [1] $8+ VACUUM STEP-IN + [2] REAL TAKER TRADES (CVD) + [3] TOP-3 DEPLETION
 # ============================================================================
+def fetch_hl_taker_flow():
+    """
+    Fetches real executed market trades (recentTrades) from Hyperliquid
+    to compute aggressive Taker Buy ('B') vs Taker Sell ('A') volume & delta.
+    """
+    taker_buy_v = 0.0
+    taker_sell_v = 0.0
+    try:
+        r_tr = requests.post(
+            HYPERLIQUID_INFO_URL,
+            json={"type": "recentTrades", "coin": "BTC"},
+            headers={"Content-Type": "application/json"},
+            timeout=2.5
+        )
+        if r_tr.status_code == 200:
+            trades = r_tr.json()
+            if isinstance(trades, list) and len(trades) > 0:
+                now_ms = int(time.time() * 1000)
+                # Filter trades from the last 12 seconds (or latest 35 trades)
+                for idx, t in enumerate(trades[:40]):
+                    t_ms = int(t.get("time", 0))
+                    if (now_ms - t_ms <= 12000) or idx < 15:
+                        sz = float(t.get("sz", 0.0))
+                        side = str(t.get("side", ""))
+                        if side == "B":
+                            taker_buy_v += sz
+                        elif side == "A":
+                            taker_sell_v += sz
+    except Exception:
+        pass
+
+    tot_v = taker_buy_v + taker_sell_v
+    if tot_v > 0:
+        t_buy_pct = round((taker_buy_v / tot_v) * 100.0, 1)
+    else:
+        t_buy_pct = 50.0
+    t_sell_pct = round(100.0 - t_buy_pct, 1)
+    return taker_buy_v, taker_sell_v, t_buy_pct, t_sell_pct
+
 def fetch_l2_orderbook_and_spike_radar(eng):
     bids = []
     asks = []
@@ -666,8 +707,17 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     mid_price = (best_bid + best_ask) / 2.0
     spread = max(0.1, best_ask - best_bid)
 
-    bid_vol_5 = sum(b[1] for b in bids[:5])
-    ask_vol_5 = sum(a[1] for a in asks[:5])
+    # 1. Fetch Real Aggressive Taker Trades (Market Buy vs Market Sell)
+    taker_buy_v, taker_sell_v, taker_buy_pct, taker_sell_pct = fetch_hl_taker_flow()
+    taker_net_delta = taker_buy_v - taker_sell_v
+
+    # 2. Top-3 Near-Touch Volume vs Top-15 Total Depth (Spoof-Proof)
+    bid_vol_3 = sum(b[1] for b in bids[:3])
+    ask_vol_3 = sum(a[1] for a in asks[:3])
+    tot_top3 = bid_vol_3 + ask_vol_3
+    top3_bid_pct = round((bid_vol_3 / tot_top3) * 100.0, 1) if tot_top3 > 0 else 50.0
+    top3_ask_pct = round(100.0 - top3_bid_pct, 1)
+
     bid_vol_15 = sum(b[1] for b in bids[:15])
     ask_vol_15 = sum(a[1] for a in asks[:15])
     tot_depth_15 = bid_vol_15 + ask_vol_15
@@ -681,7 +731,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     max_bid_wall = max(bids, key=lambda x: x[1])
     max_ask_wall = max(asks, key=lambda x: x[1])
 
-    # STEP 3: UPDATE 3-MINUTE (180s) FIXED EVALUATION WINDOW FOR LOGGED SIGNALS
+    # Update 3-Minute (180s) Fixed Evaluation Window for Logged Signals
     for item in eng["spike_history"]:
         if not item.get("locked", False):
             elapsed = now_ts - item["sig_ts"]
@@ -703,14 +753,22 @@ def fetch_l2_orderbook_and_spike_radar(eng):
     else:
         normal_spread = 1.0
 
+    # Measure Top-3 Depletion Rate (How much Top-3 Ask or Top-3 Bid was eaten in last 3s)
     if len(hist) >= 3:
         ref_ask = min(x["ask"] for x in hist[-3:])
         ref_bid = max(x["bid"] for x in hist[-3:])
         ask_jump = max(0.0, best_ask - ref_ask)
         bid_drop = max(0.0, ref_bid - best_bid)
+
+        prev_ask_v3 = sum(x["ask_v3"] for x in hist[-3:]) / 3.0
+        prev_bid_v3 = sum(x["bid_v3"] for x in hist[-3:]) / 3.0
+        ask_top3_eaten = (bid_vol_3 > prev_bid_v3 * 0.9) and (ask_vol_3 < prev_ask_v3 * 0.75)
+        bid_top3_eaten = (ask_vol_3 > prev_ask_v3 * 0.9) and (bid_vol_3 < prev_bid_v3 * 0.75)
     else:
         ask_jump = 0.0
         bid_drop = 0.0
+        ask_top3_eaten = False
+        bid_top3_eaten = False
 
     hist.append({
         "ts": now_ts,
@@ -718,21 +776,56 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         "bid": best_bid,
         "ask": best_ask,
         "spread": spread,
-        "bid_pct": bid_pct,
-        "ask_pct": ask_pct,
-        "bid_v5": bid_vol_5,
-        "ask_v5": ask_vol_5
+        "bid_v3": bid_vol_3,
+        "ask_v3": ask_vol_3,
+        "t_buy_pct": taker_buy_pct
     })
     if len(hist) > 30:
         hist.pop(0)
 
-    # STEP 1: STRICT $8.0 HARD SPREAD GATEKEEPER
+    # ========================================================================
+    # ENGINE 1: $8.0 SPREAD VACUUM ARMING & STEP-IN TRACKER (3.5s WINDOW)
+    # ========================================================================
     req_spread = max(MIN_SPREAD_TRIGGER, normal_spread * SPREAD_MULT_TRIGGER)
     spread_gate_open = (spread >= req_spread)
 
+    vac = eng.setdefault("active_vacuum", {
+        "armed": False,
+        "ts": 0.0,
+        "peak_spread": 0.0,
+        "vac_bid": 0.0,
+        "vac_ask": 0.0,
+        "vac_mid": 0.0
+    })
+
+    if spread_gate_open:
+        if not vac["armed"]:
+            vac["armed"] = True
+            vac["ts"] = now_ts
+            vac["peak_spread"] = spread
+            vac["vac_bid"] = best_bid
+            vac["vac_ask"] = best_ask
+            vac["vac_mid"] = mid_price
+        else:
+            # Update peak spread if vacuum widens further
+            if spread > vac["peak_spread"]:
+                vac["peak_spread"] = spread
+            vac["vac_bid"] = min(vac["vac_bid"], best_bid)
+            vac["vac_ask"] = max(vac["vac_ask"], best_ask)
+    elif vac["armed"] and (now_ts - vac["ts"] > VACUUM_WATCH_SEC):
+        vac["armed"] = False
+
+    # Calculate Vacuum Step-In (How much Buyers stepped UP into the gap vs Sellers stepped DOWN)
+    if vac["armed"]:
+        bid_step_in = max(0.0, best_bid - vac["vac_bid"])
+        ask_step_dn = max(0.0, vac["vac_ask"] - best_ask)
+    else:
+        bid_step_in = 0.0
+        ask_step_dn = 0.0
+
     gate_status_txt = (
-        f"🔓 SPREAD GATE OPEN! (${spread:.1f} ≥ ${req_spread:.1f})"
-        if spread_gate_open
+        f"🔓 VACUUM ARMED! (Peak Spread: ${vac['peak_spread']:.1f} | Step-In Tracking...)"
+        if vac["armed"]
         else f"🔒 GATE LOCKED (Live Spread ${spread:.1f} < Trigger ${req_spread:.1f})"
     )
 
@@ -744,10 +837,21 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         "spread": spread,
         "normal_spread": normal_spread,
         "req_spread": req_spread,
-        "spread_gate_open": spread_gate_open,
+        "spread_gate_open": vac["armed"],
         "gate_status_txt": gate_status_txt,
         "ask_jump": ask_jump,
         "bid_drop": bid_drop,
+        "bid_step_in": bid_step_in,
+        "ask_step_dn": ask_step_dn,
+        "bid_vol_3": bid_vol_3,
+        "ask_vol_3": ask_vol_3,
+        "top3_bid_pct": top3_bid_pct,
+        "top3_ask_pct": top3_ask_pct,
+        "taker_buy_v": taker_buy_v,
+        "taker_sell_v": taker_sell_v,
+        "taker_buy_pct": taker_buy_pct,
+        "taker_sell_pct": taker_sell_pct,
+        "taker_net_delta": taker_net_delta,
         "bid_vol": bid_vol_15,
         "ask_vol": ask_vol_15,
         "bid_pct": bid_pct,
@@ -758,33 +862,51 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         "ask_wall_sz": max_ask_wall[1]
     }
 
-    # Evaluate directional setup on current tick
-    bull_pull_ok = (ask_jump >= MIN_LIQ_PULL_PTS) and (ask_jump > bid_drop * 1.3)
-    bull_book_ok = (bid_pct >= MIN_BOOK_IMBALANCE) or (bid_pct >= 58.0 and bid_vol_5 >= ask_vol_5 * 1.8 and micro_skew > 0)
-    bull_flow_ok = (eng["buy_dom_pct"] >= 50.0)
+    # ========================================================================
+    # ENGINE 2 & 3: PRO DIRECTION DECISION (STEP-IN + TAKER CVD + TOP-3 BOOK)
+    # ========================================================================
+    # Bullish True Direction Check:
+    # 1. Taker Flow: Real Market Buys are dominating (>= 58% or positive net delta with Ask pull)
+    # 2. Step-In / Pull: Buyers stepped UP into the vacuum (`bid_step_in >= 1.5`) OR Sellers pulled Ask up sharply (`ask_jump >= 4.0` while Bid held firm)
+    # 3. Top-3 Near-Touch: Top-3 Bid >= 58% OR Top-3 Ask was eaten
+    taker_bull_ok = (taker_buy_pct >= MIN_TAKER_DOM_PCT) or (taker_buy_pct >= 52.0 and micro_skew > 0)
+    step_bull_ok  = (bid_step_in >= 1.5 and bid_step_in > ask_step_dn) or (ask_jump >= 4.0 and ask_jump > bid_drop * 1.4 and mid_price >= vac["vac_mid"])
+    top3_bull_ok  = (top3_bid_pct >= MIN_TOP3_DOM_PCT) or ask_top3_eaten
 
-    bear_pull_ok = (bid_drop >= MIN_LIQ_PULL_PTS) and (bid_drop > ask_jump * 1.3)
-    bear_book_ok = (ask_pct >= MIN_BOOK_IMBALANCE) or (ask_pct >= 58.0 and ask_vol_5 >= bid_vol_5 * 1.8 and micro_skew < 0)
-    bear_flow_ok = (eng["sell_dom_pct"] >= 50.0)
+    # Bearish True Direction Check:
+    # 1. Taker Flow: Real Market Sells are dominating (>= 58% or negative net delta with Bid drop)
+    # 2. Step-Down / Drop: Sellers stepped DOWN into the vacuum (`ask_step_dn >= 1.5`) OR Buyers dropped Bid sharply (`bid_drop >= 4.0` while Ask held firm)
+    # 3. Top-3 Near-Touch: Top-3 Ask >= 58% OR Top-3 Bid was eaten
+    taker_bear_ok = (taker_sell_pct >= MIN_TAKER_DOM_PCT) or (taker_sell_pct >= 52.0 and micro_skew < 0)
+    step_bear_ok  = (ask_step_dn >= 1.5 and ask_step_dn > bid_step_in) or (bid_drop >= 4.0 and bid_drop > ask_jump * 1.4 and mid_price <= vac["vac_mid"])
+    top3_bear_ok  = (top3_ask_pct >= MIN_TOP3_DOM_PCT) or bid_top3_eaten
 
-    # STEP 2: STRICT PRE-SPIKE DIRECTION TRACING (ONLY WHEN SPREAD >= $8.0)
     time_since_last = now_ts - eng["last_spike_alert_ts"]
     spike_dir_text = None
     dir_code = 0
     col = "#38bdf8"
 
-    if spread_gate_open and len(hist) >= 6 and time_since_last >= SIGNAL_COOLDOWN_SEC:
-        if bull_pull_ok and bull_book_ok and bull_flow_ok:
-            spike_dir_text = f"🚀 PRE-SPIKE BUY (Spread: ${spread:.1f} | Ask Pull: +${ask_jump:.1f} | {bid_pct:.0f}% Bid)"
+    if vac["armed"] and len(hist) >= 5 and time_since_last >= SIGNAL_COOLDOWN_SEC:
+         trig_sp = vac["peak_spread"]
+        if taker_bull_ok and step_bull_ok and top3_bull_ok:
+            spike_dir_text = (
+                f"🚀 PRO PRE-SPIKE BUY (Spread: ${trig_sp:.1f} | "
+                f"Taker Buy: {taker_buy_pct:.0f}% | Top3 Bid: {top3_bid_pct:.0f}%)"
+            )
             dir_code = 1
             col = "#22c55e"
-        elif bear_pull_ok and bear_book_ok and bear_flow_ok:
-            spike_dir_text = f"🔻 PRE-SPIKE SELL (Spread: ${spread:.1f} | Bid Drop: -${bid_drop:.1f} | {ask_pct:.0f}% Ask)"
+            vac["armed"] = False
+        elif taker_bear_ok and step_bear_ok and top3_bear_ok:
+            spike_dir_text = (
+                f"🔻 PRO PRE-SPIKE SELL (Spread: ${trig_sp:.1f} | "
+                f"Taker Sell: {taker_sell_pct:.0f}% | Top3 Ask: {top3_ask_pct:.0f}%)"
+            )
             dir_code = -1
             col = "#ef4444"
+            vac["armed"] = False
 
     # ========================================================================
-    # PEAK SPREAD HIGH-WATER MARK TRACKER (UPDATES ONLY WHEN NEW HIGHER SPREAD HITS)
+    # PEAK SPREAD HIGH-WATER MARK TRACKER (WITH TRUE TAKER + TOP-3 SIGNAL)
     # ========================================================================
     eng.setdefault("max_spread_record", {
         "spread": 0.0,
@@ -798,21 +920,15 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         if spike_dir_text:
             peak_sig = spike_dir_text
             peak_col = col
-        elif spread_gate_open and bull_pull_ok and bull_book_ok:
-            peak_sig = f"🚀 PRE-SPIKE BUY SETUP (Ask Pull +${ask_jump:.1f} | {bid_pct:.0f}% Bid)"
-            peak_col = "#22c55e"
-        elif spread_gate_open and bear_pull_ok and bear_book_ok:
-            peak_sig = f"🔻 PRE-SPIKE SELL SETUP (Bid Drop -${bid_drop:.1f} | {ask_pct:.0f}% Ask)"
-            peak_col = "#ef4444"
-        elif bid_pct >= 58.0 or ask_jump > bid_drop:
-            peak_sig = f"🟢 BUY Bias ({bid_pct:.0f}% Bid / {ask_pct:.0f}% Ask | Pull +${ask_jump:.1f})"
+        elif taker_buy_pct >= 56.0 and top3_bid_pct >= 55.0:
+            peak_sig = f"🟢 PRO BUY FLOW (Taker Buy: {taker_buy_pct:.0f}% | Top-3 Bid: {top3_bid_pct:.0f}%)"
             peak_col = "#4ade80"
-        elif ask_pct >= 58.0 or bid_drop > ask_jump:
-            peak_sig = f"🔴 SELL Bias ({ask_pct:.0f}% Ask / {bid_pct:.0f}% Bid | Drop -${bid_drop:.1f})"
+        elif taker_sell_pct >= 56.0 and top3_ask_pct >= 55.0:
+            peak_sig = f"🔴 PRO SELL FLOW (Taker Sell: {taker_sell_pct:.0f}% | Top-3 Ask: {top3_ask_pct:.0f}%)"
             peak_col = "#f87171"
         else:
-            peak_sig = f"⚖️ Neutral Book (Bid {bid_pct:.0f}% / Ask {ask_pct:.0f}%)"
-            peak_col = "#cbd5e1"
+            peak_sig = f"⚖️ Mixed Flow (Taker Buy {taker_buy_pct:.0f}% | Top-3 Bid {top3_bid_pct:.0f}%)"
+            peak_col = "#facc15"
 
         eng["max_spread_record"] = {
             "spread": spread,
@@ -828,7 +944,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
             "time": ist_t,
             "sig_ts": now_ts,
             "price": mid_price,
-            "spread_info": f"${spread:.1f} (Norm: ${normal_spread:.1f})",
+            "spread_info": f"${trig_sp:.1f} (Taker {taker_buy_pct:.0f}/{taker_sell_pct:.0f}%)",
             "direction": spike_dir_text,
             "dir_code": dir_code,
             "max_fav": 0.0,
@@ -844,21 +960,21 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         eng["last_spike_status"] = f"🔊⚡ {ist_t}: {spike_dir_text} @ ${mid_price:,.1f}"
         eng["last_spike_color"] = col
     elif now_ts - eng["last_spike_alert_ts"] > 15:
-        if spread_gate_open:
+        if vac["armed"]:
             eng["last_spike_status"] = (
-                f"⚠️ स्प्रेड चौड़ा हुआ (${spread:.1f} ≥ ${req_spread:.1f})! "
-                f"एकतरफा ऑर्डर बुक (≥{MIN_BOOK_IMBALANCE:.0f}%) और Pull (≥${MIN_LIQ_PULL_PTS:.0f}) की जांच हो रही है..."
+                f"⚠️ वैक्यूम खुला (${vac['peak_spread']:.1f})! Step-In व Taker Flow चेक हो रहा है: "
+                f"Taker Buy {taker_buy_pct:.0f}% | Top-3 Bid {top3_bid_pct:.0f}%"
             )
             eng["last_spike_color"] = "#b45309"
         else:
             eng["last_spike_status"] = (
-                f"🛡️ स्प्रेड सामान्य है (${spread:.1f}) — सिग्नल गेट लॉक है "
-                f"(केवल Spread ≥ ${req_spread:.1f} और {MIN_BOOK_IMBALANCE:.0f}%+ इम्बैलेंस पर ही साउंड अलर्ट आएगा)"
+                f"🛡️ 3-Engine Direction Lock (Live Spread: ${spread:.1f} | "
+                f"Taker Buy: {taker_buy_pct:.0f}% | Top-3 Bid: {top3_bid_pct:.0f}%)"
             )
             eng["last_spike_color"] = "#0f172a"
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (5000 CANDLES FIXED-GRID LOCK + $8.0 SPREAD RADAR)
+# 24x7 BACKGROUND WORKER (5000 CANDLES FIXED-GRID LOCK + 3-ENGINE RADAR)
 # ============================================================================
 def background_worker(eng):
     last_1d_fetch = 0
@@ -907,7 +1023,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_5000_spread8_peak_engine():
+def get_hl_5000_pro_direction_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -986,6 +1102,17 @@ def get_hl_5000_spread8_peak_engine():
             "gate_status_txt": "🔒 GATE LOCKED (Trigger ≥ $8.0)",
             "ask_jump": 0.0,
             "bid_drop": 0.0,
+            "bid_step_in": 0.0,
+            "ask_step_dn": 0.0,
+            "bid_vol_3": 0.0,
+            "ask_vol_3": 0.0,
+            "top3_bid_pct": 50.0,
+            "top3_ask_pct": 50.0,
+            "taker_buy_v": 0.0,
+            "taker_sell_v": 0.0,
+            "taker_buy_pct": 50.0,
+            "taker_sell_pct": 50.0,
+            "taker_net_delta": 0.0,
             "bid_vol": 0.0,
             "ask_vol": 0.0,
             "bid_pct": 50.0,
@@ -994,6 +1121,14 @@ def get_hl_5000_spread8_peak_engine():
             "bid_wall_sz": 0.0,
             "ask_wall_px": 0.0,
             "ask_wall_sz": 0.0
+        },
+        "active_vacuum": {
+            "armed": False,
+            "ts": 0.0,
+            "peak_spread": 0.0,
+            "vac_bid": 0.0,
+            "vac_ask": 0.0,
+            "vac_mid": 0.0
         },
         "max_spread_record": {
             "spread": 0.0,
@@ -1006,7 +1141,7 @@ def get_hl_5000_spread8_peak_engine():
         "last_spike_alert_ts": 0,
         "last_spike_alert_id": 0,
         "last_spike_dir": 0,
-        "last_spike_status": "📡 $8.0 Spread-First Pre-Spike Radar सिंक हो रहा है...",
+        "last_spike_status": "📡 Pro 3-Engine Direction Radar सिंक हो रहा है...",
         "last_spike_color": "#0f172a",
         "spike_history": [],
         "error": None
@@ -1015,20 +1150,19 @@ def get_hl_5000_spread8_peak_engine():
     thread.start()
     return eng
 
-eng = get_hl_5000_spread8_peak_engine()
+eng = get_hl_5000_pro_direction_engine()
 
 # ============================================================================
 # TWO TABS: TAB 1 = AI-RENKO PRO + AUDIO | TAB 2 = BTC MULTI-CHART PRO
 # ============================================================================
 tab_renko, tab_charts = st.tabs([
-    "⚡ AI-Renko Pro Terminal (5000-Bar Fixed Grid • $8 Spread Audio Radar)",
+    "⚡ AI-Renko Pro Terminal (5000-Bar • Pro 3-Engine Spike Radar)",
     "📊 BTC Multi-Chart Pro (VPVR & FVG Live Signals)"
 ])
 
 with tab_renko:
     top_col1, top_col2 = st.columns([0.74, 0.26])
     with top_col1:
-        # Persistent Web Audio API Synthesizer & Auto-Unlock Bar (Zero Blink)
         sound_bar_html = """<!DOCTYPE html>
 <html>
 <head>
@@ -2343,11 +2477,11 @@ countSel.addEventListener("change", () => {
     components.html(multi_chart_html, height=820, scrolling=False)
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (5000-BAR FIXED GRID + PEAK SPREAD)
+# ZERO-BLINK LIVE RENDERING LOOP FOR TAB 1 (PRO 3-ENGINE DIRECTION RADAR)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: पिछले 3.5 दिन (~5000 कैंडल्स) का Fixed-Grid डेटा और $8.0 Spread Audio Radar सिंक हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: 5000 कैंडल्स का Fixed-Grid डेटा और Pro 3-Engine Direction Radar सिंक हो रहा है...")
         time.sleep(1)
         continue
 
@@ -2376,6 +2510,17 @@ while True:
     gate_status_txt = ob["gate_status_txt"]
     ask_jump = ob["ask_jump"]
     bid_drop = ob["bid_drop"]
+    bid_step_in = ob.get("bid_step_in", 0.0)
+    ask_step_dn = ob.get("ask_step_dn", 0.0)
+    bid_vol_3 = ob.get("bid_vol_3", 0.0)
+    ask_vol_3 = ob.get("ask_vol_3", 0.0)
+    top3_bid_pct = ob.get("top3_bid_pct", 50.0)
+    top3_ask_pct = ob.get("top3_ask_pct", 50.0)
+    taker_buy_v = ob.get("taker_buy_v", 0.0)
+    taker_sell_v = ob.get("taker_sell_v", 0.0)
+    taker_buy_pct = ob.get("taker_buy_pct", 50.0)
+    taker_sell_pct = ob.get("taker_sell_pct", 50.0)
+    taker_net_delta = ob.get("taker_net_delta", 0.0)
     bid_pct = ob["bid_pct"]
     ask_pct = ob["ask_pct"]
     bid_vol = ob["bid_vol"]
@@ -2409,6 +2554,7 @@ while True:
         audio_autoplay_html = f'<audio autoplay="true" src="data:audio/wav;base64,{wav_b64}"></audio>'
 
     gate_col = "#22c55e" if spread_gate_open else "#facc15"
+    delta_col = "#4ade80" if taker_net_delta >= 0 else "#f87171"
 
     tot_trades = eng["wins"] + eng["losses"]
     win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
@@ -2471,7 +2617,7 @@ while True:
 
     spike_rows_html = ""
     if not eng["spike_history"]:
-        spike_rows_html = f"""<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई $8.0+ स्प्रेड-वैक्यूम स्पाइक (Spread ≥ ${req_spread:.1f}) नहीं आया है</td></tr>"""
+        spike_rows_html = f"""<tr><td colspan="5" style="text-align:center; padding:12px; color:#64748b;">अभी तक कोई $8.0+ Pro 3-Engine स्पाइक (Spread ≥ ${req_spread:.1f}) ट्रिगर नहीं हुआ है</td></tr>"""
     else:
         for sh in eng["spike_history"]:
             mv_col = "#4ade80" if sh["max_fav"] >= 25.0 else ("#f87171" if sh["curr_move"] < 0 else "#cbd5e1")
@@ -2533,10 +2679,10 @@ while True:
 
 {trade_box_html}
 
-<!-- STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR BOX (WITH PEAK SPREAD TRACKER & 3-MIN LOCK) -->
+<!-- PRO 3-ENGINE PRE-SPIKE DIRECTION RADAR BOX (STEP-IN + TAKER CVD + TOP-3) -->
 <div style="background:#1e293b; border:2px solid #38bdf8; border-radius:12px; padding:14px; margin-bottom:14px; box-shadow:0 4px 15px rgba(56,189,248,0.15);">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
-<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 STRICT $8.0 SPREAD-FIRST PRE-SPIKE RADAR (🔊 AUDIO + 3M LOCK)</span>
+<span style="font-size:13px; font-weight:bold; color:#38bdf8;">📡 PRO 3-ENGINE PRE-SPIKE RADAR (STEP-IN + TAKER CVD + TOP-3)</span>
 <span style="font-size:12px; color:{gate_col}; font-weight:800;">{gate_status_txt}</span>
 </div>
 
@@ -2551,34 +2697,41 @@ while True:
 </div>
 </div>
 
+<!-- ENGINE 1: SPREAD & VACUUM STEP-IN -->
 <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:6px; background:#0b1324; padding:7px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
-<span>📏 Live Spread: <b style="color:#facc15;">${spread:.1f}</b> (Norm: ${normal_spread:.1f})</span>
-<span>⬆️ Ask Pull (3s): <b style="color:#4ade80;">+${ask_jump:.1f}</b> (Need ≥$4)</span>
-<span>⬇️ Bid Drop (3s): <b style="color:#f87171;">-${bid_drop:.1f}</b> (Need ≥$4)</span>
+<span>📏 Spread: <b style="color:#facc15;">${spread:.1f}</b> (Norm: ${normal_spread:.1f})</span>
+<span>👣 Bid Step-In: <b style="color:#4ade80;">+${bid_step_in:.1f}</b> (Ask Pull: +${ask_jump:.1f})</span>
+<span>👣 Ask Step-Dn: <b style="color:#f87171;">-${ask_step_dn:.1f}</b> (Bid Drop: -${bid_drop:.1f})</span>
 </div>
-<div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:6px; background:#0b1324; padding:6px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
-<span>🟢 L2 Bid Depth (15L): <b style="color:#22c55e;">{bid_pct:.1f}% ({bid_vol:.1f} BTC)</b></span>
-<span>🔴 L2 Ask Depth (15L): <b style="color:#ef4444;">{ask_pct:.1f}% ({ask_vol:.1f} BTC)</b></span>
+
+<!-- ENGINE 2: AGGRESSIVE TAKER TRADES (MARKET BUY VS MARKET SELL CVD) -->
+<div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:5px; background:#0b1324; padding:6px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
+<span>⚡ Taker Market Buy: <b style="color:#22c55e;">{taker_buy_pct:.1f}% ({taker_buy_v:.2f} BTC)</b></span>
+<span>⚡ Net CVD: <b style="color:{delta_col};">{taker_net_delta:+.2f} BTC</b></span>
+<span>⚡ Taker Market Sell: <b style="color:#ef4444;">{taker_sell_pct:.1f}% ({taker_sell_v:.2f} BTC)</b></span>
 </div>
-<div style="width:100%; background:#ef4444; height:10px; border-radius:5px; overflow:hidden; margin-bottom:8px;">
-<div style="width:{bid_pct}%; background:#22c55e; height:100%;"></div>
+<div style="width:100%; background:#ef4444; height:8px; border-radius:4px; overflow:hidden; margin-bottom:7px;">
+<div style="width:{taker_buy_pct}%; background:#22c55e; height:100%;"></div>
 </div>
+
+<!-- ENGINE 3: TOP-3 NEAR-TOUCH BOOK VS TOP-15 DEPTH -->
 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:#cbd5e1; margin-bottom:8px; background:#0f172a; padding:6px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
-<span>🛡️ Buy Whale Wall: <b style="color:#4ade80;">${bid_wall_px:,.1f} ({bid_wall_sz:.2f} BTC)</b></span>
-<span>🧱 Sell Whale Wall: <b style="color:#f87171;">${ask_wall_px:,.1f} ({ask_wall_sz:.2f} BTC)</b></span>
+<span>🎯 Top-3 Touch Book: <b style="color:#4ade80;">Bid {top3_bid_pct:.0f}% ({bid_vol_3:.1f}B)</b> / <b style="color:#f87171;">Ask {top3_ask_pct:.0f}% ({ask_vol_3:.1f}B)</b></span>
+<span>🛡️ Whale Walls: <b style="color:#4ade80;">B ${bid_wall_px:,.0f} ({bid_wall_sz:.1f}B)</b> | <b style="color:#f87171;">S ${ask_wall_px:,.0f} ({ask_wall_sz:.1f}B)</b></span>
 </div>
+
 <div style="background:{spike_box_bg}; color:#ffffff; padding:9px; border-radius:8px; font-size:12px; font-weight:bold; text-align:center; border:1px solid #334155; margin-bottom:10px;">
 {spike_status}
 </div>
-<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 High-Spread Pre-Spike History (Triggers Only When Spread ≥ $8.0)</div>
+<div style="font-size:12px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;">📜 Pro 3-Engine Pre-Spike History (Spread ≥ $8 + Step-In + Taker CVD + Top-3)</div>
 <div style="max-height:150px; overflow-y:auto;">
 <table style="width:100%; border-collapse:collapse;">
 <thead>
 <tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
 <th style="padding:5px;">समय</th>
 <th style="padding:5px;">सिग्नल प्राइस</th>
-<th style="padding:5px;">स्प्रेड</th>
-<th style="padding:5px;">प्री-स्पाइक दिशा</th>
+<th style="padding:5px;">स्प्रेड (Taker%)</th>
+<th style="padding:5px;">प्रो प्री-स्पाइक दिशा</th>
 <th style="padding:5px; text-align:right;">3-Min मूव (Auto-Lock)</th>
 </tr>
 </thead>
