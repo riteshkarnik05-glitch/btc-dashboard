@@ -725,7 +725,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_delta_integrated_v4_engine():
+def get_hl_delta_integrated_v5_engine():
     eng = {
         "initialized": False, "bar_count": 0, "last_bar_time": 0, "anchor_time_str": "--", "prev_close": 0.0,
         "tr_sum": 0.0, "atr14": 15.0, "ema21": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
@@ -746,7 +746,7 @@ def get_hl_delta_integrated_v4_engine():
     threading.Thread(target=background_worker, args=(eng,), daemon=True).start()
     return eng
 
-eng = get_hl_delta_integrated_v4_engine()
+eng = get_hl_delta_integrated_v5_engine()
 
 top_col1, top_col2 = st.columns([0.74, 0.26])
 with top_col1:
@@ -810,7 +810,7 @@ while True:
     gate_col = "#22c55e" if spread_gate_open else "#facc15"
     delta_col = "#4ade80" if taker_net_delta >= 0 else "#f87171"
     tot_trades = eng["wins"] + eng["losses"]
-    win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
+    win_rate_val = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
     net_pnl = eng["gross_profit"] - eng["gross_loss"] - eng["total_brok"]
     st_badge_text, st_badge_col = ("STATUS: BUY 🟢", "#00c891") if st_trend == 1 else ("STATUS: SELL 🔴", "#f03769")
 
@@ -838,6 +838,9 @@ while True:
     spike_rows_html = "".join([f"<tr style='border-bottom:1px solid #334155; font-size:11.5px;'><td style='padding:6px 5px; color:#94a3b8;'>{sh['time']}</td><td style='padding:6px 5px; color:#f8fafc;'>${sh['price']:,.1f}</td><td style='padding:6px 5px; color:#facc15;'>{sh['spread_info']}</td><td style='padding:6px 5px; color:{sh['color']}; font-weight:bold;'>{sh['direction']}</td><td style='padding:6px 5px; text-align:right; color:#4ade80;'>Max: +{sh['max_fav']:.1f}p</td></tr>" for sh in eng["spike_history"]]) or "<tr><td colspan='5' style='text-align:center; padding:12px; color:#64748b;'>कोई स्पाइक नहीं</td></tr>"
     rows_html = "".join([f"<tr style='border-bottom:1px solid #334155; font-size:12px;'><td style='padding:8px 6px; color:#94a3b8;'>{h['time']}</td><td style='padding:8px 6px; font-weight:bold; color:#f8fafc;'>{h['type']}</td><td style='padding:8px 6px; color:#cbd5e1;'>{h['entry']:,.1f} → {h['exit']:,.1f}</td><td style='padding:8px 6px; color:{h.get('color','#22c55e')}; font-weight:bold;'>{h['status']}</td><td style='padding:8px 6px; text-align:right; color:{h.get('color','#22c55e')};'>{h['pnl']} pts</td></tr>" for h in eng["history"]]) or "<tr><td colspan='5' style='text-align:center; padding:15px; color:#64748b;'>कोई ट्रेड नहीं</td></tr>"
 
+    net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
+    wr_color = "#00e676" if win_rate_val >= 60.0 else "#facc15"
+
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
 {audio_autoplay_html}
@@ -860,7 +863,7 @@ while True:
 <div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 DELTA DEMO ALGO BACKTEST (Renko 10Q + Spike 5Q)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="color:#94a3b8;">Total Trades (W/L)</td><td style="text-align:right; font-weight:bold;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="color:#94a3b8;">Win Rate %</td><td style="text-align:right; font-weight:bold; color:{wr_color};">{win_rate:.1f}%</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="color:#94a3b8;">Win Rate %</td><td style="text-align:right; font-weight:bold; color:{wr_color};">{win_rate_val:.1f}%</td></tr>
 <tr style="background:#0f172a;"><td style="color:#ffffff; font-weight:bold;">NET PROFIT</td><td style="text-align:right; font-weight:800; font-size:15px; color:{net_color};">{net_pnl:+,.1f} pts</td></tr></table></div></div>
 <div><div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%;">
 <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:10px;">📜 ट्रेड इतिहास और Delta Demo आर्डर लॉग</div>
