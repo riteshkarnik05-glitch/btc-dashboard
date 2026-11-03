@@ -79,7 +79,7 @@ MAX_EMA_DIST_BRICKS  = 1.1    # सख्त ओवर-स्ट्रेच फ
 
 USE_AUTO_BOX         = True
 ATR_PERIOD           = 5
-RANGE_DIVISOR        = 15.0   # 10.0 से बढ़ाकर 15.0 (Medium Brick Size ~120 pts: जल्दी एंट्री और छोटा SL)
+RANGE_DIVISOR        = 15.0   # Medium Brick Size (~120 pts): जल्दी एंट्री और छोटा SL
 MANUAL_BOX           = 120.0
 
 ST_FACTOR            = 3.0
@@ -237,7 +237,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# STATEFUL INCREMENTAL BAR PROCESSOR (DIVISOR 15 + ONE-SHOT TREND LOCK)
+# STATEFUL INCREMENTAL BAR PROCESSOR (TRUE ADVERSE SL CHECK + BRICK SYNC)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -406,7 +406,6 @@ def process_single_closed_bar(eng, kline):
 
     if st_flip_buy or st_flip_sell:
         eng["brick_streak"] = 1
-        # Reset One-Shot Trend Lock only when a fresh Supertrend Flip occurs
         eng["trend_tp1_done"] = False
 
     if st_flip_buy:
@@ -421,7 +420,7 @@ def process_single_closed_bar(eng, kline):
         eng["pending_flip_sell"] = False
 
     # ========================================================================
-    # MANAGE ACTIVE 10-QTY TRADE (0.85 TP1 + 7Q BOOK + ONE-SHOT LOCK + 0.9B SL CAP)
+    # MANAGE ACTIVE 10-QTY TRADE (TRUE ADVERSE SL CHECK + 7Q TP1 BOOKING)
     # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
@@ -432,7 +431,7 @@ def process_single_closed_bar(eng, kline):
         hit_tp1_now = (not eng["tp1_reached"]) and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"]))
         if hit_tp1_now:
             eng["tp1_reached"] = True
-            eng["trend_tp1_done"] = True   # Lock out late re-entries in the same trend wave!
+            eng["trend_tp1_done"] = True
             eng["wins"] += 1
             eng["booked_pnl_10q"] = eng["locked_tp1_pts"] * TP1_BOOK_QTY
             eng["gross_profit"] += eng["booked_pnl_10q"]
@@ -493,19 +492,29 @@ def process_single_closed_bar(eng, kline):
 
         if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
             if not eng["tp1_reached"]:
+                # True signed adverse move (positive only when trade is actually in loss)
+                adverse_close_pts = (eng["entry_price"] - c) if t_dir == 1 else (c - eng["entry_price"])
                 wick_hit_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
                 close_hit_sl = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
-                brick_turned_bad = (eng["brick_dir"] == -1 and c < eng["brick_bot"]) if t_dir == 1 else (eng["brick_dir"] == 1 and c > eng["brick_top"])
-                st_turned_bad = (eng["st_trend"] == -1) if t_dir == 1 else (eng["st_trend"] == 1)
+
+                # brick_turned_bad ONLY triggers if brick flipped against trade AND price is genuinely in loss by >= 0.50 Brick
+                brick_turned_bad = (
+                    (eng["brick_dir"] == -1 and c < eng["brick_bot"] and adverse_close_pts >= box_size * 0.50)
+                    if t_dir == 1
+                    else (eng["brick_dir"] == 1 and c > eng["brick_top"] and adverse_close_pts >= box_size * 0.50)
+                )
+                st_turned_bad = ((eng["st_trend"] == -1) if t_dir == 1 else (eng["st_trend"] == 1)) and (adverse_close_pts > 0)
                 hard_crash = (l <= eng["hard_stop_price"]) if t_dir == 1 else (h >= eng["hard_stop_price"])
 
                 sl_triggered = (close_hit_sl or brick_turned_bad or st_turned_bad or hard_crash) if ANTI_WICK_SL else (wick_hit_sl or st_turned_bad)
 
                 if sl_triggered:
                     eng["losses"] += 1
-                    # Strict SL Loss Cap: Never charge more than MAX_SL_LOSS_BRICKS (0.90 Brick) per Qty
                     max_cap_pts = box_size * MAX_SL_LOSS_BRICKS
-                    loss_per_qty = min(abs(eng["entry_price"] - c), max_cap_pts) if (ANTI_WICK_SL and not hard_crash) else max_cap_pts
+                    if ANTI_WICK_SL and not hard_crash and adverse_close_pts > 0:
+                        loss_per_qty = min(adverse_close_pts, max_cap_pts)
+                    else:
+                        loss_per_qty = max_cap_pts
                     total_loss_10q = loss_per_qty * TOTAL_QTY
                     eng["gross_loss"] += total_loss_10q
                     eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
@@ -519,7 +528,6 @@ def process_single_closed_bar(eng, kline):
                     eng["history"] = eng["history"][:40]
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
-                    # Also lock out same-trend re-entry after a full SL hit so it waits for a fresh ST Flip
                     eng["trend_tp1_done"] = True
             else:
                 hit_be_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
@@ -544,7 +552,7 @@ def process_single_closed_bar(eng, kline):
                     eng["open_qty"] = 0
 
     # ========================================================================
-    # CHECK NEW ENTRY SIGNALS (WITH ONE-SHOT TREND LOCK & STRICT EMA STRETCH)
+    # CHECK NEW ENTRY SIGNALS (WITH BRICK DIRECTION SYNC & ONE-SHOT LOCK)
     # ========================================================================
     ema21 = eng["ema21"]
     rsi_val = eng["rsi14"]
@@ -554,12 +562,13 @@ def process_single_closed_bar(eng, kline):
     bull_filter_ok   = candle_not_giant and flip_stretch_ok and buy_dom_pct >= 52.0 and rsi_val < 72.0
     bear_filter_ok   = candle_not_giant and flip_stretch_ok and sell_dom_pct >= 52.0 and rsi_val > 28.0
 
-    trigger_flip_buy  = eng["pending_flip_buy"] and eng["st_trend"] == 1 and bull_filter_ok and c > o
-    trigger_flip_sell = eng["pending_flip_sell"] and eng["st_trend"] == -1 and bear_filter_ok and c < o
+    # Require brick_dir to match st_trend so SHORT never enters on an opposing green brick!
+    trigger_flip_buy  = eng["pending_flip_buy"] and eng["st_trend"] == 1 and eng["brick_dir"] == 1 and bull_filter_ok and c > o
+    trigger_flip_sell = eng["pending_flip_sell"] and eng["st_trend"] == -1 and eng["brick_dir"] == -1 and bear_filter_ok and c < o
 
     allow_re_entry = (SIG_MODE == "Supertrend + Brick-Step Re-Entry (Best)")
-    raw_cont_buy   = allow_re_entry and (not trigger_flip_buy) and eng["st_trend"] == 1 and brick_step_up and buy_dom_pct >= MIN_VOL_DOM and c > ema21 and rsi_val > 51.0 and rsi_val < 68.0 and candle_not_giant
-    raw_cont_sell  = allow_re_entry and (not trigger_flip_sell) and eng["st_trend"] == -1 and brick_step_dn and sell_dom_pct >= MIN_VOL_DOM and c < ema21 and rsi_val < 49.0 and rsi_val > 32.0 and candle_not_giant
+    raw_cont_buy   = allow_re_entry and (not trigger_flip_buy) and eng["st_trend"] == 1 and eng["brick_dir"] == 1 and brick_step_up and buy_dom_pct >= MIN_VOL_DOM and c > ema21 and rsi_val > 51.0 and rsi_val < 68.0 and candle_not_giant
+    raw_cont_sell  = allow_re_entry and (not trigger_flip_sell) and eng["st_trend"] == -1 and eng["brick_dir"] == -1 and brick_step_dn and sell_dom_pct >= MIN_VOL_DOM and c < ema21 and rsi_val < 49.0 and rsi_val > 32.0 and candle_not_giant
 
     streak_ok   = (not USE_STREAK_FILTER) or (eng["brick_streak"] <= MAX_BRICK_STREAK)
     stretch_ok  = (not USE_STRETCH_FILTER) or (abs(c - ema21) <= box_size * MAX_EMA_DIST_BRICKS)
@@ -981,7 +990,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_5000_oneshot_div15_engine():
+def get_hl_5000_oneshot_div15_v2_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -1109,7 +1118,7 @@ def get_hl_5000_oneshot_div15_engine():
     thread.start()
     return eng
 
-eng = get_hl_5000_oneshot_div15_engine()
+eng = get_hl_5000_oneshot_div15_v2_engine()
 
 # ============================================================================
 # SINGLE CLEAN TERMINAL HEADER (AUDIO UNLOCK BAR + RESET MAX SPREAD BUTTON)
@@ -1243,11 +1252,11 @@ with top_col2:
 terminal = st.empty()
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP (DIVISOR 15 + ONE-SHOT LOCK + 7Q TP1)
+# ZERO-BLINK LIVE RENDERING LOOP (DIVISOR 15 + ONE-SHOT LOCK + TRUE SL FIX)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और One-Shot Trend Lock इंजन लोड हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और True SL इंजन लोड हो रहा है...")
         time.sleep(1)
         continue
 
