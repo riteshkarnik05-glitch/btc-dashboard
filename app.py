@@ -734,7 +734,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_delta_integrated_v2_engine():
+def get_hl_delta_integrated_v3_engine():
     eng = {
         "initialized": False, "bar_count": 0, "last_bar_time": 0, "anchor_time_str": "--", "prev_close": 0.0,
         "tr_sum": 0.0, "atr14": 15.0, "ema21": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
@@ -755,7 +755,7 @@ def get_hl_delta_integrated_v2_engine():
     threading.Thread(target=background_worker, args=(eng,), daemon=True).start()
     return eng
 
-eng = get_hl_delta_integrated_v2_engine()
+eng = get_hl_delta_integrated_v3_engine()
 
 top_col1, top_col2 = st.columns([0.74, 0.26])
 with top_col1:
