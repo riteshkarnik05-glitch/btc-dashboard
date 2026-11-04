@@ -157,7 +157,7 @@ BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])   # Ascending Bullis
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])      # Descending Bearish Alarm
 
 # ============================================================================
-# UPGRADED MEDIUM-BRICK (DIVISOR 15) + ONE-SHOT TREND LOCK + 7Q TP1 PARAMETERS
+# UPGRADED MEDIUM-BRICK (DIVISOR 15) + ONE-SHOT TREND LOCK + REAL DELTA FEE
 # ============================================================================
 TOTAL_QTY            = 10
 TP1_BOOK_QTY         = 7      # 0.85 Brick (TP1) पर 7 क्वांटिटी तुरंत बुक होंगी
@@ -190,7 +190,12 @@ TP2_BRICKS           = 2.20   # TP2 रनर टारगेट
 SL_BRICKS            = 1.15   # Anti-Wick कैंडल-क्लोज ट्रिगर (ताकि मामूली सुई/Wick से ट्रेड न कटे)
 MAX_SL_LOSS_BRICKS   = 0.90   # अधिकतम SL नुकसान कैप: 0.90 Brick प्रति Qty से ज्यादा नुकसान कभी नहीं लगेगा
 ANTI_WICK_SL         = True   # True = केवल कैंडल क्लोज या रैंकों पलटने पर ही SL कटेगा
-BROK_PER_QTY         = 1.5
+
+# REAL DELTA EXCHANGE FEE (0.045% Taker Fee + 18% GST = 0.0531% per side -> 0.1062% Round-Trip)
+DELTA_TAKER_FEE_RATE = 0.00045
+DELTA_GST_MULT       = 1.18
+DELTA_RT_FEE_RATE    = DELTA_TAKER_FEE_RATE * DELTA_GST_MULT * 2.0  # 0.001062 (0.1062% कुल एंट्री + एग्जिट फीस)
+BROK_PER_QTY         = 82.1   # डिफ़ॉल्ट अनुमानित मान (~$77,300 पर ~82.1 pts/Qty)
 MINTICK              = 0.1
 
 # PRO 3-ENGINE PRE-SPIKE DIRECTION PARAMETERS ($8.0 SPREAD + STEP-IN + TAKER CVD + TOP-3)
@@ -206,6 +211,9 @@ HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 
 def fmt_pts(pts):
     return f"{pts:,.1f}"
+
+def calc_real_delta_brok_per_qty(price_val):
+    return price_val * DELTA_RT_FEE_RATE if price_val > 0 else BROK_PER_QTY
 
 # ============================================================================
 # 100% HYPERLIQUID CANDLE SNAPSHOT FETCHERS (FIXED 3.5-DAY ANCHOR + LIVE)
@@ -530,7 +538,8 @@ def process_single_closed_bar(eng, kline):
             eng["wins"] += 1
             eng["booked_pnl_10q"] = eng["locked_tp1_pts"] * TP1_BOOK_QTY
             eng["gross_profit"] += eng["booked_pnl_10q"]
-            eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
+            real_brok_10q = calc_real_delta_brok_per_qty(eng["entry_price"]) * TOTAL_QTY
+            eng["total_brok"] += real_brok_10q
             eng["open_qty"] = RUNNER_QTY
             runner_lock_pts = box_size * RUNNER_LOCK_BRICKS
             eng["stop_price"] = (eng["entry_price"] + runner_lock_pts) if t_dir == 1 else (eng["entry_price"] - runner_lock_pts)
@@ -614,7 +623,8 @@ def process_single_closed_bar(eng, kline):
                         loss_per_qty = max_cap_pts
                     total_loss_10q = loss_per_qty * TOTAL_QTY
                     eng["gross_loss"] += total_loss_10q
-                    eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
+                    real_brok_10q = calc_real_delta_brok_per_qty(eng["entry_price"]) * TOTAL_QTY
+                    eng["total_brok"] += real_brok_10q
 
                     eng["last_result"] = f"🛑 Full SL (10Q): -{fmt_pts(total_loss_10q)} pts (-{fmt_pts(loss_per_qty)}/Q)"
                     eng["last_result_color"] = "#991b1b"
@@ -1096,7 +1106,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_5000_oneshot_div15_v2_engine():
+def get_hl_5000_oneshot_div15_v3_real_fee_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -1226,7 +1236,7 @@ def get_hl_5000_oneshot_div15_v2_engine():
     thread.start()
     return eng
 
-eng = get_hl_5000_oneshot_div15_v2_engine()
+eng = get_hl_5000_oneshot_div15_v3_real_fee_engine()
 server_ip = get_server_public_ip()
 
 # ============================================================================
@@ -1369,11 +1379,11 @@ with top_col3:
 terminal = st.empty()
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP (DIVISOR 15 + ONE-SHOT LOCK + TRUE SL FIX)
+# ZERO-BLINK LIVE RENDERING LOOP (DIVISOR 15 + ONE-SHOT LOCK + REAL DELTA FEE)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और True SL इंजन लोड हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और Real Delta Fee इंजन लोड हो रहा है...")
         time.sleep(1)
         continue
 
@@ -1451,6 +1461,7 @@ while True:
     tot_trades = eng["wins"] + eng["losses"]
     win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
     net_pnl = eng["gross_profit"] - eng["gross_loss"] - eng["total_brok"]
+    live_brok_per_qty = calc_real_delta_brok_per_qty(price)
 
     st_badge_text = "STATUS: BUY 🟢" if st_trend == 1 else "STATUS: SELL 🔴"
     st_badge_col = "#00c891" if st_trend == 1 else "#f03769"
@@ -1543,7 +1554,7 @@ while True:
 
     net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
     wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
-    setup_str = f"TP1(7Q): +{box_size * TP1_BRICKS:.0f}p | TP2(3Q): +{box_size * TP2_BRICKS:.0f}p | Max SL Cap: -{box_size * MAX_SL_LOSS_BRICKS:.0f}p"
+    setup_str = f"TP1(7Q): +{box_size * TP1_BRICKS:.0f}p | TP2(3Q): +{box_size * TP2_BRICKS:.0f}p | Fee/Q: ~{live_brok_per_qty:.1f}p"
 
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
@@ -1554,7 +1565,7 @@ while True:
 </div>
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [DIVISOR 15 MEDIUM BRICK • ONE-SHOT LOCK]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [DIVISOR 15 MEDIUM BRICK • REAL DELTA FEE]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
@@ -1644,17 +1655,17 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (Divisor 15 • One-Shot Trend Lock • 7Q TP1)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (Divisor 15 • Real Delta Fee 0.1062% RT)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Daily ATR-5 | 1 Brick (Div 15)</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (7Q @ 0.85B TP1 + One-Shot Lock)</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels & Fee</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:6px; color:#ffffff; font-weight:bold; text-align:right;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Win Rate % | TP2 Runners</td><td style="padding:6px; color:{wr_color}; font-weight:bold; text-align:right;">{win_rate:.1f}% | 🚀 Runners: {eng['tp2_hits']}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Loss (10 Qty)</td><td style="padding:6px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Brokerage/Tax (10 Qty)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts</td></tr>
-<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Delta Fee + 18% GST (0.1062% RT)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts</td></tr>
+<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (After Real Delta Fee)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts</td></tr>
 </table>
 </div>
 </div>
