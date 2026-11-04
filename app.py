@@ -157,11 +157,12 @@ BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])   # Ascending Bullis
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])      # Descending Bearish Alarm
 
 # ============================================================================
-# UPGRADED MEDIUM-BRICK (DIVISOR 15) + ONE-SHOT TREND LOCK + 7Q TP1 PARAMETERS
+# AUTOMATIC LOT SCALING (70% TP1 : 30% RUNNER) + 82.1 PTS/QTY REAL DELTA FEE
 # ============================================================================
-TOTAL_QTY            = 10
-TP1_BOOK_QTY         = 7      # 0.85 Brick (TP1) पर 7 क्वांटिटी तुरंत बुक होंगी
-RUNNER_QTY           = 3      # बची हुई 3 क्वांटिटी प्रॉफिट-लॉक और बड़े रनर (TP2 + Trail) के लिए
+TOTAL_QTY            = 10     # लॉट बढ़ाने के लिए बस यहाँ संख्या बदलें (जैसे 10, 20, 50, 100)
+TP1_RATIO            = 0.70   # 70% क्वांटिटी 0.85 Brick (TP1) पर तुरंत बुक होगी
+TP1_BOOK_QTY         = max(1, int(round(TOTAL_QTY * TP1_RATIO)))
+RUNNER_QTY           = max(0, TOTAL_QTY - TP1_BOOK_QTY)
 
 USE_TRAIL_BEYOND_TP2 = True
 TRAIL_METHOD         = "Smart Brick + Peak Ratchet (Best)"
@@ -183,14 +184,16 @@ SIG_MODE             = "Supertrend + Brick-Step Re-Entry (Best)"
 MIN_VOL_DOM          = 55.0
 
 # HIGH WIN-RATE TRIGGERS + IMPROVED PAYOFF RATIO
-TP1_BRICKS           = 0.85   # 0.85 Brick पर 7 Qty बुक
-RUNNER_LOCK_BRICKS   = 0.35   # TP1 हिट होते ही बची हुई 3 Qty का SL +0.35 Brick प्रॉफिट पर लॉक होगा
-MID_LOCK_BRICKS      = 1.25   # 1.25 Bricks छूते ही बची हुई 3 Qty का SL सीधा TP1 (+0.85 Brick) पर आ जाएगा
+TP1_BRICKS           = 0.85   # 0.85 Brick पर 70% Qty बुक
+RUNNER_LOCK_BRICKS   = 0.35   # TP1 हिट होते ही बची हुई 30% Qty का SL +0.35 Brick प्रॉफिट पर लॉक होगा
+MID_LOCK_BRICKS      = 1.25   # 1.25 Bricks छूते ही बची हुई 30% Qty का SL सीधा TP1 (+0.85 Brick) पर आ जाएगा
 TP2_BRICKS           = 2.20   # TP2 रनर टारगेट
 SL_BRICKS            = 1.15   # Anti-Wick कैंडल-क्लोज ट्रिगर (ताकि मामूली सुई/Wick से ट्रेड न कटे)
 MAX_SL_LOSS_BRICKS   = 0.90   # अधिकतम SL नुकसान कैप: 0.90 Brick प्रति Qty से ज्यादा नुकसान कभी नहीं लगेगा
 ANTI_WICK_SL         = True   # True = केवल कैंडल क्लोज या रैंकों पलटने पर ही SL कटेगा
-BROK_PER_QTY         = 1.5
+
+# REAL DELTA EXCHANGE FEE (82.1 Points Per Lot -> 821.0 Points for 10 Lots)
+BROK_PER_QTY         = 82.1
 MINTICK              = 0.1
 
 # PRO 3-ENGINE PRE-SPIKE DIRECTION PARAMETERS ($8.0 SPREAD + STEP-IN + TAKER CVD + TOP-3)
@@ -331,7 +334,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# STATEFUL INCREMENTAL BAR PROCESSOR (TRUE ADVERSE SL CHECK + BRICK SYNC)
+# STATEFUL INCREMENTAL BAR PROCESSOR (AUTO LOT SIZING + 82.1 BROKERAGE)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -514,7 +517,7 @@ def process_single_closed_bar(eng, kline):
         eng["pending_flip_sell"] = False
 
     # ========================================================================
-    # MANAGE ACTIVE 10-QTY TRADE (TRUE ADVERSE SL CHECK + 7Q TP1 BOOKING)
+    # MANAGE ACTIVE TRADE (AUTO LOT SIZING: 70% TP1 BOOKING + 30% RUNNER)
     # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
@@ -522,7 +525,7 @@ def process_single_closed_bar(eng, kline):
         close_side = "sell" if t_dir == 1 else "buy"
         eng["max_fav_price"] = max(eng["max_fav_price"], h) if t_dir == 1 else min(eng["max_fav_price"], l)
 
-        # 1. Hit TP1 (0.85 Brick) -> Book 7 Qty Immediately & Lock 3 Qty at +0.35 Brick Profit!
+        # 1. Hit TP1 (0.85 Brick) -> Book 70% Qty Immediately & Lock 30% Qty at +0.35 Brick Profit!
         hit_tp1_now = (not eng["tp1_reached"]) and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"]))
         if hit_tp1_now:
             eng["tp1_reached"] = True
@@ -534,15 +537,15 @@ def process_single_closed_bar(eng, kline):
             eng["open_qty"] = RUNNER_QTY
             runner_lock_pts = box_size * RUNNER_LOCK_BRICKS
             eng["stop_price"] = (eng["entry_price"] + runner_lock_pts) if t_dir == 1 else (eng["entry_price"] - runner_lock_pts)
-            place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag="Renko TP1 (7Q)", reduce_only=True)
+            place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag=f"Renko TP1 ({TP1_BOOK_QTY}Q)", reduce_only=True)
 
-        # 2. Hit Mid-Lock (1.25 Bricks) -> Lock 3 Qty Runner at TP1 (+0.85 Brick)
+        # 2. Hit Mid-Lock (1.25 Bricks) -> Lock 30% Qty Runner at TP1 (+0.85 Brick)
         hit_mid_now = eng["tp1_reached"] and (not eng["mid_reached"]) and ((h >= eng["mid_lock_price"]) if t_dir == 1 else (l <= eng["mid_lock_price"]))
         if hit_mid_now:
             eng["mid_reached"] = True
             eng["stop_price"] = max(eng["stop_price"], eng["tp1_price"]) if t_dir == 1 else min(eng["stop_price"], eng["tp1_price"])
 
-        # 3. Hit TP2 (2.20 Bricks) -> Start Unlimited Trail on 3 Qty Runner
+        # 3. Hit TP2 (2.20 Bricks) -> Start Unlimited Trail on 30% Qty Runner
         hit_tp2_now = eng["tp1_reached"] and (not eng["tp2_reached"]) and ((h >= eng["tp2_price"]) if t_dir == 1 else (l <= eng["tp2_price"]))
         if hit_tp2_now:
             eng["tp2_reached"] = True
@@ -571,19 +574,19 @@ def process_single_closed_bar(eng, kline):
                 exit_p = eng["stop_price"] if hit_trail_sl else (max(c, eng["stop_price"]) if t_dir == 1 else min(c, eng["stop_price"]))
                 runner_pts = (exit_p - eng["entry_price"]) if t_dir == 1 else (eng["entry_price"] - exit_p)
                 safe_runner_pts = max(runner_pts, eng["locked_tp2_pts"] * 0.85)
-                runner_pnl_3q = safe_runner_pts * RUNNER_QTY
+                runner_pnl = safe_runner_pts * RUNNER_QTY
 
-                eng["gross_profit"] += runner_pnl_3q
-                total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl_3q
+                eng["gross_profit"] += runner_pnl
+                total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl
 
-                eng["last_result"] = f"🚀 Trail Exit (10Q): +{fmt_pts(total_trade_pnl)} pts [7Q TP1 + 3Q Trail]"
+                eng["last_result"] = f"🚀 Trail Exit ({TOTAL_QTY}Q): +{fmt_pts(total_trade_pnl)} pts [{TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q Trail]"
                 eng["last_result_color"] = "#0369a1"
                 eng["history"].insert(0, {
-                    "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                    "exit": exit_p, "status": "🚀 7Q TP1 + 3Q TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#38bdf8"
+                    "time": bar_ist, "type": f"{t_label} ({TOTAL_QTY}Q)", "entry": eng["entry_price"],
+                    "exit": exit_p, "status": f"🚀 {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#38bdf8"
                 })
                 eng["history"] = eng["history"][:40]
-                place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko Trail Exit (3Q)", reduce_only=True)
+                place_delta_demo_order(eng, close_side, RUNNER_QTY, tag=f"Renko Trail Exit ({RUNNER_QTY}Q)", reduce_only=True)
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
@@ -612,18 +615,18 @@ def process_single_closed_bar(eng, kline):
                         loss_per_qty = min(adverse_close_pts, max_cap_pts)
                     else:
                         loss_per_qty = max_cap_pts
-                    total_loss_10q = loss_per_qty * TOTAL_QTY
-                    eng["gross_loss"] += total_loss_10q
+                    total_loss_all_q = loss_per_qty * TOTAL_QTY
+                    eng["gross_loss"] += total_loss_all_q
                     eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
 
-                    eng["last_result"] = f"🛑 Full SL (10Q): -{fmt_pts(total_loss_10q)} pts (-{fmt_pts(loss_per_qty)}/Q)"
+                    eng["last_result"] = f"🛑 Full SL ({TOTAL_QTY}Q): -{fmt_pts(total_loss_all_q)} pts (-{fmt_pts(loss_per_qty)}/Q)"
                     eng["last_result_color"] = "#991b1b"
                     eng["history"].insert(0, {
-                        "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)}", "color": "#ef4444"
+                        "time": bar_ist, "type": f"{t_label} ({TOTAL_QTY}Q)", "entry": eng["entry_price"],
+                        "exit": c, "status": f"🛑 SL HIT ({TOTAL_QTY}Q)", "pnl": f"-{fmt_pts(total_loss_all_q)}", "color": "#ef4444"
                     })
                     eng["history"] = eng["history"][:40]
-                    place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko SL Exit (10Q)", reduce_only=True)
+                    place_delta_demo_order(eng, close_side, TOTAL_QTY, tag=f"Renko SL Exit ({TOTAL_QTY}Q)", reduce_only=True)
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
                     eng["trend_tp1_done"] = True
@@ -634,19 +637,19 @@ def process_single_closed_bar(eng, kline):
                 if (hit_be_sl or st_turned_bad) and not hit_tp1_now:
                     exit_p = eng["stop_price"] if hit_be_sl else (max(c, eng["stop_price"]) if t_dir == 1 else min(c, eng["stop_price"]))
                     runner_pts = max(0.0, (exit_p - eng["entry_price"]) if t_dir == 1 else (eng["entry_price"] - exit_p))
-                    runner_pnl_3q = runner_pts * RUNNER_QTY
-                    eng["gross_profit"] += runner_pnl_3q
-                    total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl_3q
+                    runner_pnl = runner_pts * RUNNER_QTY
+                    eng["gross_profit"] += runner_pnl
+                    total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl
 
-                    status_tag = "✅ 7Q TP1 + 3Q MID-LOCK" if eng["mid_reached"] else "✅ 7Q TP1 + 3Q PROFIT-LOCK"
+                    status_tag = f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q MID-LOCK" if eng["mid_reached"] else f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q PROFIT-LOCK"
                     eng["last_result"] = f"{status_tag}: +{fmt_pts(total_trade_pnl)} pts"
                     eng["last_result_color"] = "#166534"
                     eng["history"].insert(0, {
-                        "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
+                        "time": bar_ist, "type": f"{t_label} ({TOTAL_QTY}Q)", "entry": eng["entry_price"],
                         "exit": exit_p, "status": status_tag, "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#22c55e"
                     })
                     eng["history"] = eng["history"][:40]
-                    place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko Profit-Lock Exit (3Q)", reduce_only=True)
+                    place_delta_demo_order(eng, close_side, RUNNER_QTY, tag=f"Renko Profit-Lock Exit ({RUNNER_QTY}Q)", reduce_only=True)
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
 
@@ -687,15 +690,15 @@ def process_single_closed_bar(eng, kline):
             old_label = "LONG" if eng["trade_dir"] == 1 else "SHORT"
             old_close_side = "sell" if eng["trade_dir"] == 1 else "buy"
             runner_pts = max(0.0, (c - eng["entry_price"]) if eng["trade_dir"] == 1 else (eng["entry_price"] - c))
-            runner_pnl_3q = runner_pts * RUNNER_QTY
-            eng["gross_profit"] += runner_pnl_3q
-            tot_flip_pnl = eng["booked_pnl_10q"] + runner_pnl_3q
+            runner_pnl = runner_pts * RUNNER_QTY
+            eng["gross_profit"] += runner_pnl
+            tot_flip_pnl = eng["booked_pnl_10q"] + runner_pnl
             eng["history"].insert(0, {
-                "time": bar_ist, "type": f"{old_label} (10Q)", "entry": eng["entry_price"],
-                "exit": c, "status": "✅ 7Q TP1 + 3Q FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)}", "color": "#22c55e"
+                "time": bar_ist, "type": f"{old_label} ({TOTAL_QTY}Q)", "entry": eng["entry_price"],
+                "exit": c, "status": f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)}", "color": "#22c55e"
             })
             eng["history"] = eng["history"][:40]
-            place_delta_demo_order(eng, old_close_side, RUNNER_QTY, tag="Renko Flip Close (3Q)", reduce_only=True)
+            place_delta_demo_order(eng, old_close_side, RUNNER_QTY, tag=f"Renko Flip Close ({RUNNER_QTY}Q)", reduce_only=True)
 
         is_long = trigger_flip_buy or trigger_cont_buy
         if is_long:
@@ -727,7 +730,7 @@ def process_single_closed_bar(eng, kline):
         eng["hard_stop_price"] = (eng["stop_price"] - box_size * 0.35) if is_long else (eng["stop_price"] + box_size * 0.35)
 
         entry_side = "buy" if is_long else "sell"
-        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko Entry (10Q)")
+        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag=f"Renko Entry ({TOTAL_QTY}Q)")
 
     eng["prev_close"] = c
     eng["last_bar_time"] = bar_time
@@ -1096,7 +1099,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_5000_oneshot_div15_v2_engine():
+def get_hl_5000_oneshot_div15_v4_auto_lot_821_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -1219,14 +1222,14 @@ def get_hl_5000_oneshot_div15_v2_engine():
         "last_spike_color": "#0f172a",
         "spike_history": [],
         "delta_btc_product_id": 27,
-        "delta_status": "🤖 Delta Demo Algo: Ready (Renko 10Q Active | Spike 5Q Dashboard Only)",
+        "delta_status": f"🤖 Delta Demo Algo: Ready (Renko {TOTAL_QTY}Q [{TP1_BOOK_QTY}Q+{RUNNER_QTY}Q] Active | Spike Off)",
         "error": None
     }
     thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
     thread.start()
     return eng
 
-eng = get_hl_5000_oneshot_div15_v2_engine()
+eng = get_hl_5000_oneshot_div15_v4_auto_lot_821_engine()
 server_ip = get_server_public_ip()
 
 # ============================================================================
@@ -1369,11 +1372,11 @@ with top_col3:
 terminal = st.empty()
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP (DIVISOR 15 + ONE-SHOT LOCK + TRUE SL FIX)
+# ZERO-BLINK LIVE RENDERING LOOP (AUTO LOT SIZING + 82.1 PTS/QTY FEE)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और True SL इंजन लोड हो रहा है...")
+        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और Auto Lot Size इंजन लोड हो रहा है...")
         time.sleep(1)
         continue
 
@@ -1472,17 +1475,17 @@ while True:
         badge_bg = "#00af6e" if t_type == "LONG" else "#dc284b"
 
         if eng["tp2_reached"]:
-            status_label = f"🚀 3Q TRAILING ABOVE TP2 ({t_type}) | 7Q Booked"
-            sl_tag = "Trail SL (3Q)"
+            status_label = f"🚀 {RUNNER_QTY}Q TRAILING ABOVE TP2 ({t_type}) | {TP1_BOOK_QTY}Q Booked"
+            sl_tag = f"Trail SL ({RUNNER_QTY}Q)"
         elif eng["mid_reached"]:
-            status_label = f"🔒 7Q TP1 BOOKED • 3Q SL AT TP1 ({t_type})"
-            sl_tag = "SL @ TP1 (3Q)"
+            status_label = f"🔒 {TP1_BOOK_QTY}Q TP1 BOOKED • {RUNNER_QTY}Q SL AT TP1 ({t_type})"
+            sl_tag = f"SL @ TP1 ({RUNNER_QTY}Q)"
         elif eng["tp1_reached"]:
-            status_label = f"✅ 7Q TP1 BOOKED • 3Q PROFIT-LOCKED ({t_type})"
-            sl_tag = "Profit SL (3Q)"
+            status_label = f"✅ {TP1_BOOK_QTY}Q TP1 BOOKED • {RUNNER_QTY}Q PROFIT-LOCKED ({t_type})"
+            sl_tag = f"Profit SL ({RUNNER_QTY}Q)"
         else:
-            status_label = f"🔥 ACTIVE {t_type} (10 Qty Open | {eng['entry_tag']} @ {eng['entry_time_str']})"
-            sl_tag = "Anti-Wick SL (10Q)"
+            status_label = f"🔥 ACTIVE {t_type} ({TOTAL_QTY} Qty Open | {eng['entry_tag']} @ {eng['entry_time_str']})"
+            sl_tag = f"Anti-Wick SL ({TOTAL_QTY}Q)"
 
         trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
@@ -1490,21 +1493,21 @@ while True:
 <span style="color:{pnl_color}; font-size:22px; font-weight:800;">{total_live_pnl:+,.1f} pts</span>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:10px; background:#0b1324; padding:6px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
-<span>📦 Open Qty: <b style="color:#f8fafc;">{open_qty}/10</b></span>
-<span>💰 Booked (7Q @ TP1): <b style="color:#4ade80;">+{booked_pnl:,.1f}p</b></span>
+<span>📦 Open Qty: <b style="color:#f8fafc;">{open_qty}/{TOTAL_QTY}</b></span>
+<span>💰 Booked ({TP1_BOOK_QTY}Q @ TP1): <b style="color:#4ade80;">+{booked_pnl:,.1f}p</b></span>
 <span>⚡ Runner ({open_qty}Q): <b style="color:{pnl_color};">{open_pnl:+,.1f}p</b></span>
 </div>
 <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; color:#cbd5e1; font-size:12px; background:#0f172a; padding:10px; border-radius:8px; text-align:center;">
-<div>Entry (10Q)<br><b style="color:#ffffff; font-size:14px;">{entry:,.1f}</b></div>
-<div>TP1 (Book 7Q)<br><b style="color:#22c55e; font-size:14px;">{tp1:,.1f}</b></div>
-<div>TP2 (Trail 3Q)<br><b style="color:#38bdf8; font-size:14px;">{tp2:,.1f}</b></div>
+<div>Entry ({TOTAL_QTY}Q)<br><b style="color:#ffffff; font-size:14px;">{entry:,.1f}</b></div>
+<div>TP1 (Book {TP1_BOOK_QTY}Q)<br><b style="color:#22c55e; font-size:14px;">{tp1:,.1f}</b></div>
+<div>TP2 (Trail {RUNNER_QTY}Q)<br><b style="color:#38bdf8; font-size:14px;">{tp2:,.1f}</b></div>
 <div>{sl_tag}<br><b style="color:#ef4444; font-size:14px;">{sl:,.1f}</b></div>
 </div>
 </div>"""
     else:
         lock_note = "🔒 Same-Trend Re-Entry Locked (Waiting Next ST Flip)" if eng["trend_tp1_done"] else "🟢 Ready for Signal"
         trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (DIVISOR 15 • ONE-SHOT TREND LOCK)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (DIVISOR 15 • AUTO LOT {TOTAL_QTY}Q)</div>
 <div style="color:#facc15; font-size:12px; margin-top:4px; font-weight:bold;">{lock_note}</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:3px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
@@ -1543,7 +1546,7 @@ while True:
 
     net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
     wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
-    setup_str = f"TP1(7Q): +{box_size * TP1_BRICKS:.0f}p | TP2(3Q): +{box_size * TP2_BRICKS:.0f}p | Max SL Cap: -{box_size * MAX_SL_LOSS_BRICKS:.0f}p"
+    setup_str = f"TP1({TP1_BOOK_QTY}Q): +{box_size * TP1_BRICKS:.0f}p | TP2({RUNNER_QTY}Q): +{box_size * TP2_BRICKS:.0f}p | Fee/Q: {BROK_PER_QTY:.1f}p"
 
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
@@ -1554,7 +1557,7 @@ while True:
 </div>
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [DIVISOR 15 MEDIUM BRICK • ONE-SHOT LOCK]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [AUTO LOT {TOTAL_QTY}Q ({TP1_BOOK_QTY}Q+{RUNNER_QTY}Q) • 82.1 FEE]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
@@ -1644,24 +1647,24 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (Divisor 15 • One-Shot Trend Lock • 7Q TP1)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 {TOTAL_QTY}-QTY MASTER BACKTEST TABLE (Auto 70:30 Lot Split • 82.1 Pts/Qty Fee)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Daily ATR-5 | 1 Brick (Div 15)</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (7Q @ 0.85B TP1 + One-Shot Lock)</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Auto Position Sizing (70:30)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">{TOTAL_QTY} Qty ({TP1_BOOK_QTY}Q @ TP1 + {RUNNER_QTY}Q Runner)</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels & Fee</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:6px; color:#ffffff; font-weight:bold; text-align:right;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Win Rate % | TP2 Runners</td><td style="padding:6px; color:{wr_color}; font-weight:bold; text-align:right;">{win_rate:.1f}% | 🚀 Runners: {eng['tp2_hits']}</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Loss (10 Qty)</td><td style="padding:6px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Brokerage/Tax (10 Qty)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts</td></tr>
-<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit ({TOTAL_QTY} Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Loss ({TOTAL_QTY} Qty)</td><td style="padding:6px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.1f} pts</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Delta Fee + GST ({BROK_PER_QTY:.1f}p × {TOTAL_QTY}Q)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts</td></tr>
+<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT ({TOTAL_QTY} Qty After Fee)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts</td></tr>
 </table>
 </div>
 </div>
 <div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%; box-sizing:border-box;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (3.5-Day Fixed Grid)</span>
+<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 {TOTAL_QTY}-Qty ट्रेड इतिहास लॉग (3.5-Day Fixed Grid)</span>
 <span style="font-size:11px; color:#94a3b8;">Blocked Late: {eng['blocked_late']}</span>
 </div>
 <div style="max-height:460px; overflow-y:auto;">
@@ -1672,7 +1675,7 @@ while True:
 <th style="padding:6px;">ट्रेड</th>
 <th style="padding:6px;">Entry → Exit</th>
 <th style="padding:6px;">स्टेटस</th>
-<th style="padding:6px; text-align:right;">10Q PnL</th>
+<th style="padding:6px; text-align:right;">{TOTAL_QTY}Q PnL</th>
 </tr>
 </thead>
 <tbody>
