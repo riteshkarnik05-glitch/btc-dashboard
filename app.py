@@ -38,9 +38,6 @@ div.stButton > button:hover {
 }
 </style>""", unsafe_allow_html=True)
 
-# ============================================================================
-# DELTA EXCHANGE DEMO API & SERVER IP HELPER
-# ============================================================================
 DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
 DELTA_URLS       = [
@@ -129,43 +126,15 @@ def init_delta_product_id(eng):
         except Exception:
             pass
 
-# ============================================================================
-# IN-MEMORY WAV BEEP GENERATOR
-# ============================================================================
-def build_beep_wav_b64(freqs, tone_ms=140, pause_ms=45):
-    sample_rate = 22050
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        frames = bytearray()
-        for f in freqs:
-            n_tone = int(sample_rate * (tone_ms / 1000.0))
-            for i in range(n_tone):
-                env = min(1.0, i / 150.0, (n_tone - i) / 150.0)
-                val = int(26000.0 * env * math.sin(2.0 * math.pi * f * (i / float(sample_rate))))
-                frames.extend(struct.pack("<h", val))
-            n_pause = int(sample_rate * (pause_ms / 1000.0))
-            frames.extend(b"\x00\x00" * n_pause)
-        wf.writeframes(bytes(frames))
-    return base64.b64encode(buf.getvalue()).decode("ascii")
-
-BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])
-SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])
-
-# ============================================================================
-# 10-QTY SETUP (7Q @ 300p TP1 + 3Q RUNNER WITH ₹100 STEP TRAIL & 250p SL)
-# ============================================================================
 TOTAL_QTY            = 10     
-TP1_BOOK_QTY         = 7      # 7 लॉट TP1 पर बुक होंगे
-RUNNER_QTY           = 3      # 3 लॉट बची हुई क्वांटिटी (रनर) ट्रेल होंगी
+TP1_BOOK_QTY         = 7      
+RUNNER_QTY           = 3      
 
 USD_INR_RATE         = 85.0   
 
-TP1_TARGET_PTS       = 300.0  # TP1: 300 पॉइंट्स पर 7 लॉट (70%) तुरंत बुक
-INITIAL_SL_PTS       = 250.0  # शुरुआती स्टॉप-लॉस: 250 पॉइंट्स
-TRAIL_STEP_PTS       = 118.0  # TP1 के बाद हर ₹100 (118 BTC pts) ऊपर जाने पर SL ऊपर खिसकेगा
+TP1_TARGET_PTS       = 300.0  
+INITIAL_SL_PTS       = 250.0  
+TRAIL_STEP_PTS       = 118.0  
 ANTI_WICK_SL         = True
 
 USE_STREAK_FILTER    = True
@@ -186,14 +155,6 @@ MIN_VOL_DOM          = 55.0
 
 BROK_PER_QTY         = 82.1
 MINTICK              = 0.1
-
-MIN_SPREAD_TRIGGER   = 8.0
-SPREAD_MULT_TRIGGER  = 7.0
-VACUUM_WATCH_SEC     = 3.5
-MIN_TAKER_DOM_PCT    = 58.0
-MIN_TOP3_DOM_PCT     = 58.0
-SIGNAL_COOLDOWN_SEC  = 180
-EVAL_LOCK_SECONDS    = 180
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 
@@ -416,9 +377,6 @@ def process_single_closed_bar(eng, kline):
     if eng["st_trend"] == -1: eng["pending_flip_buy"] = False
     if eng["st_trend"] == 1: eng["pending_flip_sell"] = False
 
-    # ========================================================================
-    # MANAGE ACTIVE TRADE (7Q @ 300p TP1 + 3Q STEP TRAIL & 250p SL)
-    # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
         t_label = "LONG" if t_dir == 1 else "SHORT"
@@ -762,7 +720,7 @@ while True:
 <th style="padding:6px; text-align:right;">PnL</th>
 </tr>
 </thead>
-://<tbody>
+<tbody>
 {rows_html}
 </tbody>
 </table>
@@ -772,7 +730,8 @@ while True:
 </div>
 </div>"""
 
-        terminal.markdown("\n".join(line.strip() for line in raw_html.splitlines() if line.strip()), unsafe_allow_html=True)
+        clean_html = "\n".join(line.strip() for line in raw_html.splitlines() if line.strip())
+        terminal.markdown(clean_html, unsafe_allow_html=True)
     except Exception as e:
         terminal.error(f"रेंडरिंग त्रुटि: {str(e)}")
     time.sleep(2)
