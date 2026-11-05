@@ -13,7 +13,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="AI-Renko Pro & Pre-Spike Terminal", layout="wide")
+st.set_page_config(page_title="AI-Renko Pro 5m & Pre-Spike Terminal", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -48,7 +48,6 @@ DELTA_URLS       = [
     "https://cdn-ind.testnet.deltaex.org",
     "https://testnet-api.delta.exchange"
 ]
-# नोट: स्पाइक सिग्नल्स को डेल्टा पर भेजना बंद कर दिया गया है (केवल डैशबोर्ड टेस्टिंग के लिए)
 
 @st.cache_data(ttl=300)
 def get_server_public_ip():
@@ -93,7 +92,7 @@ def delta_request(method, path, payload_dict=None):
             last_err = str(e)
     return False, last_err
 
-def place_delta_demo_order(eng, side, qty, tag="Renko", reduce_only=False):
+def place_delta_demo_order(eng, side, qty, tag="Renko 5m", reduce_only=False):
     if not eng.get("initialized", False) or qty <= 0:
         return False
     try:
@@ -157,24 +156,39 @@ BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])   # Ascending Bullis
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])      # Descending Bearish Alarm
 
 # ============================================================================
-# UPGRADED MEDIUM-BRICK (DIVISOR 15) + ONE-SHOT TREND LOCK + 7Q TP1 PARAMETERS
+# 5-MINUTE TIMEFRAME + 10 QTY (₹350 TARGET & ₹200 SL) PARAMETERS
 # ============================================================================
-TOTAL_QTY            = 10
-TP1_BOOK_QTY         = 7      # 0.85 Brick (TP1) पर 7 क्वांटिटी तुरंत बुक होंगी
-RUNNER_QTY           = 3      # बची हुई 3 क्वांटिटी प्रॉफिट-लॉक और बड़े रनर (TP2 + Trail) के लिए
+SIGNAL_TF            = "5m"   # 1 मिनट की जगह 5 मिनट टाइमफ्रेम पर सिग्नल
+TOTAL_QTY            = 10     # कुल 10 कॉन्टिटी
+TP1_BOOK_QTY         = 7      # TP1 (₹350 स्तर) पर 7 कॉन्टिटी बुक होंगी
+RUNNER_QTY           = 3      # बची हुई 3 कॉन्टिटी बड़े रनर (TP2 + Trail) के लिए
+
+USD_INR_RATE         = 85.0   # 1 USD = ₹85 (10 लॉट पर 1 BTC पॉइंट मूव = ₹0.85)
+
+# 🎯 आपके तय किए गए सटीक रुपये टारगेट और SL (10 कॉन्टिटी के हिसाब से):
+# 10 लॉट पर ₹350 टारगेट = 350 / 0.85 = 412.0 BTC पॉइंट्स (10Q = 4,120.0 pts = ₹350)
+# 10 लॉट पर ₹200 SL     = 200 / 0.85 = 235.0 BTC पॉइंट्स (10Q = 2,350.0 pts = ₹200)
+TARGET_RUPEES_10Q    = 350.0
+SL_RUPEES_10Q        = 200.0
+
+TP1_PTS_PER_QTY      = round((TARGET_RUPEES_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)  # 411.8 pts (~412 pts)
+SL_PTS_PER_QTY       = round((SL_RUPEES_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)      # 235.3 pts (~235 pts)
+RUNNER_LOCK_PTS      = round(TP1_PTS_PER_QTY * 0.45, 1)                                     # +185 pts (~₹157 लॉक)
+MID_LOCK_PTS         = round(TP1_PTS_PER_QTY * 1.35, 1)                                     # +556 pts छूते ही SL सीधा TP1 (₹350) पर लॉक
+TP2_PTS_PER_QTY      = round(TP1_PTS_PER_QTY * 1.80, 1)                                     # +741 pts से अनलिमिटेड ट्रेलिंग शुरू
 
 USE_TRAIL_BEYOND_TP2 = True
 TRAIL_METHOD         = "Smart Brick + Peak Ratchet (Best)"
 TRAIL_LOCK_BRICKS    = 0.8
 USE_STREAK_FILTER    = True
-MAX_BRICK_STREAK     = 2      # केवल शुरुआती Brick #1 और #2 पर ही एंट्री (थके हुए ट्रेंड में लेट एंट्री बंद)
+MAX_BRICK_STREAK     = 2      # केवल शुरुआती Brick #1 और #2 पर ही एंट्री
 USE_STRETCH_FILTER   = True
-MAX_EMA_DIST_BRICKS  = 1.1    # सख्त ओवर-स्ट्रेच फिल्टर: 21-EMA से 1.1 ब्रिक से ज्यादा दूर होने पर टॉप/बॉटम एंट्री ब्लॉक
+MAX_EMA_DIST_BRICKS  = 1.1    # ओवर-स्ट्रेच फिल्टर
 
 USE_AUTO_BOX         = True
 ATR_PERIOD           = 5
-RANGE_DIVISOR        = 15.0   # Medium Brick Size (~120 pts): जल्दी एंट्री और छोटा SL
-MANUAL_BOX           = 120.0
+RANGE_DIVISOR        = 15.0   # मूल रैंकों ब्रिक फॉर्मूला (Daily ATR-5 / 15)
+MANUAL_BOX           = 150.0
 
 ST_FACTOR            = 3.0
 USE_GAUSSIAN         = True
@@ -182,15 +196,8 @@ GAUSS_PERIOD         = 20
 SIG_MODE             = "Supertrend + Brick-Step Re-Entry (Best)"
 MIN_VOL_DOM          = 55.0
 
-# HIGH WIN-RATE TRIGGERS + IMPROVED PAYOFF RATIO
-TP1_BRICKS           = 0.85   # 0.85 Brick पर 7 Qty बुक
-RUNNER_LOCK_BRICKS   = 0.35   # TP1 हिट होते ही बची हुई 3 Qty का SL +0.35 Brick प्रॉफिट पर लॉक होगा
-MID_LOCK_BRICKS      = 1.25   # 1.25 Bricks छूते ही बची हुई 3 Qty का SL सीधा TP1 (+0.85 Brick) पर आ जाएगा
-TP2_BRICKS           = 2.20   # TP2 रनर टारगेट
-SL_BRICKS            = 1.15   # Anti-Wick कैंडल-क्लोज ट्रिगर (ताकि मामूली सुई/Wick से ट्रेड न कटे)
-MAX_SL_LOSS_BRICKS   = 0.90   # अधिकतम SL नुकसान कैप: 0.90 Brick प्रति Qty से ज्यादा नुकसान कभी नहीं लगेगा
-ANTI_WICK_SL         = True   # True = केवल कैंडल क्लोज या रैंकों पलटने पर ही SL कटेगा
-BROK_PER_QTY         = 1.5
+ANTI_WICK_SL         = True   # True = केवल 5m कैंडल क्लोज या रैंकों पलटने पर ही SL कटेगा
+BROK_PER_QTY         = 1.5    # आपके वर्किंग कोड की मूल सेटिंग
 MINTICK              = 0.1
 
 # PRO 3-ENGINE PRE-SPIKE DIRECTION PARAMETERS ($8.0 SPREAD + STEP-IN + TAKER CVD + TOP-3)
@@ -207,10 +214,13 @@ HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 def fmt_pts(pts):
     return f"{pts:,.1f}"
 
+def pts_to_inr(lot_pts):
+    return lot_pts * 0.001 * USD_INR_RATE
+
 # ============================================================================
-# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHERS (FIXED 3.5-DAY ANCHOR + LIVE)
+# 100% HYPERLIQUID CANDLE SNAPSHOT FETCHERS (5-MINUTE TIMEFRAME ANCHOR + LIVE)
 # ============================================================================
-def fetch_hl_klines(interval="1m", num_bars=20):
+def fetch_hl_klines(interval="5m", num_bars=20):
     tf_ms_map = {
         "1m": 60 * 1000,
         "5m": 5 * 60 * 1000,
@@ -218,7 +228,7 @@ def fetch_hl_klines(interval="1m", num_bars=20):
         "1h": 60 * 60 * 1000,
         "1d": 24 * 60 * 60 * 1000
     }
-    step_ms = tf_ms_map.get(interval, 60000)
+    step_ms = tf_ms_map.get(interval, 300000)
     end_time = int(time.time() * 1000)
     start_time = end_time - (num_bars * step_ms)
 
@@ -257,51 +267,46 @@ def fetch_hl_klines(interval="1m", num_bars=20):
             time.sleep(0.4)
     return None
 
-def fetch_hl_5000_fixed_anchor():
+def fetch_hl_5m_fixed_anchor():
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
-    anchor_start_ms = (today_00_utc_sec - (3 * 86400)) * 1000
+    # 5m कैंडल्स के लिए पिछले 10 दिनों (~2,880 कैंडल्स) का फिक्स्ड ग्रिड एंकर
+    anchor_start_ms = (today_00_utc_sec - (10 * 86400)) * 1000
     now_ms = now_sec * 1000
-    mid_ms = anchor_start_ms + (2600 * 60 * 1000)
-
-    chunks = [(anchor_start_ms, min(mid_ms, now_ms))]
-    if now_ms > mid_ms:
-        chunks.append((mid_ms, now_ms))
 
     merged = {}
-    for st_ms, en_ms in chunks:
-        for attempt in range(3):
-            try:
-                r = requests.post(
-                    HYPERLIQUID_INFO_URL,
-                    json={
-                        "type": "candleSnapshot",
-                        "req": {
-                            "coin": "BTC",
-                            "interval": "1m",
-                            "startTime": st_ms,
-                            "endTime": en_ms
-                        }
-                    },
-                    headers={"Content-Type": "application/json"},
-                    timeout=10
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    if isinstance(data, list) and len(data) > 0:
-                        for k in data:
-                            t_ms = int(k["t"])
-                            if t_ms >= anchor_start_ms:
-                                o_val = float(k["o"])
-                                h_val = float(k["h"])
-                                l_val = float(k["l"])
-                                c_val = float(k["c"])
-                                v_raw = float(k.get("v", 0.0))
-                                v_safe = v_raw if v_raw > 0 else max(0.01, (h_val - l_val) * 0.1)
-                                merged[t_ms] = [t_ms, o_val, h_val, l_val, c_val, v_safe]
-                        break
-            except Exception:
-                time.sleep(0.5)
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                HYPERLIQUID_INFO_URL,
+                json={
+                    "type": "candleSnapshot",
+                    "req": {
+                        "coin": "BTC",
+                        "interval": SIGNAL_TF,
+                        "startTime": anchor_start_ms,
+                        "endTime": now_ms
+                    }
+                },
+                headers={"Content-Type": "application/json"},
+                timeout=10
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) > 0:
+                    for k in data:
+                        t_ms = int(k["t"])
+                        if t_ms >= anchor_start_ms:
+                            o_val = float(k["o"])
+                            h_val = float(k["h"])
+                            l_val = float(k["l"])
+                            c_val = float(k["c"])
+                            v_raw = float(k.get("v", 0.0))
+                            v_safe = v_raw if v_raw > 0 else max(0.01, (h_val - l_val) * 0.1)
+                            merged[t_ms] = [t_ms, o_val, h_val, l_val, c_val, v_safe]
+                    break
+        except Exception:
+            time.sleep(0.5)
 
     if not merged:
         return None
@@ -331,7 +336,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# STATEFUL INCREMENTAL BAR PROCESSOR (TRUE ADVERSE SL CHECK + BRICK SYNC)
+# STATEFUL INCREMENTAL 5m BAR PROCESSOR (₹350 TARGET & ₹200 SL FOR 10 QTY)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -514,7 +519,7 @@ def process_single_closed_bar(eng, kline):
         eng["pending_flip_sell"] = False
 
     # ========================================================================
-    # MANAGE ACTIVE 10-QTY TRADE (TRUE ADVERSE SL CHECK + 7Q TP1 BOOKING)
+    # MANAGE ACTIVE 10-QTY TRADE (₹350 TARGET = 412p, ₹200 SL = 235p)
     # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
@@ -522,7 +527,7 @@ def process_single_closed_bar(eng, kline):
         close_side = "sell" if t_dir == 1 else "buy"
         eng["max_fav_price"] = max(eng["max_fav_price"], h) if t_dir == 1 else min(eng["max_fav_price"], l)
 
-        # 1. Hit TP1 (0.85 Brick) -> Book 7 Qty Immediately & Lock 3 Qty at +0.35 Brick Profit!
+        # 1. Hit TP1 (₹350 / 412 pts) -> Book 7 Qty Immediately & Lock 3 Qty at Profit!
         hit_tp1_now = (not eng["tp1_reached"]) and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"]))
         if hit_tp1_now:
             eng["tp1_reached"] = True
@@ -532,17 +537,16 @@ def process_single_closed_bar(eng, kline):
             eng["gross_profit"] += eng["booked_pnl_10q"]
             eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
             eng["open_qty"] = RUNNER_QTY
-            runner_lock_pts = box_size * RUNNER_LOCK_BRICKS
-            eng["stop_price"] = (eng["entry_price"] + runner_lock_pts) if t_dir == 1 else (eng["entry_price"] - runner_lock_pts)
-            place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag="Renko TP1 (7Q)", reduce_only=True)
+            eng["stop_price"] = (eng["entry_price"] + RUNNER_LOCK_PTS) if t_dir == 1 else (eng["entry_price"] - RUNNER_LOCK_PTS)
+            place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag="Renko 5m TP1 (7Q)", reduce_only=True)
 
-        # 2. Hit Mid-Lock (1.25 Bricks) -> Lock 3 Qty Runner at TP1 (+0.85 Brick)
+        # 2. Hit Mid-Lock -> Lock 3 Qty Runner at TP1 (₹350 Level)
         hit_mid_now = eng["tp1_reached"] and (not eng["mid_reached"]) and ((h >= eng["mid_lock_price"]) if t_dir == 1 else (l <= eng["mid_lock_price"]))
         if hit_mid_now:
             eng["mid_reached"] = True
             eng["stop_price"] = max(eng["stop_price"], eng["tp1_price"]) if t_dir == 1 else min(eng["stop_price"], eng["tp1_price"])
 
-        # 3. Hit TP2 (2.20 Bricks) -> Start Unlimited Trail on 3 Qty Runner
+        # 3. Hit TP2 -> Start Unlimited Trail on 3 Qty Runner
         hit_tp2_now = eng["tp1_reached"] and (not eng["tp2_reached"]) and ((h >= eng["tp2_price"]) if t_dir == 1 else (l <= eng["tp2_price"]))
         if hit_tp2_now:
             eng["tp2_reached"] = True
@@ -576,29 +580,28 @@ def process_single_closed_bar(eng, kline):
                 eng["gross_profit"] += runner_pnl_3q
                 total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl_3q
 
-                eng["last_result"] = f"🚀 Trail Exit (10Q): +{fmt_pts(total_trade_pnl)} pts [7Q TP1 + 3Q Trail]"
+                eng["last_result"] = f"🚀 Trail Exit (10Q): +{fmt_pts(total_trade_pnl)} pts (₹{pts_to_inr(total_trade_pnl):+,.0f})"
                 eng["last_result_color"] = "#0369a1"
                 eng["history"].insert(0, {
                     "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                    "exit": exit_p, "status": "🚀 7Q TP1 + 3Q TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#38bdf8"
+                    "exit": exit_p, "status": "🚀 7Q TP1 + 3Q TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)} (₹{pts_to_inr(total_trade_pnl):+,.0f})", "color": "#38bdf8"
                 })
                 eng["history"] = eng["history"][:40]
-                place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko Trail Exit (3Q)", reduce_only=True)
+                place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko 5m Trail Exit (3Q)", reduce_only=True)
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
         if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
             if not eng["tp1_reached"]:
-                # True signed adverse move (positive only when trade is actually in loss)
+                # True signed adverse move (₹200 SL = 235.3 pts per Qty)
                 adverse_close_pts = (eng["entry_price"] - c) if t_dir == 1 else (c - eng["entry_price"])
                 wick_hit_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
                 close_hit_sl = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
 
-                # brick_turned_bad ONLY triggers if brick flipped against trade AND price is genuinely in loss by >= 0.50 Brick
                 brick_turned_bad = (
-                    (eng["brick_dir"] == -1 and c < eng["brick_bot"] and adverse_close_pts >= box_size * 0.50)
+                    (eng["brick_dir"] == -1 and c < eng["brick_bot"] and adverse_close_pts >= eng["locked_sl_pts"] * 0.60)
                     if t_dir == 1
-                    else (eng["brick_dir"] == 1 and c > eng["brick_top"] and adverse_close_pts >= box_size * 0.50)
+                    else (eng["brick_dir"] == 1 and c > eng["brick_top"] and adverse_close_pts >= eng["locked_sl_pts"] * 0.60)
                 )
                 st_turned_bad = ((eng["st_trend"] == -1) if t_dir == 1 else (eng["st_trend"] == 1)) and (adverse_close_pts > 0)
                 hard_crash = (l <= eng["hard_stop_price"]) if t_dir == 1 else (h >= eng["hard_stop_price"])
@@ -607,7 +610,7 @@ def process_single_closed_bar(eng, kline):
 
                 if sl_triggered:
                     eng["losses"] += 1
-                    max_cap_pts = box_size * MAX_SL_LOSS_BRICKS
+                    max_cap_pts = eng["locked_sl_pts"]  # ₹200 SL Cap (235.3 pts/Q -> 2,353 pts on 10Q)
                     if ANTI_WICK_SL and not hard_crash and adverse_close_pts > 0:
                         loss_per_qty = min(adverse_close_pts, max_cap_pts)
                     else:
@@ -616,14 +619,14 @@ def process_single_closed_bar(eng, kline):
                     eng["gross_loss"] += total_loss_10q
                     eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
 
-                    eng["last_result"] = f"🛑 Full SL (10Q): -{fmt_pts(total_loss_10q)} pts (-{fmt_pts(loss_per_qty)}/Q)"
+                    eng["last_result"] = f"🛑 SL Hit (10Q): -{fmt_pts(total_loss_10q)} pts (-₹{pts_to_inr(total_loss_10q):,.0f})"
                     eng["last_result_color"] = "#991b1b"
                     eng["history"].insert(0, {
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)}", "color": "#ef4444"
+                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)} (-₹{pts_to_inr(total_loss_10q):,.0f})", "color": "#ef4444"
                     })
                     eng["history"] = eng["history"][:40]
-                    place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko SL Exit (10Q)", reduce_only=True)
+                    place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko 5m SL Exit (10Q)", reduce_only=True)
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
                     eng["trend_tp1_done"] = True
@@ -639,19 +642,19 @@ def process_single_closed_bar(eng, kline):
                     total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl_3q
 
                     status_tag = "✅ 7Q TP1 + 3Q MID-LOCK" if eng["mid_reached"] else "✅ 7Q TP1 + 3Q PROFIT-LOCK"
-                    eng["last_result"] = f"{status_tag}: +{fmt_pts(total_trade_pnl)} pts"
+                    eng["last_result"] = f"{status_tag}: +{fmt_pts(total_trade_pnl)} pts (₹{pts_to_inr(total_trade_pnl):+,.0f})"
                     eng["last_result_color"] = "#166534"
                     eng["history"].insert(0, {
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                        "exit": exit_p, "status": status_tag, "pnl": f"+{fmt_pts(total_trade_pnl)}", "color": "#22c55e"
+                        "exit": exit_p, "status": status_tag, "pnl": f"+{fmt_pts(total_trade_pnl)} (₹{pts_to_inr(total_trade_pnl):+,.0f})", "color": "#22c55e"
                     })
                     eng["history"] = eng["history"][:40]
-                    place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko Profit-Lock Exit (3Q)", reduce_only=True)
+                    place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko 5m Profit-Lock Exit (3Q)", reduce_only=True)
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
 
     # ========================================================================
-    # CHECK NEW ENTRY SIGNALS (WITH BRICK DIRECTION SYNC & ONE-SHOT LOCK)
+    # CHECK NEW 5-MINUTE ENTRY SIGNALS (WITH BRICK DIRECTION SYNC & ONE-SHOT LOCK)
     # ========================================================================
     ema21 = eng["ema21"]
     rsi_val = eng["rsi14"]
@@ -661,7 +664,6 @@ def process_single_closed_bar(eng, kline):
     bull_filter_ok   = candle_not_giant and flip_stretch_ok and buy_dom_pct >= 52.0 and rsi_val < 72.0
     bear_filter_ok   = candle_not_giant and flip_stretch_ok and sell_dom_pct >= 52.0 and rsi_val > 28.0
 
-    # Require brick_dir to match st_trend so SHORT never enters on an opposing green brick!
     trigger_flip_buy  = eng["pending_flip_buy"] and eng["st_trend"] == 1 and eng["brick_dir"] == 1 and bull_filter_ok and c > o
     trigger_flip_sell = eng["pending_flip_sell"] and eng["st_trend"] == -1 and eng["brick_dir"] == -1 and bear_filter_ok and c < o
 
@@ -692,10 +694,10 @@ def process_single_closed_bar(eng, kline):
             tot_flip_pnl = eng["booked_pnl_10q"] + runner_pnl_3q
             eng["history"].insert(0, {
                 "time": bar_ist, "type": f"{old_label} (10Q)", "entry": eng["entry_price"],
-                "exit": c, "status": "✅ 7Q TP1 + 3Q FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)}", "color": "#22c55e"
+                "exit": c, "status": "✅ 7Q TP1 + 3Q FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)} (₹{pts_to_inr(tot_flip_pnl):+,.0f})", "color": "#22c55e"
             })
             eng["history"] = eng["history"][:40]
-            place_delta_demo_order(eng, old_close_side, RUNNER_QTY, tag="Renko Flip Close (3Q)", reduce_only=True)
+            place_delta_demo_order(eng, old_close_side, RUNNER_QTY, tag="Renko 5m Flip Close (3Q)", reduce_only=True)
 
         is_long = trigger_flip_buy or trigger_cont_buy
         if is_long:
@@ -712,22 +714,22 @@ def process_single_closed_bar(eng, kline):
         eng["tp2_reached"] = False
         eng["open_qty"] = TOTAL_QTY
         eng["booked_pnl_10q"] = 0.0
-        eng["entry_tag"] = f"🧱 Brick #{eng['brick_streak']}" if (trigger_cont_buy or trigger_cont_sell) else "🔥 ST Flip"
+        eng["entry_tag"] = f"🧱 5m Brick #{eng['brick_streak']}" if (trigger_cont_buy or trigger_cont_sell) else "🔥 5m ST Flip"
         eng["entry_time_str"] = bar_ist
 
-        eng["locked_tp1_pts"] = box_size * TP1_BRICKS
-        mid_pts = box_size * MID_LOCK_BRICKS
-        eng["locked_tp2_pts"] = box_size * TP2_BRICKS
-        eng["locked_sl_pts"] = box_size * SL_BRICKS
+        # 10 Qty के लिए ₹350 Target (411.8 pts/Q) और ₹200 SL (235.3 pts/Q)
+        eng["locked_tp1_pts"] = TP1_PTS_PER_QTY
+        eng["locked_tp2_pts"] = TP2_PTS_PER_QTY
+        eng["locked_sl_pts"]  = SL_PTS_PER_QTY
 
-        eng["tp1_price"] = (c + eng["locked_tp1_pts"]) if is_long else (c - eng["locked_tp1_pts"])
-        eng["mid_lock_price"] = (c + mid_pts) if is_long else (c - mid_pts)
-        eng["tp2_price"] = (c + eng["locked_tp2_pts"]) if is_long else (c - eng["locked_tp2_pts"])
-        eng["stop_price"] = (c - eng["locked_sl_pts"]) if is_long else (c + eng["locked_sl_pts"])
-        eng["hard_stop_price"] = (eng["stop_price"] - box_size * 0.35) if is_long else (eng["stop_price"] + box_size * 0.35)
+        eng["tp1_price"]      = (c + eng["locked_tp1_pts"]) if is_long else (c - eng["locked_tp1_pts"])
+        eng["mid_lock_price"] = (c + MID_LOCK_PTS) if is_long else (c - MID_LOCK_PTS)
+        eng["tp2_price"]      = (c + eng["locked_tp2_pts"]) if is_long else (c - eng["locked_tp2_pts"])
+        eng["stop_price"]     = (c - eng["locked_sl_pts"]) if is_long else (c + eng["locked_sl_pts"])
+        eng["hard_stop_price"] = (eng["stop_price"] - box_size * 0.25) if is_long else (eng["stop_price"] + box_size * 0.25)
 
         entry_side = "buy" if is_long else "sell"
-        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko Entry (10Q)")
+        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko 5m Entry (10Q)")
 
     eng["prev_close"] = c
     eng["last_bar_time"] = bar_time
@@ -1030,7 +1032,6 @@ def fetch_l2_orderbook_and_spike_radar(eng):
         eng["last_spike_dir"] = dir_code
         eng["last_spike_status"] = f"🔊⚡ {ist_t}: {spike_dir_text} @ ${mid_price:,.1f}"
         eng["last_spike_color"] = col
-        # (स्पाइक ट्रेड अब डेल्टा पर नहीं भेजे जा रहे हैं, केवल डैशबोर्ड पर टेस्ट हो रहे हैं)
     elif now_ts - eng["last_spike_alert_ts"] > 15:
         if vac["armed"]:
             eng["last_spike_status"] = (
@@ -1046,7 +1047,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
             eng["last_spike_color"] = "#0f172a"
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (5000 CANDLES FIXED-GRID LOCK + 3-ENGINE RADAR)
+# 24x7 BACKGROUND WORKER (5m CANDLES FIXED-GRID LOCK + 3-ENGINE RADAR)
 # ============================================================================
 def background_worker(eng):
     last_1d_fetch = 0
@@ -1066,8 +1067,8 @@ def background_worker(eng):
                         last_1d_fetch = now_ts
 
             if not eng["initialized"] and eng["macro_range"] is not None:
-                klines_init = fetch_hl_5000_fixed_anchor()
-                if klines_init and len(klines_init) > 100:
+                klines_init = fetch_hl_5m_fixed_anchor()
+                if klines_init and len(klines_init) > 50:
                     for b in klines_init[:-1]:
                         process_single_closed_bar(eng, b)
                     eng["price"] = float(klines_init[-1][4])
@@ -1078,8 +1079,8 @@ def background_worker(eng):
             if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
                 eng["price"] = eng["order_book"]["mid_price"]
 
-            if eng["initialized"] and (now_ts - last_kline_fetch >= 2.0):
-                klines_live = fetch_hl_klines("1m", 8)
+            if eng["initialized"] and (now_ts - last_kline_fetch >= 3.0):
+                klines_live = fetch_hl_klines(SIGNAL_TF, 8)
                 if klines_live and len(klines_live) >= 2:
                     for b in klines_live[:-1]:
                         process_single_closed_bar(eng, b)
@@ -1096,7 +1097,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_5000_oneshot_div15_v2_engine():
+def get_hl_5m_350tp_200sl_v1_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -1219,14 +1220,14 @@ def get_hl_5000_oneshot_div15_v2_engine():
         "last_spike_color": "#0f172a",
         "spike_history": [],
         "delta_btc_product_id": 27,
-        "delta_status": "🤖 Delta Demo Algo: Ready (Renko 10Q Active | Spike 5Q Dashboard Only)",
+        "delta_status": "🤖 Delta Demo Algo: Ready (5m Renko 10Q Active | Spike Off)",
         "error": None
     }
     thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
     thread.start()
     return eng
 
-eng = get_hl_5000_oneshot_div15_v2_engine()
+eng = get_hl_5m_350tp_200sl_v1_engine()
 server_ip = get_server_public_ip()
 
 # ============================================================================
@@ -1369,11 +1370,12 @@ with top_col3:
 terminal = st.empty()
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP (DIVISOR 15 + ONE-SHOT LOCK + TRUE SL FIX)
+# ZERO-BLINK LIVE RENDERING LOOP (5-MINUTE TIMEFRAME + ₹350 TP1 & ₹200 SL)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ Dr Devendra AI-Renko PRO: मीडियम ब्रिक (Divisor 15) और True SL इंजन लोड हो रहा है...")
+        err_txt = f" | Error: {eng['error']}" if eng.get("error") else ""
+        terminal.info(f"⏳ Dr Devendra AI-Renko PRO (5-Min Timeframe): 10-Day 5m Grid, ₹350 Target और ₹200 SL इंजन लोड हो रहा है...{err_txt}")
         time.sleep(1)
         continue
 
@@ -1452,7 +1454,7 @@ while True:
     win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
     net_pnl = eng["gross_profit"] - eng["gross_loss"] - eng["total_brok"]
 
-    st_badge_text = "STATUS: BUY 🟢" if st_trend == 1 else "STATUS: SELL 🔴"
+    st_badge_text = "5m STATUS: BUY 🟢" if st_trend == 1 else "5m STATUS: SELL 🔴"
     st_badge_col = "#00c891" if st_trend == 1 else "#f03769"
 
     if eng["trade_dir"] != 0:
@@ -1481,32 +1483,32 @@ while True:
             status_label = f"✅ 7Q TP1 BOOKED • 3Q PROFIT-LOCKED ({t_type})"
             sl_tag = "Profit SL (3Q)"
         else:
-            status_label = f"🔥 ACTIVE {t_type} (10 Qty Open | {eng['entry_tag']} @ {eng['entry_time_str']})"
-            sl_tag = "Anti-Wick SL (10Q)"
+            status_label = f"🔥 ACTIVE 5m {t_type} (10 Qty Open | {eng['entry_tag']} @ {eng['entry_time_str']})"
+            sl_tag = "₹200 SL (-235p)"
 
         trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
 <span style="background:{badge_bg}; color:white; padding:5px 11px; border-radius:6px; font-weight:bold; font-size:13px;">{status_label}</span>
-<span style="color:{pnl_color}; font-size:22px; font-weight:800;">{total_live_pnl:+,.1f} pts</span>
+<span style="color:{pnl_color}; font-size:22px; font-weight:800;">{total_live_pnl:+,.1f} pts (₹{pts_to_inr(total_live_pnl):+,.0f})</span>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:10px; background:#0b1324; padding:6px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
 <span>📦 Open Qty: <b style="color:#f8fafc;">{open_qty}/10</b></span>
-<span>💰 Booked (7Q @ TP1): <b style="color:#4ade80;">+{booked_pnl:,.1f}p</b></span>
-<span>⚡ Runner ({open_qty}Q): <b style="color:{pnl_color};">{open_pnl:+,.1f}p</b></span>
+<span>💰 Booked (7Q @ TP1): <b style="color:#4ade80;">+{booked_pnl:,.1f}p (₹{pts_to_inr(booked_pnl):,.0f})</b></span>
+<span>⚡ Runner ({open_qty}Q): <b style="color:{pnl_color};">{open_pnl:+,.1f}p (₹{pts_to_inr(open_pnl):+,.0f})</b></span>
 </div>
 <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; color:#cbd5e1; font-size:12px; background:#0f172a; padding:10px; border-radius:8px; text-align:center;">
 <div>Entry (10Q)<br><b style="color:#ffffff; font-size:14px;">{entry:,.1f}</b></div>
-<div>TP1 (Book 7Q)<br><b style="color:#22c55e; font-size:14px;">{tp1:,.1f}</b></div>
+<div>TP1 (₹350 / +412p)<br><b style="color:#22c55e; font-size:14px;">{tp1:,.1f}</b></div>
 <div>TP2 (Trail 3Q)<br><b style="color:#38bdf8; font-size:14px;">{tp2:,.1f}</b></div>
 <div>{sl_tag}<br><b style="color:#ef4444; font-size:14px;">{sl:,.1f}</b></div>
 </div>
 </div>"""
     else:
-        lock_note = "🔒 Same-Trend Re-Entry Locked (Waiting Next ST Flip)" if eng["trend_tp1_done"] else "🟢 Ready for Signal"
+        lock_note = "🔒 Same-Trend Re-Entry Locked (Waiting Next 5m ST Flip)" if eng["trend_tp1_done"] else "🟢 Ready for 5m Signal"
         trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (DIVISOR 15 • ONE-SHOT TREND LOCK)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR 5-MIN SIGNAL (10 QTY: TARGET ₹350 [+412p] • SL ₹200 [-235p])</div>
 <div style="color:#facc15; font-size:12px; margin-top:4px; font-weight:bold;">{lock_note}</div>
-<div style="color:#94a3b8; font-size:12px; margin-top:3px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
+<div style="color:#94a3b8; font-size:12px; margin-top:3px;">5m Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
 
     spike_rows_html = ""
@@ -1529,7 +1531,7 @@ while True:
 
     rows_html = ""
     if not eng["history"]:
-        rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई ट्रेड क्लोज नहीं हुआ है</td></tr>"""
+        rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई 5m ट्रेड क्लोज नहीं हुआ है</td></tr>"""
     else:
         for h in eng["history"]:
             h_col = h.get("color", "#22c55e")
@@ -1538,12 +1540,12 @@ while True:
 <td style="padding:8px 6px; font-weight:bold; color:#f8fafc;">{h['type']}</td>
 <td style="padding:8px 6px; color:#cbd5e1;">{h['entry']:,.1f} → {h['exit']:,.1f}</td>
 <td style="padding:8px 6px; color:{h_col}; font-weight:bold;">{h['status']}</td>
-<td style="padding:8px 6px; color:{h_col}; font-weight:bold; text-align:right;">{h['pnl']} pts</td>
+<td style="padding:8px 6px; color:{h_col}; font-weight:bold; text-align:right;">{h['pnl']}</td>
 </tr>"""
 
     net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
     wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
-    setup_str = f"TP1(7Q): +{box_size * TP1_BRICKS:.0f}p | TP2(3Q): +{box_size * TP2_BRICKS:.0f}p | Max SL Cap: -{box_size * MAX_SL_LOSS_BRICKS:.0f}p"
+    setup_str = f"Target: ₹350 (+{TP1_PTS_PER_QTY:.0f}p/Q) | SL: ₹200 (-{SL_PTS_PER_QTY:.0f}p/Q)"
 
     raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div id="hl-spike-audio-hook" data-alert-id="{alert_id}" data-alert-dir="{alert_dir}" style="display:none;"></div>
@@ -1554,19 +1556,19 @@ while True:
 </div>
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [DIVISOR 15 MEDIUM BRICK • ONE-SHOT LOCK]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [5-MIN TIMEFRAME • 10 QTY • TARGET ₹350 • SL ₹200]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
 <div style="background:#1e293b; border:1px solid {st_badge_col}; color:{st_badge_col}; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:bold; display:inline-block; margin-bottom:4px;">{st_badge_text}</div>
-<div style="font-size:11.5px; color:#cbd5e1;">🔒 Grid Anchor: {anchor_str} ({bar_count} Bars) | {ist_time}</div>
+<div style="font-size:11.5px; color:#cbd5e1;">🔒 5m Grid Anchor: {anchor_str} ({bar_count} Bars) | {ist_time}</div>
 </div>
 </div>
 <div class="t-grid">
 <div>
 <div style="margin-bottom:14px; background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
 <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; margin-bottom:6px;">
-<span style="color:#22c55e;">🟢 3-Bar Candle Flow: {buy_pct}%</span>
+<span style="color:#22c55e;">🟢 5m 3-Bar Candle Flow: {buy_pct}%</span>
 <span style="color:#e2e8f0;">Imbalance: {imbalance:+.2f}</span>
 <span style="color:#ef4444;">Sell Flow: {sell_pct}% 🔴</span>
 </div>
@@ -1644,24 +1646,24 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (Divisor 15 • One-Shot Trend Lock • 7Q TP1)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (5m Timeframe • Target ₹350 • SL ₹200)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Daily ATR-5 | 1 Brick (Div 15)</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (7Q @ 0.85B TP1 + One-Shot Lock)</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Per-Qty Levels</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule (5m)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (7Q @ ₹350 TP1 + 3Q Runner)</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">10-Qty Target & SL Levels</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:6px; color:#ffffff; font-weight:bold; text-align:right;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Win Rate % | TP2 Runners</td><td style="padding:6px; color:{wr_color}; font-weight:bold; text-align:right;">{win_rate:.1f}% | 🚀 Runners: {eng['tp2_hits']}</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Loss (10 Qty)</td><td style="padding:6px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Brokerage/Tax (10 Qty)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts</td></tr>
-<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts (₹{pts_to_inr(eng['gross_profit']):+,.0f})</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Loss (10 Qty)</td><td style="padding:6px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.1f} pts (-₹{pts_to_inr(eng['gross_loss']):,.0f})</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Brokerage/Tax (10 Qty)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts (-₹{pts_to_inr(eng['total_brok']):,.0f})</td></tr>
+<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts (₹{pts_to_inr(net_pnl):+,.0f})</td></tr>
 </table>
 </div>
 </div>
 <div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%; box-sizing:border-box;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (3.5-Day Fixed Grid)</span>
+<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (5m Fixed Grid)</span>
 <span style="font-size:11px; color:#94a3b8;">Blocked Late: {eng['blocked_late']}</span>
 </div>
 <div style="max-height:460px; overflow-y:auto;">
@@ -1672,7 +1674,7 @@ while True:
 <th style="padding:6px;">ट्रेड</th>
 <th style="padding:6px;">Entry → Exit</th>
 <th style="padding:6px;">स्टेटस</th>
-<th style="padding:6px; text-align:right;">10Q PnL</th>
+<th style="padding:6px; text-align:right;">10Q PnL (₹)</th>
 </tr>
 </thead>
 <tbody>
