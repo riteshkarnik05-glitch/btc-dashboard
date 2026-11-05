@@ -39,7 +39,7 @@ div.stButton > button:hover {
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
-# DELTA EXCHANGE DEMO API & SERVER IP HELPER (RENKO ONLY ACTIVE, SPIKE OFF)
+# DELTA EXCHANGE DEMO API & SERVER IP HELPER
 # ============================================================================
 DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
@@ -163,10 +163,9 @@ RUNNER_QTY           = 3      # 3 लॉट बची हुई क्वां�
 
 USD_INR_RATE         = 85.0   
 
-# 🎯 आपके नए सटीक नियम (1m टाइमफ्रेम के अनुकूल):
 TP1_TARGET_PTS       = 300.0  # TP1: 300 पॉइंट्स पर 7 लॉट (70%) तुरंत बुक
-INITIAL_SL_PTS       = 250.0  # शुरुआती स्टॉप-लॉस: 250 पॉइंट्स (~₹210 नुकसान जोखिम)
-TRAIL_STEP_PTS       = 118.0  # TP1 के बाद हर ₹100 (118 BTC pts) ऊपर जाने पर SL ₹100 ऊपर खिसकेगा
+INITIAL_SL_PTS       = 250.0  # शुरुआती स्टॉप-लॉस: 250 पॉइंट्स
+TRAIL_STEP_PTS       = 118.0  # TP1 के बाद हर ₹100 (118 BTC pts) ऊपर जाने पर SL ऊपर खिसकेगा
 ANTI_WICK_SL         = True
 
 USE_STREAK_FILTER    = True
@@ -185,7 +184,6 @@ GAUSS_PERIOD         = 20
 SIG_MODE             = "Supertrend + Brick-Step Re-Entry (Best)"
 MIN_VOL_DOM          = 55.0
 
-# REAL DELTA EXCHANGE FEE (82.1 Points Per Lot -> 821.0 pts / ~₹70 for 10 Lots)
 BROK_PER_QTY         = 82.1
 MINTICK              = 0.1
 
@@ -427,7 +425,6 @@ def process_single_closed_bar(eng, kline):
         close_side = "sell" if t_dir == 1 else "buy"
         eng["max_fav_price"] = max(eng["max_fav_price"], h) if t_dir == 1 else min(eng["max_fav_price"], l)
 
-        # 1. Hit TP1 (300 Points) -> Book 7 क़ॉन्टीटी (70%) तुरंत!
         hit_tp1_now = (not eng["tp1_reached"]) and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"]))
         if hit_tp1_now:
             eng["tp1_reached"] = True
@@ -437,11 +434,9 @@ def process_single_closed_bar(eng, kline):
             eng["gross_profit"] += eng["booked_pnl_10q"]
             eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
             eng["open_qty"] = RUNNER_QTY
-            # TP1 हिट होते ही बची हुई 3 Qty का SL एंट्री प्राइस (Cost) पर लॉक हो जाएगा
             eng["stop_price"] = eng["entry_price"]
             place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag=f"Renko TP1 ({TP1_BOOK_QTY}Q)", reduce_only=True)
 
-        # 2. Step-Trailing for 3 Qty Runner: Every +₹100 (118 pts) above TP1 shifts SL up by +₹100 (118 pts)
         if eng["tp1_reached"]:
             max_fav_move = (eng["max_fav_price"] - eng["entry_price"]) if t_dir == 1 else (eng["entry_price"] - eng["max_fav_price"])
             
@@ -453,7 +448,6 @@ def process_single_closed_bar(eng, kline):
                     eng["tp2_hits"] += 1
                 eng["trail_steps"] = steps_above_tp1
 
-                # SL moves up by 118 pts for every 118 pts move above TP1
                 step_locked_pts = TP1_TARGET_PTS + ((steps_above_tp1 - 1) * TRAIL_STEP_PTS)
                 step_sl = (eng["entry_price"] + step_locked_pts) if t_dir == 1 else (eng["entry_price"] - step_locked_pts)
                 eng["stop_price"] = max(eng["stop_price"], step_sl) if t_dir == 1 else min(eng["stop_price"], step_sl)
@@ -487,7 +481,6 @@ def process_single_closed_bar(eng, kline):
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
-        # 3. Initial Stop-Loss (250 Points) before TP1
         if eng["trade_dir"] != 0 and not eng["tp1_reached"]:
             adverse_close_pts = (eng["entry_price"] - c) if t_dir == 1 else (c - eng["entry_price"])
             close_hit_sl = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
@@ -652,49 +645,50 @@ with col3:
 terminal = st.empty()
 
 while True:
-    if not eng["initialized"] or eng["price"] == 0.0:
-        terminal.info("⏳ AI-Renko Pro: TP1 (300p), SL (250p), 7Q + 3Q ट्रेलिंग इंजन लोड हो रहा है...")
-        time.sleep(1)
-        continue
+    try:
+        if not eng["initialized"] or eng["price"] == 0.0:
+            terminal.info("⏳ AI-Renko Pro: TP1 (300p), SL (250p), 7Q + 3Q ट्रेलिंग इंजन लोड हो रहा है...")
+            time.sleep(1)
+            continue
 
-    price = eng["price"]
-    box_size = eng["box_size"]
-    st_trend = eng["st_trend"]
-    st_line = eng["st_line"]
-    brick_streak = eng["brick_streak"]
-    ema21 = eng["ema21"]
-    rsi14 = eng["rsi14"]
-    ist_time = eng["ist_time"]
-    anchor_str = eng["anchor_time_str"]
+        price = eng["price"]
+        box_size = eng["box_size"]
+        st_trend = eng["st_trend"]
+        st_line = eng["st_line"]
+        brick_streak = eng["brick_streak"]
+        ema21 = eng["ema21"]
+        rsi14 = eng["rsi14"]
+        ist_time = eng["ist_time"]
+        anchor_str = eng["anchor_time_str"]
 
-    tot_trades = eng["wins"] + eng["losses"]
-    win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
-    net_pnl = eng["gross_profit"] - eng["gross_loss"] - eng["total_brok"]
+        tot_trades = eng["wins"] + eng["losses"]
+        win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
+        net_pnl = eng["gross_profit"] - eng["gross_loss"] - eng["total_brok"]
 
-    st_badge_text = "STATUS: BUY 🟢" if st_trend == 1 else "STATUS: SELL 🔴"
-    st_badge_col = "#00c891" if st_trend == 1 else "#f03769"
+        st_badge_text = "STATUS: BUY 🟢" if st_trend == 1 else "STATUS: SELL 🔴"
+        st_badge_col = "#00c891" if st_trend == 1 else "#f03769"
 
-    if eng["trade_dir"] != 0:
-        t_type = "LONG" if eng["trade_dir"] == 1 else "SHORT"
-        entry, tp1, tp2, sl, open_qty, booked_pnl = eng["entry_price"], eng["tp1_price"], eng["tp2_price"], eng["stop_price"], eng["open_qty"], eng["booked_pnl_10q"]
-        unit_pnl = (price - entry) if t_type == "LONG" else (entry - price)
-        open_pnl = unit_pnl * open_qty
-        total_live_pnl = booked_pnl + open_pnl
-        live_net_inr = pts_to_inr(total_live_pnl - (BROK_PER_QTY * TOTAL_QTY))
-        pnl_color = "#22c55e" if total_live_pnl >= 0 else "#ef4444"
-        badge_bg = "#00af6e" if t_type == "LONG" else "#dc284b"
+        if eng["trade_dir"] != 0:
+            t_type = "LONG" if eng["trade_dir"] == 1 else "SHORT"
+            entry, tp1, tp2, sl, open_qty, booked_pnl = eng["entry_price"], eng["tp1_price"], eng["tp2_price"], eng["stop_price"], eng["open_qty"], eng["booked_pnl_10q"]
+            unit_pnl = (price - entry) if t_type == "LONG" else (entry - price)
+            open_pnl = unit_pnl * open_qty
+            total_live_pnl = booked_pnl + open_pnl
+            live_net_inr = pts_to_inr(total_live_pnl - (BROK_PER_QTY * TOTAL_QTY))
+            pnl_color = "#22c55e" if total_live_pnl >= 0 else "#ef4444"
+            badge_bg = "#00af6e" if t_type == "LONG" else "#dc284b"
 
-        if eng["tp2_reached"]:
-            status_label = f"🚀 {RUNNER_QTY}Q TRAILING (हर ₹100 आगे बढ़ने पर ट्रेलिंग)"
-            sl_tag = f"Trail SL ({RUNNER_QTY}Q)"
-        elif eng["tp1_reached"]:
-            status_label = f"✅ {TP1_BOOK_QTY}Q TP1 BOOKED • SL AT COST"
-            sl_tag = f"Cost SL ({RUNNER_QTY}Q)"
-        else:
-            status_label = f"🔥 ACTIVE {t_type} ({TOTAL_QTY}Q Open)"
-            sl_tag = f"Initial SL (-250p)"
+            if eng["tp2_reached"]:
+                status_label = f"🚀 {RUNNER_QTY}Q TRAILING (हर ₹100 आगे बढ़ने पर ट्रेलिंग)"
+                sl_tag = f"Trail SL ({RUNNER_QTY}Q)"
+            elif eng["tp1_reached"]:
+                status_label = f"✅ {TP1_BOOK_QTY}Q TP1 BOOKED • SL AT COST"
+                sl_tag = f"Cost SL ({RUNNER_QTY}Q)"
+            else:
+                status_label = f"🔥 ACTIVE {t_type} ({TOTAL_QTY}Q Open)"
+                sl_tag = f"Initial SL (-250p)"
 
-        trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
+            trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
 <span style="background:{badge_bg}; color:white; padding:5px 11px; border-radius:6px; font-weight:bold; font-size:13px;">{status_label}</span>
 <span style="color:{pnl_color}; font-size:22px; font-weight:800;">{total_live_pnl:+,.1f} pts (Net: ₹{live_net_inr:+,.0f})</span>
@@ -706,18 +700,18 @@ while True:
 <div>{sl_tag}<br><b style="color:#ef4444; font-size:14px;">{sl:,.1f}</b></div>
 </div>
 </div>"""
-    else:
-        trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
+        else:
+            trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
 <div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR SIGNAL (TP1: 300p | SL: 250p | Trail Step: ₹100)</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:3px;">Supertrend: <b>{st_line:,.1f}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
 
-    rows_html = ""
-    if not eng["history"]:
-        rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई ट्रेड क्लोज नहीं हुआ है</td></tr>"""
-    else:
-        for h in eng["history"]:
-            rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:12px;">
+        rows_html = ""
+        if not eng["history"]:
+            rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई ट्रेड क्लोज नहीं हुआ है</td></tr>"""
+        else:
+            for h in eng["history"]:
+                rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:12px;">
 <td style="padding:8px 6px; color:#94a3b8;">{h['time']}</td>
 <td style="padding:8px 6px; font-weight:bold; color:#f8fafc;">{h['type']}</td>
 <td style="padding:8px 6px; color:#cbd5e1;">{h['entry']:,.1f} → {h['exit']:,.1f}</td>
@@ -725,10 +719,10 @@ while True:
 <td style="padding:8px 6px; color:{h['color']}; font-weight:bold; text-align:right;">{h['pnl']}</td>
 </tr>"""
 
-    net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
-    wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
+        net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
+        wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
 
-    raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; font-family:sans-serif;">
+        raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; font-family:sans-serif;">
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px;">
 <div>
 <div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ AI-RENKO PRO [TP1: 300p (7Q) | SL: 250p | TRAIL: ₹100 STEP (3Q)]</div>
@@ -760,15 +754,15 @@ while True:
 <div style="max-height:420px; overflow-y:auto;">
 <table style="width:100%; border-collapse:collapse;">
 <thead>
-<tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;">
+<tr style="border-bottom:1px solid #475569; font-size:11.5px; color:#94a3b8; text-align:left;">
 <th style="padding:6px;">समय</th>
 <th style="padding:6px;">ट्रेड</th>
 <th style="padding:6px;">Entry → Exit</th>
-<th style="padding:6px;">स्टेटस स्कोर</th>
+<th style="padding:6px;">स्टेटस</th>
 <th style="padding:6px; text-align:right;">PnL</th>
 </tr>
 </thead>
-<tbody>
+://<tbody>
 {rows_html}
 </tbody>
 </table>
@@ -778,5 +772,7 @@ while True:
 </div>
 </div>"""
 
-    terminal.markdown("\n".join(line.strip() for line in raw_html.splitlines() if line.strip()), unsafe_allow_html=True)
+        terminal.markdown("\n".join(line.strip() for line in raw_html.splitlines() if line.strip()), unsafe_allow_html=True)
+    except Exception as e:
+        terminal.error(f"रेंडरिंग त्रुटि: {str(e)}")
     time.sleep(2)
