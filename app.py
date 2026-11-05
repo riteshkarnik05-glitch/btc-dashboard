@@ -67,19 +67,45 @@ BUY_BEEP_B64 = build_beep_wav_b64([880, 1175, 1568, 1568])
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])
 
 # ============================================================================
-# 1-MINUTE FIXED-POINT PARAMETERS
-# 10 LOT: 7Q TP1 @ 350 pts + 3Q TRAIL, SL 290 pts
+# ट्रेड टाइमफ्रेम (यहाँ से डिफ़ॉल्ट बदलें: "1m" / "5m" / "15m")
 # ============================================================================
+TIMEFRAME = "5m"
+
+# हर टाइमफ्रेम के अलग लेवल (पॉइंट्स में, प्रति Qty)
+# tp1  = TP1 टारगेट (7 Qty बुक)
+# sl   = स्टॉप-लॉस कैप (10 Qty)
+# lock = TP1 के बाद 3 Qty का SL एंट्री से इतने पॉइंट प्रॉफिट पर
+# mid  = इतने पॉइंट छूते ही 3 Qty का SL TP1 पर
+# tp2  = इसके बाद 3 Qty की ट्रेलिंग
+# scale = कैंडल-साइज़/स्ट्रेच फ़िल्टर का गुणक
+# days = शुरुआती हिस्ट्री के दिन
+# ध्यान: 5m और 15m के आँकड़े अंदाज़े हैं, बैकटेस्ट देखकर बदलें
+TF_CONFIG = {
+    "1m": {
+        "step_ms": 60 * 1000,
+        "tp1": 350.0, "sl": 290.0, "lock": 60.0,
+        "mid": 520.0, "tp2": 600.0,
+        "scale": 1.0, "days": 3
+    },
+    "5m": {
+        "step_ms": 5 * 60 * 1000,
+        "tp1": 700.0, "sl": 500.0, "lock": 120.0,
+        "mid": 1000.0, "tp2": 1300.0,
+        "scale": 2.0, "days": 7
+    },
+    "15m": {
+        "step_ms": 15 * 60 * 1000,
+        "tp1": 1100.0, "sl": 800.0, "lock": 200.0,
+        "mid": 1700.0, "tp2": 2200.0,
+        "scale": 3.0, "days": 14
+    }
+}
+
 TOTAL_QTY = 10
 TP1_BOOK_QTY = 7
 RUNNER_QTY = 3
 
 USE_FIXED_POINTS = True
-TP1_POINTS = 350.0
-SL_POINTS = 190.0
-RUNNER_LOCK_POINTS = 60.0
-MID_LOCK_POINTS = 520.0
-TP2_POINTS = 600.0
 
 USE_TRAIL_BEYOND_TP2 = True
 TRAIL_METHOD = "Smart Brick + Peak Ratchet (Best)"
@@ -198,16 +224,21 @@ def fetch_hl_klines(interval="1m", num_bars=20):
     return None
 
 
-def fetch_hl_5000_fixed_anchor():
+def fetch_hl_history(tf, cfg):
+    step_ms = cfg["step_ms"]
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
-    anchor_start_ms = (today_00_utc_sec - (3 * 86400)) * 1000
+    back_sec = cfg["days"] * 86400
+    anchor_start_ms = (today_00_utc_sec - back_sec) * 1000
     now_ms = now_sec * 1000
-    mid_ms = anchor_start_ms + (2600 * 60 * 1000)
+    chunk_ms = 2600 * step_ms
 
-    chunks = [(anchor_start_ms, min(mid_ms, now_ms))]
-    if now_ms > mid_ms:
-        chunks.append((mid_ms, now_ms))
+    chunks = []
+    s_ms = anchor_start_ms
+    while s_ms < now_ms:
+        e_ms = min(s_ms + chunk_ms, now_ms)
+        chunks.append((s_ms, e_ms))
+        s_ms = e_ms
 
     merged = {}
     for st_ms, en_ms in chunks:
@@ -217,7 +248,7 @@ def fetch_hl_5000_fixed_anchor():
                     "type": "candleSnapshot",
                     "req": {
                         "coin": "BTC",
-                        "interval": "1m",
+                        "interval": tf,
                         "startTime": st_ms,
                         "endTime": en_ms
                     }
@@ -279,6 +310,9 @@ def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
     if bar_time <= eng["last_bar_time"]:
         return
+
+    cfg = eng["cfg"]
+    tf_scale = cfg["scale"]
 
     o = float(kline[1])
     h = float(kline[2])
@@ -547,7 +581,7 @@ def process_single_closed_bar(eng, kline):
             eng["total_brok"] += BROK_PER_QTY * TOTAL_QTY
             eng["open_qty"] = RUNNER_QTY
             if USE_FIXED_POINTS:
-                runner_lock_pts = RUNNER_LOCK_POINTS
+                runner_lock_pts = cfg["lock"]
             else:
                 runner_lock_pts = box_size * RUNNER_LOCK_BRICKS
             if t_dir == 1:
@@ -656,6 +690,7 @@ def process_single_closed_bar(eng, kline):
         # ---- SL / Profit-lock exits (TP2 से पहले) ----
         if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
             if not eng["tp1_reached"]:
+                brick_gap = box_size * 0.50 * tf_scale
                 if t_dir == 1:
                     adverse_close_pts = eng["entry_price"] - c
                     wick_hit_sl = l <= eng["stop_price"]
@@ -664,7 +699,7 @@ def process_single_closed_bar(eng, kline):
                     brick_turned_bad = (
                         eng["brick_dir"] == -1
                         and c < eng["brick_bot"]
-                        and adverse_close_pts >= box_size * 0.50
+                        and adverse_close_pts >= brick_gap
                     )
                     st_against = eng["st_trend"] == -1
                 else:
@@ -675,7 +710,7 @@ def process_single_closed_bar(eng, kline):
                     brick_turned_bad = (
                         eng["brick_dir"] == 1
                         and c > eng["brick_top"]
-                        and adverse_close_pts >= box_size * 0.50
+                        and adverse_close_pts >= brick_gap
                     )
                     st_against = eng["st_trend"] == 1
 
@@ -694,7 +729,7 @@ def process_single_closed_bar(eng, kline):
                 if sl_triggered:
                     eng["losses"] += 1
                     if USE_FIXED_POINTS:
-                        max_cap_pts = SL_POINTS
+                        max_cap_pts = cfg["sl"]
                     else:
                         max_cap_pts = box_size * MAX_SL_LOSS_BRICKS
                     if ANTI_WICK_SL and (not hard_crash) and adverse_close_pts > 0:
@@ -762,8 +797,12 @@ def process_single_closed_bar(eng, kline):
     ema21 = eng["ema21"]
     rsi_val = eng["rsi14"]
 
-    candle_not_giant = (h - l) <= box_size * 1.75
-    flip_stretch_ok = abs(c - ema21) <= box_size * 1.65
+    giant_lim = box_size * 1.75 * tf_scale
+    stretch_lim = box_size * 1.65 * tf_scale
+    late_stretch_lim = box_size * MAX_EMA_DIST_BRICKS * tf_scale
+
+    candle_not_giant = (h - l) <= giant_lim
+    flip_stretch_ok = abs(c - ema21) <= stretch_lim
     bull_filter_ok = (
         candle_not_giant
         and flip_stretch_ok
@@ -823,7 +862,7 @@ def process_single_closed_bar(eng, kline):
         eng["brick_streak"] <= MAX_BRICK_STREAK
     )
     stretch_ok = (not USE_STRETCH_FILTER) or (
-        abs(c - ema21) <= box_size * MAX_EMA_DIST_BRICKS
+        abs(c - ema21) <= late_stretch_lim
     )
     one_shot_ok = not eng["trend_tp1_done"]
     late_safe = streak_ok and stretch_ok and one_shot_ok
@@ -887,10 +926,10 @@ def process_single_closed_bar(eng, kline):
         eng["entry_time_str"] = bar_ist
 
         if USE_FIXED_POINTS:
-            eng["locked_tp1_pts"] = TP1_POINTS
-            mid_pts = MID_LOCK_POINTS
-            eng["locked_tp2_pts"] = TP2_POINTS
-            eng["locked_sl_pts"] = SL_POINTS
+            eng["locked_tp1_pts"] = cfg["tp1"]
+            mid_pts = cfg["mid"]
+            eng["locked_tp2_pts"] = cfg["tp2"]
+            eng["locked_sl_pts"] = cfg["sl"]
         else:
             eng["locked_tp1_pts"] = box_size * TP1_BRICKS
             mid_pts = box_size * MID_LOCK_BRICKS
@@ -1305,6 +1344,8 @@ def fetch_l2_orderbook_and_spike_radar(eng):
 def background_worker(eng):
     last_1d_fetch = 0
     last_kline_fetch = 0
+    tf = eng["tf"]
+    cfg = eng["cfg"]
 
     while True:
         try:
@@ -1322,8 +1363,11 @@ def background_worker(eng):
                     eng["status"] = "❌ Daily डेटा नहीं आ रहा (नेटवर्क/API चेक करें)"
 
             if not eng["initialized"] and eng["macro_range"] is not None:
-                eng["status"] = "2) 3.5-दिन के 1m कैंडल लोड हो रहे हैं..."
-                klines_init = fetch_hl_5000_fixed_anchor()
+                eng["status"] = (
+                    "2) " + str(cfg["days"]) + " दिन के " + tf
+                    + " कैंडल लोड हो रहे हैं..."
+                )
+                klines_init = fetch_hl_history(tf, cfg)
                 if klines_init and len(klines_init) > 100:
                     for b in klines_init[:-1]:
                         process_single_closed_bar(eng, b)
@@ -1332,14 +1376,14 @@ def background_worker(eng):
                     eng["status"] = "✅ तैयार"
                     last_kline_fetch = now_ts
                 else:
-                    eng["status"] = "❌ 1m कैंडल डेटा नहीं मिला (API खाली/ब्लॉक)"
+                    eng["status"] = "❌ " + tf + " कैंडल डेटा नहीं मिला (API खाली/ब्लॉक)"
 
             fetch_l2_orderbook_and_spike_radar(eng)
             if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
                 eng["price"] = eng["order_book"]["mid_price"]
 
             if eng["initialized"] and (now_ts - last_kline_fetch >= 2.0):
-                klines_live = fetch_hl_klines("1m", 8)
+                klines_live = fetch_hl_klines(tf, 8)
                 if klines_live and len(klines_live) >= 2:
                     for b in klines_live[:-1]:
                         process_single_closed_bar(eng, b)
@@ -1358,9 +1402,10 @@ def background_worker(eng):
         time.sleep(1)
 
 
-@st.cache_resource
-def get_hl_fixed_pts_engine_v5():
+def build_engine_state(tf):
     eng = {
+        "tf": tf,
+        "cfg": TF_CONFIG[tf],
         "initialized": False,
         "status": "शुरू हो रहा है...",
         "bar_count": 0,
@@ -1484,17 +1529,39 @@ def get_hl_fixed_pts_engine_v5():
         "spike_history": [],
         "error": None
     }
+    return eng
+
+
+@st.cache_resource
+def get_tf_engine_v6(tf):
+    eng = build_engine_state(tf)
     thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
     thread.start()
     return eng
 
 
-eng = get_hl_fixed_pts_engine_v5()
+# ============================================================================
+# TERMINAL HEADER (AUDIO BAR + TIMEFRAME SELECT + RESET BUTTON)
+# ============================================================================
+tf_options = ["1m", "5m", "15m"]
+if TIMEFRAME in tf_options:
+    default_idx = tf_options.index(TIMEFRAME)
+else:
+    default_idx = 1
 
-# ============================================================================
-# TERMINAL HEADER (AUDIO UNLOCK BAR + RESET MAX SPREAD BUTTON)
-# ============================================================================
-top_col1, top_col2 = st.columns([0.74, 0.26])
+top_col1, top_col2, top_col3 = st.columns([0.55, 0.15, 0.30])
+
+with top_col2:
+    sel_tf = st.selectbox(
+        "⏱️ टाइमफ्रेम",
+        tf_options,
+        index=default_idx,
+        key="tf_select"
+    )
+
+eng = get_tf_engine_v6(sel_tf)
+tf_cfg = eng["cfg"]
+
 with top_col1:
     sound_bar_html = """<!DOCTYPE html>
 <html>
@@ -1610,7 +1677,7 @@ setInterval(() => {
 </html>"""
     components.html(sound_bar_html, height=44, scrolling=False)
 
-with top_col2:
+with top_col3:
     if st.button("🔄 सर्वोच्च स्प्रेड रीसेट करें (Reset Max Spread)"):
         eng["max_spread_record"] = {
             "spread": 0.0,
@@ -1635,7 +1702,8 @@ while True:
             '<div style="background:#1e293b; border:1px solid #38bdf8; '
             'border-radius:10px; padding:16px; color:#f8fafc; '
             'font-family:sans-serif;">'
-            "⏳ <b>Dr Devendra AI-Renko PRO लोड हो रहा है...</b><br>"
+            "⏳ <b>Dr Devendra AI-Renko PRO (" + sel_tf
+            + ") लोड हो रहा है...</b><br>"
             "स्टेटस: " + str(eng.get("status", "")) + "<br>"
             "प्रोसेस हुए बार्स: " + str(eng["bar_count"]) + err_txt
             + "</div>"
@@ -1796,7 +1864,7 @@ while True:
         else:
             lock_note = "🟢 Ready for Signal"
         trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL (1m FIXED PTS • ONE-SHOT TREND LOCK)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR CONFIRMED SIGNAL ({sel_tf} FIXED PTS • ONE-SHOT TREND LOCK)</div>
 <div style="color:#facc15; font-size:12px; margin-top:4px; font-weight:bold;">{lock_note}</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:3px;">Supertrend: <b>{st_line:,.1f}</b> | Streak: <b>#{brick_streak}</b> | EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
@@ -1849,9 +1917,9 @@ while True:
     wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
 
     if USE_FIXED_POINTS:
-        disp_tp1 = TP1_POINTS
-        disp_tp2 = TP2_POINTS
-        disp_sl = SL_POINTS
+        disp_tp1 = tf_cfg["tp1"]
+        disp_tp2 = tf_cfg["tp2"]
+        disp_sl = tf_cfg["sl"]
     else:
         disp_tp1 = box_size * TP1_BRICKS
         disp_tp2 = box_size * TP2_BRICKS
@@ -1860,6 +1928,11 @@ while True:
         "TP1(7Q): +" + f"{disp_tp1:.0f}" + "p | TP2(3Q Trail): +"
         + f"{disp_tp2:.0f}" + "p | SL: -" + f"{disp_sl:.0f}" + "p"
     )
+    head_levels = (
+        sel_tf + " FIXED PTS • TP1 " + f"{disp_tp1:.0f}"
+        + " / SL " + f"{disp_sl:.0f}" + " • 7Q + 3Q TRAIL"
+    )
+    hist_days = str(tf_cfg["days"])
 
     last_res = eng["last_result"]
     last_res_col = eng["last_result_color"]
@@ -1877,7 +1950,7 @@ while True:
 {err_banner}
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO (1m FIXED PTS • TP1 350 / SL 290 • 7Q + 3Q TRAIL)</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO ({head_levels})</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
@@ -1962,7 +2035,7 @@ while True:
 पिछला परिणाम: {last_res}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (1m Fixed Pts • One-Shot Trend Lock • 7Q TP1 + 3Q Trail)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE ({sel_tf} Fixed Pts • One-Shot Trend Lock • 7Q TP1 + 3Q Trail)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Daily ATR-5 | 1 Brick (Div 15)</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Position Sizing Rule</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">10 Qty (7Q @ TP1 + 3Q Trailing Runner)</td></tr>
@@ -1979,7 +2052,7 @@ while True:
 <div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%; box-sizing:border-box;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (3.5-Day Fixed Grid)</span>
+<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग ({hist_days}-Day {sel_tf} Grid)</span>
 <span style="font-size:11px; color:#94a3b8;">Blocked Late: {n_blocked}</span>
 </div>
 <div style="max-height:460px; overflow-y:auto;">
