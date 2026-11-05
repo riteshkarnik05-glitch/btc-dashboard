@@ -3,6 +3,7 @@ import requests
 import time
 import threading
 import json
+import traceback
 from datetime import datetime, timedelta
 import math
 import io
@@ -69,7 +70,7 @@ TOTAL_QTY            = 10
 TP1_BOOK_QTY         = 7      # TP1 (350 pts / ~₹300) पर 7 लॉट तुरंत बुक होंगे
 RUNNER_QTY           = 3      # बचे हुए 3 लॉट प्रॉफिट-लॉक और ट्रेलिंग रनर के लिए
 
-# ---- नया: फिक्स्ड पॉइंट्स मोड (1m चार्ट के हिसाब से) ----
+# ---- फिक्स्ड पॉइंट्स मोड (1m चार्ट के हिसाब से) ----
 USE_FIXED_POINTS     = True   # True = नीचे दिए पॉइंट्स इस्तेमाल होंगे | False = पुराना ब्रिक-आधारित सिस्टम
 TP1_POINTS           = 350.0  # ~₹300 टारगेट (7 लॉट बुक)
 SL_POINTS            = 290.0  # ~₹250 स्टॉप-लॉस (10 लॉट)
@@ -601,6 +602,4 @@ def process_single_closed_bar(eng, kline):
             tot_flip_pnl = eng["booked_pnl_10q"] + runner_pnl_3q
             eng["history"].insert(0, {
                 "time": bar_ist, "type": f"{old_label} (10Q)", "entry": eng["entry_price"],
-                "exit": c, "status": "✅ 7Q TP1 + 3Q FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)}", "color": "#22c55e"
-            })
-            eng["history"] = eng["history"][:40]
+                "exit": c, "status": "✅ 7Q TP1 +
