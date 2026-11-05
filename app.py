@@ -13,7 +13,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra AI-Renko 5m Pine-Clone Terminal", layout="wide")
+st.set_page_config(page_title="Dr Devendra AI-Renko 15m Pine-Clone Terminal", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -91,7 +91,7 @@ def delta_request(method, path, payload_dict=None):
             last_err = str(e)
     return False, last_err
 
-def place_delta_demo_order(eng, side, qty, tag="Renko 5m", reduce_only=False):
+def place_delta_demo_order(eng, side, qty, tag="Renko 15m", reduce_only=False):
     if not eng.get("initialized", False) or qty <= 0:
         return False
     try:
@@ -155,26 +155,26 @@ BUY_BEEP_B64  = build_beep_wav_b64([880, 1175, 1568, 1568])
 SELL_BEEP_B64 = build_beep_wav_b64([987, 740, 523, 523])
 
 # ============================================================================
-# 100% PINE SCRIPT V5 EXACT PARAMETERS + 5m TIMEFRAME + 10 QTY RUPEE SETUP
+# 100% PINE SCRIPT V5 CLONE PARAMETERS + 15m TIMEFRAME + 10 QTY RUPEE SETUP
 # ============================================================================
-SIGNAL_TF            = "5m"   # 5-Minute Timeframe Signals
+SIGNAL_TF            = "15m"  # 15-Minute Timeframe Signals
 TOTAL_QTY            = 10     # 10 Lots (0.01 BTC)
 TP1_BOOK_QTY         = 7      # 7 Lots booked at TP1
 RUNNER_QTY           = 3      # 3 Lots runner for TP2 + Unlimited Renko Trail
 USD_INR_RATE         = 85.0   # 1 USD = ₹85 (10 Lots: 1 BTC pt = $0.01 = ₹0.85)
 
-# PINE SCRIPT STEP 0, 1, 2 EXACT SETTINGS (Matching your TradingView code 100%!)
+# PINE SCRIPT STEP 0, 1, 2 EXACT SETTINGS
 USE_TRAIL_BEYOND_TP2 = True
 TRAIL_METHOD         = "Smart Brick + Peak Ratchet (Best)"
 TRAIL_LOCK_BRICKS    = 0.8
 USE_STREAK_FILTER    = True
-MAX_BRICK_STREAK     = 4      # Pine Script default = 4 (allows strong brick continuations!)
+MAX_BRICK_STREAK     = 4      # Pine Script default = 4
 USE_STRETCH_FILTER   = True
 MAX_EMA_DIST_BRICKS  = 2.0    # Pine Script default = 2.0
 
 USE_AUTO_BOX         = True
 ATR_PERIOD           = 5
-RANGE_DIVISOR        = 10.0   # Pine Script default = 10.0 (Big stable Renko bricks!)
+RANGE_DIVISOR        = 10.0   # Pine Script default = 10.0 (Big stable Renko bricks)
 MANUAL_BOX           = 150.0
 
 ST_FACTOR            = 3.0    # Special Renko Supertrend Multiplier = 3.0
@@ -183,9 +183,7 @@ GAUSS_PERIOD         = 20
 SIG_MODE             = "Supertrend + Brick-Step Re-Entry (Best)"
 MIN_VOL_DOM          = 55.0
 
-# TARGET & SL MODE:
-# True  = 10 कॉन्टिटी पर फिक्स ₹350 टारगेट (+411.8 BTC pts) और ₹200 SL (-235.3 BTC pts)
-# False = Pine Script के मूल ब्रिक टारगेट्स (TP1 = 0.85 Brick, TP2 = 2.20 Brick, SL = 1.40 Brick)
+# TARGET & SL MODE (10 Qty: ₹350 Target & ₹200 SL)
 USE_FIXED_RUPEE_TPSL = True
 
 TARGET_RUPEES_10Q    = 350.0  # ₹350 Target on 10 Qty -> 411.8 BTC Points
@@ -218,10 +216,14 @@ def fmt_pts(pts):
 def pts_to_inr(lot_pts):
     return lot_pts * 0.001 * USD_INR_RATE
 
+def fmt_inr(lot_pts):
+    val = pts_to_inr(lot_pts)
+    return f"{val:+,.0f}" if val != 0 else "0"
+
 # ============================================================================
-# HYPERLIQUID 5-MINUTE CANDLE SNAPSHOT FETCHERS
+# HYPERLIQUID 15-MINUTE CANDLE SNAPSHOT FETCHERS
 # ============================================================================
-def fetch_hl_klines(interval="5m", num_bars=20):
+def fetch_hl_klines(interval="15m", num_bars=20):
     tf_ms_map = {
         "1m": 60 * 1000,
         "5m": 5 * 60 * 1000,
@@ -229,7 +231,7 @@ def fetch_hl_klines(interval="5m", num_bars=20):
         "1h": 60 * 60 * 1000,
         "1d": 24 * 60 * 60 * 1000
     }
-    step_ms = tf_ms_map.get(interval, 300000)
+    step_ms = tf_ms_map.get(interval, 900000)
     end_time = int(time.time() * 1000)
     start_time = end_time - (num_bars * step_ms)
 
@@ -268,11 +270,11 @@ def fetch_hl_klines(interval="5m", num_bars=20):
             time.sleep(0.4)
     return None
 
-def fetch_hl_5m_fixed_anchor():
+def fetch_hl_15m_fixed_anchor():
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
-    # 5m कैंडल्स के लिए पिछले 12 दिनों (~3,450 कैंडल्स) का फिक्स्ड एंकर
-    anchor_start_ms = (today_00_utc_sec - (12 * 86400)) * 1000
+    # 15m कैंडल्स के लिए पिछले 25 दिनों (~2,400 कैंडल्स) का फिक्स्ड एंकर
+    anchor_start_ms = (today_00_utc_sec - (25 * 86400)) * 1000
     now_ms = now_sec * 1000
 
     merged = {}
@@ -337,7 +339,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# 100% PINE SCRIPT V5 CLONE PROCESSOR (SPECIAL RENKO SUPERTREND ENGINE)
+# 100% PINE SCRIPT V5 CLONE PROCESSOR (15m SPECIAL RENKO SUPERTREND ENGINE)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -397,7 +399,7 @@ def process_single_closed_bar(eng, kline):
             rs = eng["rma_up"] / eng["rma_dn"]
             eng["rsi14"] = 100.0 - (100.0 / (1.0 + rs))
 
-    # Gaussian Filter (Pine Script Lines 52-58)
+    # Gaussian Filter
     w = (2.0 * math.pi) / float(GAUSS_PERIOD)
     b = (1.0 - math.cos(w)) / (1.41421356 - 1.0)
     a = -b + math.sqrt(b * b + 2.0 * b)
@@ -410,7 +412,7 @@ def process_single_closed_bar(eng, kline):
     eng["g2"] = eng["g1"]
     eng["g1"] = g_val
 
-    # 3-Bar Orderflow Dominance (Pine Script Lines 65-80)
+    # 3-Bar Orderflow Dominance
     rng = max(h - l, MINTICK)
     u_wick = h - max(o, c)
     l_wick = min(o, c) - l
@@ -436,7 +438,7 @@ def process_single_closed_bar(eng, kline):
     eng["buy_dom_pct"] = buy_dom_pct
     eng["sell_dom_pct"] = sell_dom_pct
 
-    # Step 1: 23H/Daily Range Box Size (Pine Script Lines 46-50)
+    # Step 1: 23H/Daily Range Box Size
     safe_range = eng["macro_range"] if (eng["macro_range"] and eng["macro_range"] > 0) else (eng["atr14"] * 10.0)
     calc_auto_box = safe_range / RANGE_DIVISOR
     box_size = max(calc_auto_box if USE_AUTO_BOX else MANUAL_BOX, MINTICK * 2.0)
@@ -446,13 +448,12 @@ def process_single_closed_bar(eng, kline):
     eval_price = (c * 0.70 + g_val * 0.30) if USE_GAUSSIAN else c
 
     # ========================================================================
-    # STEP 3: PURE RENKO BRICK ENGINE (EXACT PINE SCRIPT LINES 85-119)
+    # STEP 3: PURE RENKO BRICK ENGINE (EXACT PINE SCRIPT)
     # ========================================================================
     brick_step_up = False
     brick_step_dn = False
 
     if idx == 0:
-        # Exact Pine Script initialization: brickTop := close, brickBot := close - boxSize
         eng["brick_top"] = c
         eng["brick_bot"] = c - box_size
         eng["brick_dir"] = 1
@@ -484,7 +485,7 @@ def process_single_closed_bar(eng, kline):
     eng["r_close"] = r_close
 
     # ========================================================================
-    # STEP 4: SPECIAL RENKO SUPERTREND ENGINE (EXACT PINE SCRIPT LINES 124-164)
+    # STEP 4: SPECIAL RENKO SUPERTREND ENGINE (EXACT PINE SCRIPT)
     # ========================================================================
     band_distance = box_size * ST_FACTOR
     raw_support = r_close - band_distance
@@ -530,7 +531,6 @@ def process_single_closed_bar(eng, kline):
     if st_flip_buy or st_flip_sell:
         eng["brick_streak"] = 1
 
-    # Pending Flip flags (Exact Pine Script Lines 192-201)
     if st_flip_buy:
         eng["pending_flip_buy"] = True
         eng["pending_flip_sell"] = False
@@ -543,7 +543,7 @@ def process_single_closed_bar(eng, kline):
         eng["pending_flip_sell"] = False
 
     # ========================================================================
-    # STEP 5A: MANAGE ACTIVE TRADE (EXACT PINE SCRIPT LINES 211-303)
+    # STEP 5A: MANAGE ACTIVE TRADE
     # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]
@@ -556,17 +556,15 @@ def process_single_closed_bar(eng, kline):
         if hit_tp1_now:
             eng["tp1_reached"] = True
             eng["wins"] += 1
-            # Book 7 Qty at TP1 (or full 10Q equivalent in Pine Script scale)
             eng["booked_pnl_10q"] = eng["locked_tp1_pts"] * TP1_BOOK_QTY
             eng["gross_profit"] += eng["booked_pnl_10q"]
             eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
             eng["open_qty"] = RUNNER_QTY
 
-            # Exact Pine Script Line 222: Runner protected at entryPrice -/+ boxSize * 0.25 (so runner has breathing room to hit TP2!)
             eng["stop_price"] = (eng["entry_price"] - box_size * 0.25) if t_dir == 1 else (eng["entry_price"] + box_size * 0.25)
-            place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag="Renko 5m TP1 (7Q)", reduce_only=True)
+            place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag="Renko 15m TP1 (7Q)", reduce_only=True)
 
-        # 2. Check TP2 (Exact Pine Script Lines 236-260)
+        # 2. Check TP2
         hit_tp2_now = eng["tp1_reached"] and (not eng["tp2_reached"]) and ((h >= eng["tp2_price"]) if t_dir == 1 else (l <= eng["tp2_price"]))
         if hit_tp2_now:
             eng["tp2_reached"] = True
@@ -574,7 +572,7 @@ def process_single_closed_bar(eng, kline):
             lock_floor = (eng["tp2_price"] - box_size * 0.35) if t_dir == 1 else (eng["tp2_price"] + box_size * 0.35)
             eng["stop_price"] = max(eng["stop_price"], lock_floor) if t_dir == 1 else min(eng["stop_price"], lock_floor)
 
-        # 3. Unlimited Trailing beyond TP2 (Exact Pine Script Lines 263-299)
+        # 3. Unlimited Trailing beyond TP2
         if eng["trade_dir"] != 0 and eng["tp2_reached"] and USE_TRAIL_BEYOND_TP2:
             gap_dist = box_size * TRAIL_LOCK_BRICKS
             brick_trail = (r_close - gap_dist) if t_dir == 1 else (r_close + gap_dist)
@@ -608,11 +606,11 @@ def process_single_closed_bar(eng, kline):
                     "exit": exit_p, "status": "🚀 7Q TP1 + 3Q TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)} (₹{pts_to_inr(total_trade_pnl):+,.0f})", "color": "#38bdf8"
                 })
                 eng["history"] = eng["history"][:40]
-                place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko 5m Trail Exit (3Q)", reduce_only=True)
+                place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko 15m Trail Exit (3Q)", reduce_only=True)
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
-        # 4. Pre-TP2 Anti-Wick Renko Stop-Loss Check (Exact Pine Script Lines 302-322)
+        # 4. Pre-TP2 Anti-Wick Renko Stop-Loss Check
         if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
             wick_hit_sl = (l <= eng["stop_price"]) if t_dir == 1 else (h >= eng["stop_price"])
             close_hit_sl = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
@@ -625,7 +623,6 @@ def process_single_closed_bar(eng, kline):
             if sl_triggered and not hit_tp1_now:
                 if not eng["tp1_reached"]:
                     eng["losses"] += 1
-                    # Cap loss at locked_sl_pts (₹200 = 235.3 pts/Q when fixed rupee mode is ON)
                     raw_loss = abs(eng["entry_price"] - c)
                     actual_loss_per_q = min(raw_loss, eng["locked_sl_pts"]) if (ANTI_WICK_SL and not hard_crash and raw_loss > 0) else eng["locked_sl_pts"]
                     total_loss_10q = actual_loss_per_q * TOTAL_QTY
@@ -639,9 +636,8 @@ def process_single_closed_bar(eng, kline):
                         "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)} (-₹{pts_to_inr(total_loss_10q):,.0f})", "color": "#ef4444"
                     })
                     eng["history"] = eng["history"][:40]
-                    place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko 5m SL Exit (10Q)", reduce_only=True)
+                    place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko 15m SL Exit (10Q)", reduce_only=True)
                 else:
-                    # TP1 was already reached! Exit the remaining 3Q runner
                     runner_pts = max(0.0, (c - eng["entry_price"]) if t_dir == 1 else (eng["entry_price"] - c))
                     runner_pnl_3q = runner_pts * RUNNER_QTY
                     eng["gross_profit"] += runner_pnl_3q
@@ -654,32 +650,28 @@ def process_single_closed_bar(eng, kline):
                         "exit": c, "status": "✅ 7Q TP1 + 3Q EXIT", "pnl": f"+{fmt_pts(total_trade_pnl)} (₹{pts_to_inr(total_trade_pnl):+,.0f})", "color": "#22c55e"
                     })
                     eng["history"] = eng["history"][:40]
-                    place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko 5m Runner Close (3Q)", reduce_only=True)
+                    place_delta_demo_order(eng, close_side, RUNNER_QTY, tag="Renko 15m Runner Close (3Q)", reduce_only=True)
 
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
 
     # ========================================================================
-    # STEP 5B: NEW ENTRY SIGNALS (100% EXACT PINE SCRIPT LINES 325-391)
+    # STEP 5B: NEW ENTRY SIGNALS (100% EXACT PINE SCRIPT)
     # ========================================================================
     ema21 = eng["ema21"]
     rsi_val = eng["rsi14"]
 
-    # Exact Pine Script Line 326-328:
     candle_not_giant = (h - l) <= box_size * 1.85
     bull_filter_ok   = candle_not_giant and buy_dom_pct >= 50.0 and rsi_val < 76.0
     bear_filter_ok   = candle_not_giant and sell_dom_pct >= 50.0 and rsi_val > 24.0
 
-    # Exact Pine Script Line 330-331:
     trigger_flip_buy  = eng["pending_flip_buy"] and st_trend == 1 and bull_filter_ok and c > o
     trigger_flip_sell = eng["pending_flip_sell"] and st_trend == -1 and bear_filter_ok and c < o
 
-    # Exact Pine Script Line 333-335:
     allow_re_entry = (SIG_MODE == "Supertrend + Brick-Step Re-Entry (Best)")
     raw_cont_buy   = allow_re_entry and (not trigger_flip_buy) and st_trend == 1 and brick_step_up and buy_dom_pct >= MIN_VOL_DOM and c > ema21 and rsi_val > 50.0 and rsi_val < 72.0 and candle_not_giant
     raw_cont_sell  = allow_re_entry and (not trigger_flip_sell) and st_trend == -1 and brick_step_dn and sell_dom_pct >= MIN_VOL_DOM and c < ema21 and rsi_val < 50.0 and rsi_val > 28.0 and candle_not_giant
 
-    # Exact Pine Script Line 337-339:
     streak_ok  = (not USE_STREAK_FILTER) or (eng["brick_streak"] <= MAX_BRICK_STREAK)
     stretch_ok = (not USE_STRETCH_FILTER) or (abs(c - ema21) <= box_size * MAX_EMA_DIST_BRICKS)
     late_safe  = streak_ok and stretch_ok
@@ -705,7 +697,7 @@ def process_single_closed_bar(eng, kline):
                 "exit": c, "status": "✅ 7Q TP1 + 3Q FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)} (₹{pts_to_inr(tot_flip_pnl):+,.0f})", "color": "#22c55e"
             })
             eng["history"] = eng["history"][:40]
-            place_delta_demo_order(eng, old_close_side, RUNNER_QTY, tag="Renko 5m Flip Close (3Q)", reduce_only=True)
+            place_delta_demo_order(eng, old_close_side, RUNNER_QTY, tag="Renko 15m Flip Close (3Q)", reduce_only=True)
 
         is_long = trigger_flip_buy or trigger_cont_buy
         if is_long:
@@ -725,12 +717,10 @@ def process_single_closed_bar(eng, kline):
         eng["entry_time_str"] = bar_ist
 
         if USE_FIXED_RUPEE_TPSL:
-            # 10 कॉन्टिटी के हिसाब से फिक्स ₹350 टारगेट (411.8 pts) और ₹200 SL (235.3 pts)
             eng["locked_tp1_pts"] = FIXED_TP1_BTC_PTS
             eng["locked_tp2_pts"] = max(box_size * TP2_BRICKS, FIXED_TP1_BTC_PTS * 1.6)
             eng["locked_sl_pts"]  = FIXED_SL_BTC_PTS
         else:
-            # Pine Script के मूल ब्रिक टारगेट्स
             eng["locked_tp1_pts"] = box_size * TP1_BRICKS
             eng["locked_tp2_pts"] = box_size * TP2_BRICKS
             eng["locked_sl_pts"]  = box_size * SL_BRICKS
@@ -741,7 +731,7 @@ def process_single_closed_bar(eng, kline):
         eng["hard_stop_price"] = (eng["stop_price"] - box_size * 0.5) if is_long else (eng["stop_price"] + box_size * 0.5)
 
         entry_side = "buy" if is_long else "sell"
-        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko 5m Entry (10Q)")
+        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko 15m Entry (10Q)")
 
     eng["prev_close"] = c
     eng["last_bar_time"] = bar_time
@@ -1058,7 +1048,7 @@ def fetch_l2_orderbook_and_spike_radar(eng):
             eng["last_spike_color"] = "#0f172a"
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (5m CANDLES + PINE SCRIPT SPECIAL RENKO SUPERTREND)
+# 24x7 BACKGROUND WORKER (15m CANDLES + PINE SCRIPT SPECIAL RENKO SUPERTREND)
 # ============================================================================
 def background_worker(eng):
     last_1d_fetch = 0
@@ -1076,10 +1066,12 @@ def background_worker(eng):
                     if d_val:
                         eng["macro_range"] = d_val
                         last_1d_fetch = now_ts
+                if eng["macro_range"] is None:
+                    eng["macro_range"] = 2500.0  # सेफ फॉलबैक ताकि इंजन कभी लोडिंग पर न अटके
 
             if not eng["initialized"] and eng["macro_range"] is not None:
-                klines_init = fetch_hl_5m_fixed_anchor()
-                if klines_init and len(klines_init) > 50:
+                klines_init = fetch_hl_15m_fixed_anchor()
+                if klines_init and len(klines_init) > 30:
                     for b in klines_init[:-1]:
                         process_single_closed_bar(eng, b)
                     eng["price"] = float(klines_init[-1][4])
@@ -1090,7 +1082,7 @@ def background_worker(eng):
             if eng["order_book"]["mid_price"] > 0 and eng["initialized"]:
                 eng["price"] = eng["order_book"]["mid_price"]
 
-            if eng["initialized"] and (now_ts - last_kline_fetch >= 3.0):
+            if eng["initialized"] and (now_ts - last_kline_fetch >= 4.0):
                 klines_live = fetch_hl_klines(SIGNAL_TF, 8)
                 if klines_live and len(klines_live) >= 2:
                     for b in klines_live[:-1]:
@@ -1108,7 +1100,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_5m_pine_clone_v2_engine():
+def get_hl_15m_pine_clone_v3_engine():
     eng = {
         "initialized": False,
         "bar_count": 0,
@@ -1229,14 +1221,14 @@ def get_hl_5m_pine_clone_v2_engine():
         "last_spike_color": "#0f172a",
         "spike_history": [],
         "delta_btc_product_id": 27,
-        "delta_status": "🤖 Delta Demo Algo: Ready (5m Pine-Clone Renko 10Q Active)",
+        "delta_status": "🤖 Delta Demo Algo: Ready (15m Pine-Clone Renko 10Q Active)",
         "error": None
     }
     thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
     thread.start()
     return eng
 
-eng = get_hl_5m_pine_clone_v2_engine()
+eng = get_hl_15m_pine_clone_v3_engine()
 server_ip = get_server_public_ip()
 
 # ============================================================================
@@ -1379,12 +1371,12 @@ with top_col3:
 terminal = st.empty()
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP (100% PINE SCRIPT CLONE ON 5m TIMEFRAME)
+# ZERO-BLINK LIVE RENDERING LOOP (100% PINE SCRIPT CLONE ON 15m TIMEFRAME)
 # ============================================================================
 while True:
     if not eng["initialized"] or eng["price"] == 0.0:
         err_txt = f" | Error: {eng['error']}" if eng.get("error") else ""
-        terminal.info(f"⏳ Dr Devendra AI-Renko PRO (5m Pine-Script Clone): स्पेशल रैंकों सुपरट्रेंड (Divisor 10) लोड हो रहा है...{err_txt}")
+        terminal.info(f"⏳ Dr Devendra AI-Renko PRO (15m Pine-Script Clone): स्पेशल रैंकों सुपरट्रेंड (Divisor 10) लोड हो रहा है...{err_txt}")
         time.sleep(1)
         continue
 
@@ -1459,7 +1451,7 @@ while True:
     win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
     net_pnl = eng["gross_profit"] - eng["gross_loss"] - eng["total_brok"]
 
-    st_badge_text = "5m RENKO ST: BUY ▲ 🟢" if st_trend == 1 else "5m RENKO ST: SELL ▼ 🔴"
+    st_badge_text = "15m RENKO ST: BUY ▲ 🟢" if st_trend == 1 else "15m RENKO ST: SELL ▼ 🔴"
     st_badge_col = "#00c891" if st_trend == 1 else "#f03769"
     brick_dir_txt = "🟢 Up Brick" if brick_dir == 1 else "🔴 Down Brick"
 
@@ -1486,7 +1478,7 @@ while True:
             status_label = f"✅ 7Q TP1 BOOKED • 3Q RUNNER PROTECTED ({t_type})"
             sl_tag = "Runner SL (3Q)"
         else:
-            status_label = f"🔥 ACTIVE 5m {t_type} (10 Qty Open | {eng['entry_tag']} @ {eng['entry_time_str']})"
+            status_label = f"🔥 ACTIVE 15m {t_type} (10 Qty Open | {eng['entry_tag']} @ {eng['entry_time_str']})"
             sl_tag = "₹200 SL (-235p)"
 
         trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
@@ -1508,7 +1500,7 @@ while True:
 </div>"""
     else:
         trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR 5m SPECIAL RENKO SUPERTREND SIGNAL (DIVISOR 10 • TARGET ₹350 • SL ₹200)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR 15m SPECIAL RENKO SUPERTREND SIGNAL (DIVISOR 10 • TARGET ₹350 • SL ₹200)</div>
 <div style="color:#facc15; font-size:12px; margin-top:4px; font-weight:bold;">🧱 Renko Step Line (rClose): {r_close:,.1f} ({brick_dir_txt} #{brick_streak}) | 🛡️ Renko ST Line: {st_line:,.1f}</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:3px;">EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b> | Max Streak Allowed: <b>4</b></div>
 </div>"""
@@ -1533,7 +1525,7 @@ while True:
 
     rows_html = ""
     if not eng["history"]:
-        rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई 5m ट्रेड क्लोज नहीं हुआ है</td></tr>"""
+        rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई 15m ट्रेड क्लोज नहीं हुआ है</td></tr>"""
     else:
         for h in eng["history"]:
             h_col = h.get("color", "#22c55e")
@@ -1558,19 +1550,19 @@ while True:
 </div>
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [5m PINE-SCRIPT CLONE • DIVISOR 10 • TARGET ₹350 • SL ₹200]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [15m PINE-SCRIPT CLONE • DIVISOR 10 • TARGET ₹350 • SL ₹200]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
 <div style="background:#1e293b; border:1px solid {st_badge_col}; color:{st_badge_col}; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:bold; display:inline-block; margin-bottom:4px;">{st_badge_text}</div>
-<div style="font-size:11.5px; color:#cbd5e1;">🔒 5m Pine Grid Anchor: {anchor_str} ({bar_count} Bars) | {ist_time}</div>
+<div style="font-size:11.5px; color:#cbd5e1;">🔒 15m Pine Grid Anchor: {anchor_str} ({bar_count} Bars) | {ist_time}</div>
 </div>
 </div>
 <div class="t-grid">
 <div>
 <div style="margin-bottom:14px; background:#1e293b; padding:12px; border-radius:10px; border:1px solid #334155;">
 <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; margin-bottom:6px;">
-<span style="color:#22c55e;">🟢 5m 3-Bar Candle Flow: {buy_pct}%</span>
+<span style="color:#22c55e;">🟢 15m 3-Bar Candle Flow: {buy_pct}%</span>
 <span style="color:#e2e8f0;">Imbalance: {imbalance:+.2f}</span>
 <span style="color:#ef4444;">Sell Flow: {sell_pct}% 🔴</span>
 </div>
@@ -1644,7 +1636,7 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (5m Pine-Script Clone • Divisor 10 • ₹350 TP / ₹200 SL)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (15m Pine-Script Clone • Divisor 10 • ₹350 TP / ₹200 SL)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">23H/Daily Range | 1 Brick (Div 10)</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Renko Step (rClose) | ST Line</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">{r_close:,.1f} | ST: {st_line:,.1f}</td></tr>
@@ -1661,7 +1653,7 @@ while True:
 <div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%; box-sizing:border-box;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (5m Pine-Script Clone)</span>
+<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (15m Pine-Script Clone)</span>
 <span style="font-size:11px; color:#94a3b8;">Blocked Late: {eng['blocked_late']}</span>
 </div>
 <div style="max-height:460px; overflow-y:auto;">
