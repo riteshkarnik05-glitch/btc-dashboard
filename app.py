@@ -3,6 +3,8 @@ import requests
 import time
 import threading
 import json
+import hmac
+import hashlib
 from datetime import datetime, timedelta
 import math
 
@@ -31,8 +33,11 @@ div.stButton > button:hover {
 }
 </style>""", unsafe_allow_html=True)
 
-DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
-DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
+# ============================================================================
+# DELTA EXCHANGE DEMO API & SERVER IP HELPER
+# ============================================================================
+DELTA_API_KEY    = "YOUR_NEW_API_KEY"
+DELTA_API_SECRET = "YOUR_NEW_API_SECRET"
 DELTA_URLS       = [
     "https://cdn-ind.testnet.deltaex.org",
     "https://testnet-api.delta.exchange"
@@ -56,10 +61,10 @@ def delta_request(method, path, payload_dict=None):
         try:
             timestamp = str(int(time.time()))
             sig_data = method.upper() + timestamp + path + body_str
-            signature = __import__('hmac').new(
+            signature = hmac.new(
                 DELTA_API_SECRET.encode("utf-8"),
                 sig_data.encode("utf-8"),
-                __import__('hashlib').sha256
+                hashlib.sha256
             ).hexdigest()
             headers = {
                 "api-key": DELTA_API_KEY,
@@ -122,19 +127,23 @@ def init_delta_product_id(eng):
 # ============================================================================
 # 15m SETUP PARAMETERS (10 Qty: 7Q TP1 @ ₹400 + 3Q Runner & SL ₹200)
 # ============================================================================
-SIGNAL_TF            = "15m"  
-TOTAL_QTY            = 10     
-TP1_BOOK_QTY         = 7      
-RUNNER_QTY           = 3      
-USD_INR_RATE         = 85.0   
+SIGNAL_TF            = "15m"
+TOTAL_QTY            = 10
+TP1_BOOK_QTY         = 7
+RUNNER_QTY           = 3
+USD_INR_RATE         = 85.0
 
-SL_RUPEES_10Q        = 200.0  
-TARGET_RUPEES_10Q    = 400.0  
+# 🎯 1:2 Risk-Reward Ratio (SL: ₹200 | Target: ₹400)
+SL_RUPEES_10Q        = 200.0
+TARGET_RUPEES_10Q    = 400.0
 
-FIXED_SL_BTC_PTS     = round((SL_RUPEES_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)      # 235.3 pts
-FIXED_TP1_BTC_PTS    = round((TARGET_RUPEES_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)  # 470.6 pts
-RUNNER_LOCK_PTS      = FIXED_SL_BTC_PTS                                                     # +235.3 pts
-FIXED_TP2_BTC_PTS    = round(FIXED_TP1_BTC_PTS * 1.50, 1)                                   # +705.9 pts
+FIXED_SL_BTC_PTS     = round((SL_RUPEES_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)
+FIXED_TP1_BTC_PTS    = round((TARGET_RUPEES_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)
+RUNNER_LOCK_PTS      = FIXED_SL_BTC_PTS
+MID_LOCK_PTS         = round(FIXED_TP1_BTC_PTS * 1.25, 1)
+FIXED_TP2_BTC_PTS    = round(FIXED_TP1_BTC_PTS * 1.50, 1)
+
+TP2_BRICKS           = 3.0
 
 USE_TRAIL_BEYOND_TP2 = True
 TRAIL_LOCK_BRICKS    = 0.8
@@ -192,10 +201,7 @@ def fetch_hl_klines(interval="15m", num_bars=20):
                     klines = []
                     for k in data:
                         t_ms = int(k["t"])
-                        o_val = float(k["o"])
-                        h_val = float(k["h"])
-                        l_val = float(k["l"])
-                        c_val = float(k["c"])
+                        o_val, h_val, l_val, c_val = float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"])
                         v_raw = float(k.get("v", 0.0))
                         v_safe = v_raw if v_raw > 0 else max(0.01, (h_val - l_val) * 0.1)
                         klines.append([t_ms, o_val, h_val, l_val, c_val, v_safe])
@@ -374,6 +380,9 @@ def process_single_closed_bar(eng, kline):
 
     eval_price = (c * 0.70 + g_val * 0.30) if USE_GAUSSIAN else c
 
+    brick_step_up = False
+    brick_step_dn = False
+
     if idx == 0:
         eng["brick_top"] = c
         eng["brick_bot"] = c - box_size
@@ -390,6 +399,7 @@ def process_single_closed_bar(eng, kline):
             else:
                 eng["brick_streak"] += steps
             eng["brick_dir"] = 1
+            brick_step_up = True
         elif eval_price <= eng["brick_bot"] - box_size:
             steps = int(math.floor((eng["brick_bot"] - eval_price) / box_size))
             eng["brick_bot"] = eng["brick_bot"] - (steps * box_size)
@@ -399,6 +409,7 @@ def process_single_closed_bar(eng, kline):
             else:
                 eng["brick_streak"] += steps
             eng["brick_dir"] = -1
+            brick_step_dn = True
 
     r_close = eng["brick_top"] if eng["brick_dir"] == 1 else eng["brick_bot"]
     eng["r_close"] = r_close
@@ -674,10 +685,11 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_15m_clean_v8_engine():
+def get_hl_15m_clean_v7_engine():
     eng = {
         "initialized": False, "bar_count": 0, "last_bar_time": 0, "anchor_time_str": "--",
         "prev_close": 0.0, "tr_sum": 0.0, "atr14": 15.0, "ema21": 0.0, "rsi14": 50.0,
+        "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0,
         "g1": 0.0, "g2": 0.0, "buy_v1": 0.0, "buy_v2": 0.0, "sell_v1": 0.0, "sell_v2": 0.0,
         "buy_dom_pct": 50.0, "sell_dom_pct": 50.0, "macro_range": None, "safe_range": 2500.0,
         "box_size": 250.0, "brick_top": 0.0, "brick_bot": 0.0, "brick_dir": 1, "brick_streak": 1,
@@ -690,12 +702,12 @@ def get_hl_15m_clean_v8_engine():
         "gross_profit": 0.0, "gross_loss": 0.0, "total_brok": 0.0, "price": 0.0, "ist_time": "--:--:--",
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है", "last_result_color": "#334155", "history": [],
         "order_book": {"best_bid": 0.0, "best_ask": 0.0, "mid_price": 0.0, "spread": 0.0},
-        "spike_history": [], "delta_btc_product_id": 27, "delta_status": "🤖 Delta Demo Algo: Ready (15m Light Renko 10Q Active)", "error": None
+        "spike_history": [], "delta_btc_product_id": 27, "delta_status": "🤖 Delta Demo Algo: Ready (15m Clean Renko 10Q Active)", "error": None
     }
     threading.Thread(target=background_worker, args=(eng,), daemon=True).start()
     return eng
 
-eng = get_hl_15m_clean_v8_engine()
+eng = get_hl_15m_clean_v7_engine()
 server_ip = get_server_public_ip()
 
 top_col1, top_col2, top_col3 = st.columns([0.52, 0.24, 0.24])
@@ -714,7 +726,7 @@ terminal = st.empty()
 while True:
     try:
         if not eng["initialized"] or eng["price"] == 0.0:
-            terminal.info("⏳ Dr Devendra AI-Renko PRO (15m Lightweight): 25-Day 15m Grid और स्पेशल रैंकों सुपरट्रेंड लोड हो रहा है...")
+            terminal.info("⏳ Dr Devendra AI-Renko PRO (15m): 25-Day 15m Grid और स्पेशल रैंकों सुपरट्रेंड लोड हो रहा है...")
             time.sleep(1)
             continue
 
@@ -744,6 +756,9 @@ while True:
         st_badge_col = "#00c891" if st_trend == 1 else "#f03769"
         brick_dir_txt = "🟢 Up Brick" if brick_dir == 1 else "🔴 Down Brick"
 
+        tp_label = f"TP1 (₹{TARGET_RUPEES_10Q:.0f} / +{FIXED_TP1_BTC_PTS:.0f}p)"
+        sl_cap_label = f"₹{SL_RUPEES_10Q:.0f} SL Cap (-{FIXED_SL_BTC_PTS:.0f}p)"
+
         if eng["trade_dir"] != 0:
             t_type = "LONG" if eng["trade_dir"] == 1 else "SHORT"
             entry = eng["entry_price"]
@@ -768,7 +783,7 @@ while True:
                 sl_tag = "Runner SL (3Q)"
             else:
                 status_label = f"🔥 ACTIVE 15m {t_type} (10 Qty Open | {eng['entry_tag']} @ {eng['entry_time_str']})"
-                sl_tag = "₹200 SL Cap (-235p)"
+                sl_tag = sl_cap_label
 
             trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
@@ -782,35 +797,35 @@ while True:
 </div>
 <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; color:#cbd5e1; font-size:12px; background:#0f172a; padding:10px; border-radius:8px; text-align:center;">
 <div>Entry (10Q)<br><b style="color:#ffffff; font-size:14px;">{entry:,.1f}</b></div>
-<div>TP1 (₹350 / +412p)<br><b style="color:#22c55e; font-size:14px;">{tp1:,.1f}</b></div>
+<div>{tp_label}<br><b style="color:#22c55e; font-size:14px;">{tp1:,.1f}</b></div>
 <div>TP2 (Trail 3Q)<br><b style="color:#38bdf8; font-size:14px;">{tp2:,.1f}</b></div>
 <div>{sl_tag}<br><b style="color:#ef4444; font-size:14px;">{sl:,.1f}</b></div>
 </div>
 </div>"""
         else:
             trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR 15m RENKO SUPERTREND SIGNAL (DIVISOR 10 • TARGET ₹350 • SL CAP ₹200)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR 15m RENKO SUPERTREND SIGNAL (DIVISOR 10 • TARGET ₹{TARGET_RUPEES_10Q:.0f} • SL CAP ₹{SL_RUPEES_10Q:.0f})</div>
 <div style="color:#facc15; font-size:12px; margin-top:4px; font-weight:bold;">🧱 Renko Step Line (rClose): {r_close:,.1f} ({brick_dir_txt} #{brick_streak}) | 🛡️ Renko ST Line: {st_line:,.1f}</div>
-<div style="color:#94a3b8; font-size:12px; margin-top:3px;">EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b> | Max Streak Allowed: <b>4</b></div>
+<div style="color:#94a3b8; font-size:12px; margin-top:3px;">EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b> | Max Streak Allowed: <b>{MAX_BRICK_STREAK}</b></div>
 </div>"""
 
         rows_html = ""
         if not eng["history"]:
             rows_html = """<tr><td colspan="5" style="text-align:center; padding:15px; color:#64748b;">अभी कोई 15m ट्रेड क्लोज नहीं हुआ है</td></tr>"""
         else:
-            for h in eng["history"]:
-                h_col = h.get("color", "#22c55e")
+            for hrow in eng["history"]:
+                h_col = hrow.get("color", "#22c55e")
                 rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:12px;">
-<td style="padding:8px 6px; color:#94a3b8;">{h['time']}</td>
-<td style="padding:8px 6px; font-weight:bold; color:#f8fafc;">{h['type']}</td>
-<td style="padding:8px 6px; color:#cbd5e1;">{h['entry']:,.1f} → {h['exit']:,.1f}</td>
-<td style="padding:8px 6px; color:{h_col}; font-weight:bold;">{h['status']}</td>
-<td style="padding:8px 6px; color:{h_col}; font-weight:bold; text-align:right;">{h['pnl']}</td>
+<td style="padding:8px 6px; color:#94a3b8;">{hrow['time']}</td>
+<td style="padding:8px 6px; font-weight:bold; color:#f8fafc;">{hrow['type']}</td>
+<td style="padding:8px 6px; color:#cbd5e1;">{hrow['entry']:,.1f} → {hrow['exit']:,.1f}</td>
+<td style="padding:8px 6px; color:{h_col}; font-weight:bold;">{hrow['status']}</td>
+<td style="padding:8px 6px; color:{h_col}; font-weight:bold; text-align:right;">{hrow['pnl']}</td>
 </tr>"""
 
         net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
         wr_color = "#00e676" if win_rate >= 60.0 else "#facc15"
-        setup_str = f"Target: ₹350 (+{FIXED_TP1_BTC_PTS:.0f}p/Q) | SL Cap: ₹200 (-{FIXED_SL_BTC_PTS:.0f}p/Q)"
+        setup_str = f"Target: ₹{TARGET_RUPEES_10Q:.0f} (+{FIXED_TP1_BTC_PTS:.0f}p/Q) | SL Cap: ₹{SL_RUPEES_10Q:.0f} (-{FIXED_SL_BTC_PTS:.0f}p/Q)"
 
         raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div style="display:flex; justify-content:space-between; align-items:center; background:#111827; border:1px solid #eab308; border-radius:10px; padding:8px 14px; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
@@ -846,7 +861,7 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (15m Timeframe • Pine-Script Clone • ₹350 TP / ₹200 SL)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (15m Timeframe • Pine-Script Clone • ₹{TARGET_RUPEES_10Q:.0f} TP / ₹{SL_RUPEES_10Q:.0f} SL)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">23H/Daily Range | 1 Brick (Div 10)</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Renko Step (rClose) | ST Line</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">{r_close:,.1f} | ST: {st_line:,.1f}</td></tr>
@@ -856,7 +871,7 @@ while True:
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts (₹{pts_to_inr(eng['gross_profit']):+,.0f})</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Loss (10 Qty)</td><td style="padding:6px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.1f} pts (-₹{pts_to_inr(eng['gross_loss']):,.0f})</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Brokerage/Tax (10 Qty)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts (-₹{pts_to_inr(eng['total_brok']):,.0f})</td></tr>
-<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts (₹{pts_to_inr(net_pnl):+,.0f})</td></tr>
+<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts (₹{pts_to_inr(net_pnl):+,.0f})</td></tr>
 </table>
 </div>
 </div>
@@ -887,6 +902,10 @@ while True:
 </div>
 </div>"""
 
-    clean_html = "\n".join(line.strip() for line in raw_html.splitlines() if line.strip())
-    terminal.markdown(clean_html, unsafe_allow_html=True)
-    time.sleep(2)
+        clean_html = "\n".join(line.strip() for line in raw_html.splitlines() if line.strip())
+        terminal.markdown(clean_html, unsafe_allow_html=True)
+        time.sleep(2)
+
+    except Exception as e:
+        terminal.error(f"⚠️ Display Error: {e}")
+        time.sleep(3)
