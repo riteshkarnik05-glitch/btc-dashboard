@@ -31,9 +31,6 @@ div.stButton > button:hover {
 }
 </style>""", unsafe_allow_html=True)
 
-# ============================================================================
-# DELTA EXCHANGE DEMO API & SERVER IP HELPER
-# ============================================================================
 DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
 DELTA_URLS       = [
@@ -131,14 +128,12 @@ TP1_BOOK_QTY         = 7
 RUNNER_QTY           = 3      
 USD_INR_RATE         = 85.0   
 
-# 🎯 1:2 Risk-Reward Ratio (SL: ₹200 | Target: ₹400)
 SL_RUPEES_10Q        = 200.0  
 TARGET_RUPEES_10Q    = 400.0  
 
 FIXED_SL_BTC_PTS     = round((SL_RUPEES_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)      # 235.3 pts
 FIXED_TP1_BTC_PTS    = round((TARGET_RUPEES_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)  # 470.6 pts
 RUNNER_LOCK_PTS      = FIXED_SL_BTC_PTS                                                     # +235.3 pts
-MID_LOCK_PTS         = round(FIXED_TP1_BTC_PTS * 1.25, 1)                                   # +588.2 pts
 FIXED_TP2_BTC_PTS    = round(FIXED_TP1_BTC_PTS * 1.50, 1)                                   # +705.9 pts
 
 USE_TRAIL_BEYOND_TP2 = True
@@ -197,7 +192,10 @@ def fetch_hl_klines(interval="15m", num_bars=20):
                     klines = []
                     for k in data:
                         t_ms = int(k["t"])
-                        o_val, h_val, l_val, c_val = float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"])
+                        o_val = float(k["o"])
+                        h_val = float(k["h"])
+                        l_val = float(k["l"])
+                        c_val = float(k["c"])
                         v_raw = float(k.get("v", 0.0))
                         v_safe = v_raw if v_raw > 0 else max(0.01, (h_val - l_val) * 0.1)
                         klines.append([t_ms, o_val, h_val, l_val, c_val, v_safe])
@@ -347,7 +345,7 @@ def process_single_closed_bar(eng, kline):
     u_wick = h - max(o, c)
     l_wick = min(o, c) - l
     body = abs(c - o)
-    bull_score = (c - low if 'low' in locals() else c - l) + (l_wick * 1.1) + (body * 0.85 if c > o else 0.0)
+    bull_score = (c - l) + (l_wick * 1.1) + (body * 0.85 if c > o else 0.0)
     bear_score = (h - c) + (u_wick * 1.1) + (body * 0.85 if c < o else 0.0)
     bull_pow = math.pow(max(bull_score / rng, 0.01), 1.8)
     bear_pow = math.pow(max(bear_score / rng, 0.01), 1.8)
@@ -536,7 +534,7 @@ def process_single_closed_bar(eng, kline):
                     eng["last_result_color"] = "#991b1b"
                     eng["history"].insert(0, {
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)} (-₹{pts_to_inr(total_loss_10q):,.0f})", "color": "#ef4444"
+                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)} (-₹{pts_to_inr(total_loss_10q):+,.0f})", "color": "#ef4444"
                     })
                     eng["history"] = eng["history"][:40]
                     place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko 15m SL Exit (10Q)", reduce_only=True)
@@ -676,7 +674,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_15m_clean_v7_engine():
+def get_hl_15m_clean_v8_engine():
     eng = {
         "initialized": False, "bar_count": 0, "last_bar_time": 0, "anchor_time_str": "--",
         "prev_close": 0.0, "tr_sum": 0.0, "atr14": 15.0, "ema21": 0.0, "rsi14": 50.0,
@@ -692,12 +690,12 @@ def get_hl_15m_clean_v7_engine():
         "gross_profit": 0.0, "gross_loss": 0.0, "total_brok": 0.0, "price": 0.0, "ist_time": "--:--:--",
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है", "last_result_color": "#334155", "history": [],
         "order_book": {"best_bid": 0.0, "best_ask": 0.0, "mid_price": 0.0, "spread": 0.0},
-        "spike_history": [], "delta_btc_product_id": 27, "delta_status": "🤖 Delta Demo Algo: Ready (15m Clean Renko 10Q Active)", "error": None
+        "spike_history": [], "delta_btc_product_id": 27, "delta_status": "🤖 Delta Demo Algo: Ready (15m Light Renko 10Q Active)", "error": None
     }
     threading.Thread(target=background_worker, args=(eng,), daemon=True).start()
     return eng
 
-eng = get_hl_15m_clean_v7_engine()
+eng = get_hl_15m_clean_v8_engine()
 server_ip = get_server_public_ip()
 
 top_col1, top_col2, top_col3 = st.columns([0.52, 0.24, 0.24])
@@ -716,7 +714,7 @@ terminal = st.empty()
 while True:
     try:
         if not eng["initialized"] or eng["price"] == 0.0:
-            terminal.info("⏳ Dr Devendra AI-Renko PRO (15m): 45-Day 15m Grid और स्पेशल रैंकों सुपरट्रेंड लोड हो रहा है...")
+            terminal.info("⏳ Dr Devendra AI-Renko PRO (15m Lightweight): 25-Day 15m Grid और स्पेशल रैंकों सुपरट्रेंड लोड हो रहा है...")
             time.sleep(1)
             continue
 
@@ -858,7 +856,7 @@ while True:
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts (₹{pts_to_inr(eng['gross_profit']):+,.0f})</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Loss (10 Qty)</td><td style="padding:6px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.1f} pts (-₹{pts_to_inr(eng['gross_loss']):,.0f})</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Brokerage/Tax (10 Qty)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts (-₹{pts_to_inr(eng['total_brok']):,.0f})</td></tr>
-<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts (₹{pts_to_inr(net_pnl):+,.0f})</td></tr>
+<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts (₹{pts_to_inr(net_pnl):+,.0f})</td></tr>
 </table>
 </div>
 </div>
