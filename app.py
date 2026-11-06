@@ -125,7 +125,7 @@ def init_delta_product_id(eng):
             pass
 
 # ============================================================================
-# 15m SETUP PARAMETERS (SIGNAL-ONLY: कोई TP/SL नहीं, सिर्फ़ Supertrend flip)
+# 15m SETUP PARAMETERS (Pine "Direct BUY/SELL" Mode: सिर्फ़ Supertrend flip)
 # ============================================================================
 SIGNAL_TF            = "15m"
 TOTAL_QTY            = 10
@@ -255,7 +255,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# PROCESSOR ENGINE (15m, SUPERTREND-SIGNAL ONLY)
+# PROCESSOR ENGINE (15m, DIRECT SUPERTREND FLIP-TO-FLIP)
 # ============================================================================
 def process_single_closed_bar(eng, kline):
     bar_time = int(kline[0])
@@ -430,27 +430,16 @@ def process_single_closed_bar(eng, kline):
     if st_flip_buy or st_flip_sell:
         eng["brick_streak"] = 1
 
-    if st_flip_buy:
-        eng["pending_flip_buy"] = True
-        eng["pending_flip_sell"] = False
-    if st_flip_sell:
-        eng["pending_flip_sell"] = True
-        eng["pending_flip_buy"] = False
-    if st_trend == -1:
-        eng["pending_flip_buy"] = False
-    if st_trend == 1:
-        eng["pending_flip_sell"] = False
-
     # ------------------------------------------------------------------
-    # EXIT: सिर्फ़ उल्टा Supertrend flip (कोई TP/SL नहीं)
+    # DIRECT MODE: हर Supertrend flip पर पुराना ट्रेड बंद + नया ट्रेड उल्टी दिशा में
     # ------------------------------------------------------------------
-    if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
-        t_dir = eng["trade_dir"]
-        t_label = "LONG" if t_dir == 1 else "SHORT"
-        close_side = "sell" if t_dir == 1 else "buy"
-        st_reversed = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
+    if st_flip_buy or st_flip_sell:
+        new_dir = 1 if st_flip_buy else -1
 
-        if st_reversed:
+        if eng["trade_dir"] != 0 and eng["trade_dir"] != new_dir:
+            t_dir = eng["trade_dir"]
+            t_label = "LONG" if t_dir == 1 else "SHORT"
+            close_side = "sell" if t_dir == 1 else "buy"
             pts_per_qty = (c - eng["entry_price"]) if t_dir == 1 else (eng["entry_price"] - c)
             total_pnl = pts_per_qty * TOTAL_QTY
             eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
@@ -460,15 +449,18 @@ def process_single_closed_bar(eng, kline):
                 eng["gross_profit"] += total_pnl
                 res_color_bg = "#166534"
                 res_color = "#22c55e"
-                res_status = "✅ ST FLIP EXIT (PROFIT)"
-                res_icon = "✅ Profit"
+                res_status = "✅ FLIP EXIT (PROFIT)"
+                res_icon = "✅ Flip Win"
             else:
                 eng["losses"] += 1
                 eng["gross_loss"] += abs(total_pnl)
                 res_color_bg = "#991b1b"
                 res_color = "#ef4444"
-                res_status = "🛑 ST FLIP EXIT (LOSS)"
-                res_icon = "❌ Loss"
+                res_status = "🛑 FLIP EXIT (LOSS)"
+                res_icon = "❌ Flip Loss"
+
+            if total_pnl > eng["best_trade_pts"]:
+                eng["best_trade_pts"] = total_pnl
 
             eng["last_result"] = f"{res_icon} (10Q): {total_pnl:+,.1f} pts (₹{pts_to_inr(total_pnl):+,.0f})"
             eng["last_result_color"] = res_color_bg
@@ -478,41 +470,25 @@ def process_single_closed_bar(eng, kline):
                 "pnl": f"{total_pnl:+,.1f} (₹{pts_to_inr(total_pnl):+,.0f})", "color": res_color
             })
             eng["history"] = eng["history"][:40]
-            place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko 15m ST Flip Exit (10Q)", reduce_only=True)
+            place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko 15m Flip Exit (10Q)", reduce_only=True)
             eng["trade_dir"] = 0
             eng["open_qty"] = 0
 
-    # ------------------------------------------------------------------
-    # ENTRY: सिर्फ़ Supertrend flip सिग्नल (कन्फ़र्मेशन कैंडल के साथ)
-    # ------------------------------------------------------------------
-    rsi_val = eng["rsi14"]
-    candle_not_giant = (h - l) <= box_size * 1.85
-    bull_filter_ok   = candle_not_giant and buy_dom_pct >= 50.0 and rsi_val < 76.0
-    bear_filter_ok   = candle_not_giant and sell_dom_pct >= 50.0 and rsi_val > 24.0
+        if eng["trade_dir"] == 0:
+            is_long = (new_dir == 1)
+            eng["trade_dir"] = new_dir
+            eng["entry_bar"] = idx
+            eng["entry_price"] = c
+            eng["open_qty"] = TOTAL_QTY
+            eng["entry_tag"] = "🔥 Direct BUY" if is_long else "🔥 Direct SELL"
+            eng["entry_time_str"] = bar_ist
+            if is_long:
+                eng["long_trades"] += 1
+            else:
+                eng["short_trades"] += 1
 
-    trigger_flip_buy  = eng["pending_flip_buy"] and st_trend == 1 and bull_filter_ok and c > o
-    trigger_flip_sell = eng["pending_flip_sell"] and st_trend == -1 and bear_filter_ok and c < o
-
-    if eng["trade_dir"] == 0 and (trigger_flip_buy or trigger_flip_sell):
-        is_long = trigger_flip_buy
-        if is_long:
-            eng["pending_flip_buy"] = False
-        else:
-            eng["pending_flip_sell"] = False
-
-        eng["trade_dir"] = 1 if is_long else -1
-        eng["entry_bar"] = idx
-        eng["entry_price"] = c
-        eng["open_qty"] = TOTAL_QTY
-        eng["entry_tag"] = "🔥 15m ST Entry"
-        eng["entry_time_str"] = bar_ist
-        if is_long:
-            eng["long_trades"] += 1
-        else:
-            eng["short_trades"] += 1
-
-        entry_side = "buy" if is_long else "sell"
-        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko 15m ST Entry (10Q)")
+            entry_side = "buy" if is_long else "sell"
+            place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko 15m Flip Entry (10Q)")
 
     eng["prev_close"] = c
     eng["last_bar_time"] = bar_time
@@ -560,7 +536,7 @@ def background_worker(eng):
         time.sleep(1)
 
 @st.cache_resource
-def get_hl_15m_signal_only_engine():
+def get_hl_15m_direct_flip_engine():
     eng = {
         "initialized": False, "bar_count": 0, "last_bar_time": 0, "anchor_time_str": "--",
         "prev_close": 0.0, "tr_sum": 0.0, "atr14": 15.0, "ema21": 0.0, "rsi14": 50.0,
@@ -569,18 +545,17 @@ def get_hl_15m_signal_only_engine():
         "buy_dom_pct": 50.0, "sell_dom_pct": 50.0, "macro_range": None, "safe_range": 2500.0,
         "box_size": 250.0, "brick_top": 0.0, "brick_bot": 0.0, "brick_dir": 1, "brick_streak": 1,
         "r_close": 0.0, "support_band": None, "resistance_band": None, "st_trend": 1, "st_line": 0.0,
-        "pending_flip_buy": False, "pending_flip_sell": False, "trade_dir": 0, "entry_bar": -1,
-        "entry_price": 0.0, "open_qty": 0,
+        "trade_dir": 0, "entry_bar": -1, "entry_price": 0.0, "open_qty": 0,
         "entry_tag": "", "entry_time_str": "", "wins": 0, "losses": 0,
-        "long_trades": 0, "short_trades": 0,
+        "long_trades": 0, "short_trades": 0, "best_trade_pts": 0.0,
         "gross_profit": 0.0, "gross_loss": 0.0, "total_brok": 0.0, "price": 0.0, "ist_time": "--:--:--",
         "last_result": "अभी कोई ट्रेड क्लोज नहीं हुआ है", "last_result_color": "#334155", "history": [],
-        "delta_btc_product_id": 27, "delta_status": "🤖 Delta Demo Algo: Ready (15m Renko ST Signal-Only 10Q)", "error": None
+        "delta_btc_product_id": 27, "delta_status": "🤖 Delta Demo Algo: Ready (15m Renko Direct Flip 10Q)", "error": None
     }
     threading.Thread(target=background_worker, args=(eng,), daemon=True).start()
     return eng
 
-eng = get_hl_15m_signal_only_engine()
+eng = get_hl_15m_direct_flip_engine()
 server_ip = get_server_public_ip()
 
 top_col1, top_col2, top_col3 = st.columns([0.52, 0.24, 0.24])
@@ -640,7 +615,7 @@ while True:
             pnl_color = "#22c55e" if total_live_pnl >= 0 else "#ef4444"
             badge_bg = "#00af6e" if t_type == "LONG" else "#dc284b"
             status_label = f"🔥 ACTIVE 15m {t_type} (10 Qty | {eng['entry_tag']} @ {eng['entry_time_str']})"
-            exit_hint = "उल्टा ST Flip आने पर" if t_type == "LONG" else "उल्टा ST Flip आने पर"
+            exit_hint = "SELL ▼ flip पर" if t_type == "LONG" else "BUY ▲ flip पर"
 
             trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
@@ -650,12 +625,12 @@ while True:
 <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; color:#cbd5e1; font-size:12px; background:#0f172a; padding:10px; border-radius:8px; text-align:center;">
 <div>Entry (10Q)<br><b style="color:#ffffff; font-size:14px;">{entry:,.1f}</b></div>
 <div>Renko ST Line (संदर्भ)<br><b style="color:#facc15; font-size:14px;">{st_line:,.1f}</b></div>
-<div>Exit<br><b style="color:#38bdf8; font-size:13px;">{exit_hint}</b></div>
+<div>Exit + Reverse<br><b style="color:#38bdf8; font-size:13px;">{exit_hint}</b></div>
 </div>
 </div>"""
         else:
             trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR 15m RENKO SUPERTREND SIGNAL (SIGNAL-ONLY • NO TP/SL)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 पहले Supertrend FLIP का इंतज़ार (DIRECT MODE • NO TP/SL)</div>
 <div style="color:#facc15; font-size:12px; margin-top:4px; font-weight:bold;">🧱 Renko Step Line (rClose): {r_close:,.1f} ({brick_dir_txt} #{brick_streak}) | 🛡️ Renko ST Line: {st_line:,.1f}</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:3px;">EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b></div>
 </div>"""
@@ -684,7 +659,7 @@ while True:
 </div>
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [15-MINUTE • SUPERTREND SIGNAL-ONLY]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [15-MINUTE • DIRECT BUY/SELL FLIP MODE]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
@@ -711,10 +686,11 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY SIGNAL-ONLY TABLE (15m • Renko Supertrend Flip Entry/Exit)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY DIRECT FLIP TABLE (15m • Signal-to-Signal)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">23H/Daily Range | 1 Brick (Div 10)</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Renko Step (rClose) | ST Line</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">{r_close:,.1f} | ST: {st_line:,.1f}</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Best Flip Win</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">+{eng['best_trade_pts']:,.1f} pts (₹{pts_to_inr(eng['best_trade_pts']):+,.0f})</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:6px; color:#ffffff; font-weight:bold; text-align:right;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Win Rate % | Long / Short</td><td style="padding:6px; color:{wr_color}; font-weight:bold; text-align:right;">{win_rate:.1f}% | 🟢 {eng['long_trades']} / 🔴 {eng['short_trades']}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts (₹{pts_to_inr(eng['gross_profit']):+,.0f})</td></tr>
@@ -727,7 +703,7 @@ while True:
 <div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%; box-sizing:border-box;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (ST Signal-Only)</span>
+<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (Direct Flip)</span>
 </div>
 <div style="max-height:460px; overflow-y:auto;">
 <table style="width:100%; border-collapse:collapse;">
