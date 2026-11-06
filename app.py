@@ -534,7 +534,7 @@ def process_single_closed_bar(eng, kline):
                     eng["last_result_color"] = "#991b1b"
                     eng["history"].insert(0, {
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)} (-₹{pts_to_inr(total_loss_10q):+,.0f})", "color": "#ef4444"
+                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)} (-₹{pts_to_inr(total_loss_10q):,.0f})", "color": "#ef4444"
                     })
                     eng["history"] = eng["history"][:40]
                     place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko 15m SL Exit (10Q)", reduce_only=True)
