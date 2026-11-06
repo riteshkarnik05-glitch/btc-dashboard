@@ -8,7 +8,7 @@ import math
 import hmac
 import hashlib
 
-st.set_page_config(page_title="Dr Devendra AI-Renko Pro (Live Auto-Exit)", layout="wide")
+st.set_page_config(page_title="Dr Devendra AI-Renko Pro (Real Delta Fee & Live Exit)", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -87,14 +87,16 @@ def delta_request(method, path, payload_dict=None):
     return False, last_err
 
 def place_delta_demo_order(eng, side, qty, tag="Renko", is_exit=False):
-    # बैकटेस्ट (initialized=False) के दौरान ऑर्डर नहीं जाएगा, लाइव होते ही तुरंत जाएगा
+    # बैकटेस्ट के दौरान ऑर्डर नहीं जाएगा; और एग्जिट तभी जाएगा जब ट्रेड लाइव में लगा हो
     if not eng.get("initialized", False) or qty <= 0:
         return False
+    if is_exit and not eng.get("live_order_active", False):
+        return False
+
     try:
         prod_id = int(eng.get("delta_btc_product_id", 27))
         ist_now = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
 
-        # 1. पहले सामान्य ऑर्डर (यदि एग्जिट है तो पहले reduce_only ट्राई करें)
         payload = {
             "product_id": prod_id,
             "size": int(qty),
@@ -106,7 +108,7 @@ def place_delta_demo_order(eng, side, qty, tag="Renko", is_exit=False):
 
         ok, resp = delta_request("POST", "/v2/orders", payload)
 
-        # 2. बड़ा फिक्स: यदि reduce_only की वजह से डेल्टा ने एग्जिट रिजेक्ट किया, तो तुरंत डायरेक्ट काउंटर मार्केट ऑर्डर से पोजीशन काटें!
+        # यदि reduce_only की वजह से एग्जिट रिजेक्ट हो, तो तुरंत काउंटर मार्केट ऑर्डर भेजें
         if (not ok) and is_exit:
             payload_fallback = {
                 "product_id": prod_id,
@@ -140,13 +142,13 @@ def init_delta_product_id(eng):
             pass
 
 # ============================================================================
-# UNBOUNDED RENKO SUPERTREND SETUP (3Q FEE-COVER + 7Q BIG TREND RUNNER)
+# UNBOUNDED RENKO SUPERTREND SETUP + REAL DELTA CSV FEE (₹70 / 823.8 PTS)
 # ============================================================================
-SIGNAL_TF            = "15m"  # 15-Minute Timeframe (तेज सिग्नल + लाइव टिक एग्जिट)
-TOTAL_QTY            = 10     # कुल 10 लॉट
-TP1_BOOK_QTY         = 3      # 3 लॉट TP1 (0.85 Brick) पर तुरंत लाइव टिक पर बुक होंगे
-RUNNER_QTY           = 7      # 7 लॉट बड़ा ट्रेंड पकड़ेंगे और लाइव ट्रेल होंगे
-USD_INR_RATE         = 85.0
+SIGNAL_TF            = "15m"  # 15-Minute Timeframe (आप चाहें तो इसे "1h" या "5m" भी कर सकते हैं)
+TOTAL_QTY            = 10     # 10 Qty = 0.01 BTC (1 BTC pt move = $0.01 = ₹0.85)
+TP1_BOOK_QTY         = 3      # 3 लॉट TP1 (0.85 Brick) पर बुक होंगे ताकि ₹70 की पूरी फीस कवर हो जाए
+RUNNER_QTY           = 7      # 7 लॉट बड़ा रैंकों सुपरट्रेंड मूव पकड़ेंगे
+USD_INR_RATE         = 85.0   # 1 USD = ₹85
 
 USE_TRAIL_BEYOND_TP2 = True
 TRAIL_LOCK_BRICKS    = 0.8
@@ -169,11 +171,15 @@ MIN_VOL_DOM          = 55.0
 TP1_BRICKS           = 0.85   # 0.85 Brick पर 3Q बुक
 TP2_BRICKS           = 2.00   # 2.00 Bricks से 7Q पर लाइव ट्रेलिंग चालू
 SL_BRICKS            = 1.40
-SL_RUPEES_CAP_10Q    = 200.0  # ₹200 SL (-235.3 pts/Q)
-MAX_SL_PTS_PER_QTY   = round((SL_RUPEES_CAP_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)  # 235.3 pts
+SL_RUPEES_CAP_10Q    = 200.0  # ₹200 SL (-235.3 pts/Q = -2,353 lot-pts on 10Q)
+MAX_SL_PTS_PER_QTY   = round((SL_RUPEES_CAP_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)  # 235.3 pts/Q
 
 ANTI_WICK_SL         = True
-BROK_PER_QTY         = 1.5
+
+# 💰 आपकी Delta CSV से निकाली गई 100% असली ट्रेडिंग फीस:
+# 10 Qty पर 1 तरफ की फीस = $0.4119 (₹35.01) -> दोनों तरफ (Buy + Sell) = $0.8238 (₹70.02)
+# पॉइंट्स में: 82.38 pts प्रति Qty (10 Qty पर कुल 823.8 pts = ₹70.02 प्रति ट्रेड)
+BROK_PER_QTY         = 82.38
 MINTICK              = 0.1
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -319,7 +325,7 @@ def calc_daily_atr5(klines_1d):
     return rma[-2]
 
 # ============================================================================
-# ⚡ NEW: REAL-TIME INTRABAR LIVE TICK TP / SL AUTO-EXIT ENGINE (EVERY 2 SEC!)
+# REAL-TIME INTRABAR LIVE TICK TP / SL AUTO-EXIT ENGINE (EVERY 2 SEC!)
 # ============================================================================
 def check_live_intrabar_tp_sl(eng, live_px):
     if not eng.get("initialized", False) or eng["trade_dir"] == 0 or live_px <= 0:
@@ -331,23 +337,23 @@ def check_live_intrabar_tp_sl(eng, live_px):
     box_size = eng["box_size"]
     r_close = eng.get("r_close", live_px)
     now_ist = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%d %b %I:%M:%S %p")
+    brok_10q = BROK_PER_QTY * TOTAL_QTY
 
     eng["max_fav_price"] = max(eng["max_fav_price"], live_px) if t_dir == 1 else min(eng["max_fav_price"], live_px)
 
-    # 1. LIVE TICK TP1 CHECK -> तुरंत 3 लॉट बुक करें और 7 लॉट का SL कॉस्ट पर लॉक करें!
+    # 1. LIVE TICK TP1 CHECK -> तुरंत 3 लॉट बुक करें और 7 लॉट का SL कॉस्ट (+15 pts) पर लॉक करें
     hit_tp1_live = (not eng["tp1_reached"]) and ((live_px >= eng["tp1_price"]) if t_dir == 1 else (live_px <= eng["tp1_price"]))
     if hit_tp1_live:
         eng["tp1_reached"] = True
         eng["wins"] += 1
         eng["booked_pnl_10q"] = eng["locked_tp1_pts"] * TP1_BOOK_QTY
         eng["gross_profit"] += eng["booked_pnl_10q"]
-        eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
+        eng["total_brok"] += brok_10q
         eng["open_qty"] = RUNNER_QTY
-        # TP1 हिट होते ही 7 लॉट रनर का SL कॉस्ट (+15 pts) पर सुरक्षित कर दें
         eng["stop_price"] = (eng["entry_price"] + 15.0) if t_dir == 1 else (eng["entry_price"] - 15.0)
         place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag=f"Live TP1 ({TP1_BOOK_QTY}Q)", is_exit=True)
 
-    # 2. LIVE TICK TP2 CHECK -> 7 लॉट पर अनलिमिटेड ट्रेलिंग चालू!
+    # 2. LIVE TICK TP2 CHECK -> 7 लॉट पर अनलिमिटेड ट्रेलिंग चालू
     hit_tp2_live = eng["tp1_reached"] and (not eng["tp2_reached"]) and ((live_px >= eng["tp2_price"]) if t_dir == 1 else (live_px <= eng["tp2_price"]))
     if hit_tp2_live:
         eng["tp2_reached"] = True
@@ -371,21 +377,24 @@ def check_live_intrabar_tp_sl(eng, live_px):
 
             eng["gross_profit"] += runner_pnl_7q
             total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl_7q
+            net_after_fee = total_trade_pnl - brok_10q
             eng["max_single_run"] = max(eng["max_single_run"], safe_run_pts)
 
-            eng["last_result"] = f"🚀 Live Trail Exit (10Q): +{fmt_pts(total_trade_pnl)} pts (₹{pts_to_inr(total_trade_pnl):+,.0f})"
+            eng["last_result"] = f"🚀 Live Trail Exit (10Q): +{fmt_pts(total_trade_pnl)}p (Net ₹{pts_to_inr(net_after_fee):+,.0f})"
             eng["last_result_color"] = "#0369a1"
             eng["history"].insert(0, {
                 "time": now_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                "exit": exit_p, "status": f"🚀 {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q LIVE TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)} (₹{pts_to_inr(total_trade_pnl):+,.0f})", "color": "#38bdf8"
+                "exit": exit_p, "status": f"🚀 {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q LIVE TRAIL",
+                "pnl": f"+{fmt_pts(total_trade_pnl)} (Net ₹{pts_to_inr(net_after_fee):+,.0f})", "color": "#38bdf8"
             })
             eng["history"] = eng["history"][:40]
             place_delta_demo_order(eng, close_side, RUNNER_QTY, tag=f"Live Trail Exit ({RUNNER_QTY}Q)", is_exit=True)
             eng["trade_dir"] = 0
             eng["open_qty"] = 0
+            eng["live_order_active"] = False
             return
 
-    # 4. LIVE TICK STOP-LOSS EXIT (TP1 से पहले या TP1 के बाद)
+    # 4. LIVE TICK STOP-LOSS EXIT
     if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
         hit_live_sl = (live_px <= eng["stop_price"]) if t_dir == 1 else (live_px >= eng["stop_price"])
         if hit_live_sl:
@@ -394,13 +403,15 @@ def check_live_intrabar_tp_sl(eng, live_px):
                 loss_per_qty = eng["locked_sl_pts"]
                 total_loss_10q = loss_per_qty * TOTAL_QTY
                 eng["gross_loss"] += total_loss_10q
-                eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
+                eng["total_brok"] += brok_10q
+                net_loss_after_fee = -(total_loss_10q + brok_10q)
 
-                eng["last_result"] = f"🛑 Live SL Exit (10Q): -{fmt_pts(total_loss_10q)} pts (-₹{pts_to_inr(total_loss_10q):,.0f})"
+                eng["last_result"] = f"🛑 Live SL Exit (10Q): -{fmt_pts(total_loss_10q)}p (Net ₹{pts_to_inr(net_loss_after_fee):+,.0f})"
                 eng["last_result_color"] = "#991b1b"
                 eng["history"].insert(0, {
                     "time": now_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                    "exit": live_px, "status": "🛑 LIVE SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)} (-₹{pts_to_inr(total_loss_10q):,.0f})", "color": "#ef4444"
+                    "exit": live_px, "status": "🛑 LIVE SL HIT (10Q)",
+                    "pnl": f"-{fmt_pts(total_loss_10q)} (Net ₹{pts_to_inr(net_loss_after_fee):+,.0f})", "color": "#ef4444"
                 })
                 eng["history"] = eng["history"][:40]
                 place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Live SL Exit (10Q)", is_exit=True)
@@ -409,18 +420,21 @@ def check_live_intrabar_tp_sl(eng, live_px):
                 runner_pnl_7q = runner_pts * RUNNER_QTY
                 eng["gross_profit"] += runner_pnl_7q
                 total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl_7q
+                net_after_fee = total_trade_pnl - brok_10q
 
-                eng["last_result"] = f"✅ Live Runner Exit (10Q): +{fmt_pts(total_trade_pnl)} pts (₹{pts_to_inr(total_trade_pnl):+,.0f})"
+                eng["last_result"] = f"✅ Live Runner Exit (10Q): +{fmt_pts(total_trade_pnl)}p (Net ₹{pts_to_inr(net_after_fee):+,.0f})"
                 eng["last_result_color"] = "#166534"
                 eng["history"].insert(0, {
                     "time": now_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                    "exit": live_px, "status": f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q COST EXIT", "pnl": f"+{fmt_pts(total_trade_pnl)} (₹{pts_to_inr(total_trade_pnl):+,.0f})", "color": "#22c55e"
+                    "exit": live_px, "status": f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q COST EXIT",
+                    "pnl": f"+{fmt_pts(total_trade_pnl)} (Net ₹{pts_to_inr(net_after_fee):+,.0f})", "color": "#22c55e"
                 })
                 eng["history"] = eng["history"][:40]
                 place_delta_demo_order(eng, close_side, RUNNER_QTY, tag=f"Live Runner Exit ({RUNNER_QTY}Q)", is_exit=True)
 
             eng["trade_dir"] = 0
             eng["open_qty"] = 0
+            eng["live_order_active"] = False
 
 # ============================================================================
 # 100% PINE SCRIPT V5 CLONE PROCESSOR (HISTORICAL & BAR-CLOSE ENGINE)
@@ -436,6 +450,7 @@ def process_single_closed_bar(eng, kline):
     c = float(kline[4])
     v = float(kline[5])
     bar_ist = (datetime.utcfromtimestamp(bar_time / 1000.0) + timedelta(hours=5, minutes=30)).strftime("%d %b %I:%M %p")
+    brok_10q = BROK_PER_QTY * TOTAL_QTY
 
     idx = eng["bar_count"]
 
@@ -629,7 +644,7 @@ def process_single_closed_bar(eng, kline):
             eng["wins"] += 1
             eng["booked_pnl_10q"] = eng["locked_tp1_pts"] * TP1_BOOK_QTY
             eng["gross_profit"] += eng["booked_pnl_10q"]
-            eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
+            eng["total_brok"] += brok_10q
             eng["open_qty"] = RUNNER_QTY
             eng["stop_price"] = (eng["entry_price"] + 15.0) if t_dir == 1 else (eng["entry_price"] - 15.0)
             place_delta_demo_order(eng, close_side, TP1_BOOK_QTY, tag=f"Renko TP1 ({TP1_BOOK_QTY}Q)", is_exit=True)
@@ -659,18 +674,21 @@ def process_single_closed_bar(eng, kline):
 
                 eng["gross_profit"] += runner_pnl_7q
                 total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl_7q
+                net_after_fee = total_trade_pnl - brok_10q
                 eng["max_single_run"] = max(eng["max_single_run"], safe_run_pts)
 
-                eng["last_result"] = f"🚀 Big Trend Exit (10Q): +{fmt_pts(total_trade_pnl)} pts (₹{pts_to_inr(total_trade_pnl):+,.0f})"
+                eng["last_result"] = f"🚀 Big Trend Exit (10Q): +{fmt_pts(total_trade_pnl)}p (Net ₹{pts_to_inr(net_after_fee):+,.0f})"
                 eng["last_result_color"] = "#0369a1"
                 eng["history"].insert(0, {
                     "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                    "exit": exit_p, "status": f"🚀 {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q BIG TRAIL", "pnl": f"+{fmt_pts(total_trade_pnl)} (₹{pts_to_inr(total_trade_pnl):+,.0f})", "color": "#38bdf8"
+                    "exit": exit_p, "status": f"🚀 {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q BIG TRAIL",
+                    "pnl": f"+{fmt_pts(total_trade_pnl)} (Net ₹{pts_to_inr(net_after_fee):+,.0f})", "color": "#38bdf8"
                 })
                 eng["history"] = eng["history"][:40]
                 place_delta_demo_order(eng, close_side, RUNNER_QTY, tag=f"Renko Trail Exit ({RUNNER_QTY}Q)", is_exit=True)
                 eng["trade_dir"] = 0
                 eng["open_qty"] = 0
+                eng["live_order_active"] = False
 
         if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
             if not eng["tp1_reached"]:
@@ -695,18 +713,21 @@ def process_single_closed_bar(eng, kline):
                         loss_per_qty = max_cap_pts
                     total_loss_10q = loss_per_qty * TOTAL_QTY
                     eng["gross_loss"] += total_loss_10q
-                    eng["total_brok"] += (BROK_PER_QTY * TOTAL_QTY)
+                    eng["total_brok"] += brok_10q
+                    net_loss_after_fee = -(total_loss_10q + brok_10q)
 
-                    eng["last_result"] = f"❌ SL (10Q): -{fmt_pts(total_loss_10q)} pts (-₹{pts_to_inr(total_loss_10q):,.0f})"
+                    eng["last_result"] = f"❌ SL (10Q): -{fmt_pts(total_loss_10q)}p (Net ₹{pts_to_inr(net_loss_after_fee):+,.0f})"
                     eng["last_result_color"] = "#991b1b"
                     eng["history"].insert(0, {
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                        "exit": c, "status": "🛑 SL HIT (10Q)", "pnl": f"-{fmt_pts(total_loss_10q)} (-₹{pts_to_inr(total_loss_10q):,.0f})", "color": "#ef4444"
+                        "exit": c, "status": "🛑 SL HIT (10Q)",
+                        "pnl": f"-{fmt_pts(total_loss_10q)} (Net ₹{pts_to_inr(net_loss_after_fee):+,.0f})", "color": "#ef4444"
                     })
                     eng["history"] = eng["history"][:40]
                     place_delta_demo_order(eng, close_side, TOTAL_QTY, tag="Renko SL Exit (10Q)", is_exit=True)
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
+                    eng["live_order_active"] = False
             else:
                 close_hit_sl = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
                 st_turned_bad = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
@@ -716,17 +737,20 @@ def process_single_closed_bar(eng, kline):
                     runner_pnl_7q = runner_pts * RUNNER_QTY
                     eng["gross_profit"] += runner_pnl_7q
                     total_trade_pnl = eng["booked_pnl_10q"] + runner_pnl_7q
+                    net_after_fee = total_trade_pnl - brok_10q
 
-                    eng["last_result"] = f"✅ TP1 + ST Exit (10Q): +{fmt_pts(total_trade_pnl)} pts (₹{pts_to_inr(total_trade_pnl):+,.0f})"
+                    eng["last_result"] = f"✅ TP1 + ST Exit (10Q): +{fmt_pts(total_trade_pnl)}p (Net ₹{pts_to_inr(net_after_fee):+,.0f})"
                     eng["last_result_color"] = "#166534"
                     eng["history"].insert(0, {
                         "time": bar_ist, "type": f"{t_label} (10Q)", "entry": eng["entry_price"],
-                        "exit": c, "status": f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q ST EXIT", "pnl": f"+{fmt_pts(total_trade_pnl)} (₹{pts_to_inr(total_trade_pnl):+,.0f})", "color": "#22c55e"
+                        "exit": c, "status": f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q ST EXIT",
+                        "pnl": f"+{fmt_pts(total_trade_pnl)} (Net ₹{pts_to_inr(net_after_fee):+,.0f})", "color": "#22c55e"
                     })
                     eng["history"] = eng["history"][:40]
                     place_delta_demo_order(eng, close_side, RUNNER_QTY, tag=f"Renko Runner Close ({RUNNER_QTY}Q)", is_exit=True)
                     eng["trade_dir"] = 0
                     eng["open_qty"] = 0
+                    eng["live_order_active"] = False
 
     # ========================================================================
     # STEP 5B: NEW ENTRY SIGNALS (100% EXACT PINE SCRIPT)
@@ -765,9 +789,11 @@ def process_single_closed_bar(eng, kline):
             runner_pnl_7q = runner_pts * RUNNER_QTY
             eng["gross_profit"] += runner_pnl_7q
             tot_flip_pnl = eng["booked_pnl_10q"] + runner_pnl_7q
+            net_flip_after_fee = tot_flip_pnl - brok_10q
             eng["history"].insert(0, {
                 "time": bar_ist, "type": f"{old_label} (10Q)", "entry": eng["entry_price"],
-                "exit": c, "status": f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q ST FLIP", "pnl": f"+{fmt_pts(tot_flip_pnl)} (₹{pts_to_inr(tot_flip_pnl):+,.0f})", "color": "#22c55e"
+                "exit": c, "status": f"✅ {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q ST FLIP",
+                "pnl": f"+{fmt_pts(tot_flip_pnl)} (Net ₹{pts_to_inr(net_flip_after_fee):+,.0f})", "color": "#22c55e"
             })
             eng["history"] = eng["history"][:40]
             place_delta_demo_order(eng, old_close_side, RUNNER_QTY, tag=f"Renko Flip Close ({RUNNER_QTY}Q)", is_exit=True)
@@ -799,21 +825,29 @@ def process_single_closed_bar(eng, kline):
         eng["hard_stop_price"] = (c - box_size * 1.8) if is_long else (c + box_size * 1.8)
 
         entry_side = "buy" if is_long else "sell"
-        place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko Entry (10Q)", is_exit=False)
+        if eng.get("initialized", False):
+            eng["live_order_active"] = True
+            place_delta_demo_order(eng, entry_side, TOTAL_QTY, tag="Renko Entry (10Q)", is_exit=False)
+        else:
+            eng["live_order_active"] = False
 
     eng["prev_close"] = c
     eng["last_bar_time"] = bar_time
     eng["bar_count"] += 1
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (CHECKS LIVE TICK EXITS EVERY 2 SECONDS!)
+# 24x7 BACKGROUND WORKER (WITH ZOMBIE THREAD AUTO-STOPPER)
 # ============================================================================
-def background_worker(eng):
+def background_worker(eng, my_worker_id):
     last_1d_fetch = 0
     last_kline_fetch = 0
     init_delta_product_id(eng)
 
     while True:
+        # यदि नया थ्रेड शुरू हो गया है, तो पुराना थ्रेड तुरंत बंद हो जाएगा
+        if eng.get("active_worker_id") != my_worker_id:
+            break
+
         try:
             now_ts = time.time()
 
@@ -836,7 +870,7 @@ def background_worker(eng):
                     eng["initialized"] = True
                     last_kline_fetch = now_ts
 
-            # 1. हर 2 सेकंड में लाइव टिक प्राइस लाएं और तुरंत इंट्रा-बार TP/SL एग्जिट चेक करें!
+            # 1. हर 2 सेकंड में लाइव टिक प्राइस लाएं और तुरंत इंट्रा-बार TP/SL एग्जिट चेक करें
             if eng["initialized"]:
                 live_mid = fetch_hl_live_mid_price()
                 if live_mid and live_mid > 0:
@@ -861,9 +895,12 @@ def background_worker(eng):
         time.sleep(1.5)
 
 @st.cache_resource
-def get_hl_live_exit_renko_v10_engine():
+def get_hl_real_fee_renko_v11_engine():
+    worker_id = int(time.time() * 1000)
     eng = {
+        "active_worker_id": worker_id,
         "initialized": False,
+        "live_order_active": False,
         "bar_count": 0,
         "last_bar_time": 0,
         "anchor_time_str": "--",
@@ -929,14 +966,14 @@ def get_hl_live_exit_renko_v10_engine():
         "last_result_color": "#334155",
         "history": [],
         "delta_btc_product_id": 27,
-        "delta_status": f"🤖 Delta Demo Algo: Ready ({SIGNAL_TF.upper()} Live-Exit Active)",
+        "delta_status": f"🤖 Delta Demo Algo: Ready ({SIGNAL_TF.upper()} Real-Fee & Live-Exit Active)",
         "error": None
     }
-    thread = threading.Thread(target=background_worker, args=(eng,), daemon=True)
+    thread = threading.Thread(target=background_worker, args=(eng, worker_id), daemon=True)
     thread.start()
     return eng
 
-eng = get_hl_live_exit_renko_v10_engine()
+eng = get_hl_real_fee_renko_v11_engine()
 server_ip = get_server_public_ip()
 
 top_col1, top_col2, top_col3 = st.columns([0.52, 0.24, 0.24])
@@ -953,9 +990,11 @@ with top_col3:
     if st.button("🛑 Force Close Open Trade"):
         if eng["trade_dir"] != 0 and eng["open_qty"] > 0:
             close_side = "sell" if eng["trade_dir"] == 1 else "buy"
+            eng["live_order_active"] = True
             place_delta_demo_order(eng, close_side, eng["open_qty"], tag="Manual Force Exit", is_exit=True)
             eng["trade_dir"] = 0
             eng["open_qty"] = 0
+            eng["live_order_active"] = False
             eng["last_result"] = "🛑 मैनुअल फोर्स एग्जिट किया गया"
         else:
             eng["delta_status"] = "ℹ️ अभी कोई ओपन ट्रेड नहीं है"
@@ -963,13 +1002,13 @@ with top_col3:
 terminal = st.empty()
 
 # ============================================================================
-# ZERO-BLINK LIVE RENDERING LOOP
+# ZERO-BLINK LIVE RENDERING LOOP (REAL DELTA CSV FEE = ₹70 / 823.8 PTS PER 10Q)
 # ============================================================================
 while True:
     try:
         if not eng["initialized"] or eng["price"] == 0.0:
             err_txt = f" | Error: {eng['error']}" if eng.get("error") else ""
-            terminal.info(f"⏳ Dr Devendra AI-Renko PRO ({SIGNAL_TF.upper()} Live Auto-Exit): इंजन लोड हो रहा है...{err_txt}")
+            terminal.info(f"⏳ Dr Devendra AI-Renko PRO ({SIGNAL_TF.upper()} Real Fee & Live Exit): इंजन लोड हो रहा है...{err_txt}")
             time.sleep(1)
             continue
 
@@ -989,6 +1028,7 @@ while True:
         ist_time = eng["ist_time"]
         bar_count = eng["bar_count"]
         anchor_str = eng["anchor_time_str"]
+        brok_10q = BROK_PER_QTY * TOTAL_QTY
 
         tot_trades = eng["wins"] + eng["losses"]
         win_rate = (float(eng["wins"]) / float(tot_trades) * 100.0) if tot_trades > 0 else 0.0
@@ -1010,8 +1050,9 @@ while True:
             unit_pnl = (price - entry) if t_type == "LONG" else (entry - price)
             open_pnl = unit_pnl * open_qty
             total_live_pnl = booked_pnl + open_pnl
+            live_net_after_fee = total_live_pnl - brok_10q
 
-            pnl_color = "#22c55e" if total_live_pnl >= 0 else "#ef4444"
+            pnl_color = "#22c55e" if live_net_after_fee >= 0 else "#ef4444"
             badge_bg = "#00af6e" if t_type == "LONG" else "#dc284b"
 
             if eng["tp2_reached"]:
@@ -1027,12 +1068,12 @@ while True:
             trade_box_html = f"""<div style="background:#1e293b; border:2px solid {badge_bg}; border-radius:12px; padding:15px; margin-bottom:14px;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
 <span style="background:{badge_bg}; color:white; padding:5px 11px; border-radius:6px; font-weight:bold; font-size:13px;">{status_label}</span>
-<span style="color:{pnl_color}; font-size:22px; font-weight:800;">{total_live_pnl:+,.1f} pts (₹{pts_to_inr(total_live_pnl):+,.0f})</span>
+<span style="color:{pnl_color}; font-size:20px; font-weight:800;">Gross: {total_live_pnl:+,.1f}p | Net (Fee काटकर): ₹{pts_to_inr(live_net_after_fee):+,.0f}</span>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:10px; background:#0b1324; padding:6px 10px; border-radius:6px; flex-wrap:wrap; gap:6px;">
-<span>📦 Open Qty: <b style="color:#f8fafc;">{open_qty}/10</b></span>
+<span>📦 Open Qty: <b style="color:#f8fafc;">{open_qty}/10 (1p = ₹0.85)</b></span>
 <span>💰 Booked ({TP1_BOOK_QTY}Q @ TP1): <b style="color:#4ade80;">+{booked_pnl:,.1f}p (₹{pts_to_inr(booked_pnl):+,.0f})</b></span>
-<span>⚡ Big Trend Runner ({open_qty}Q): <b style="color:{pnl_color};">{open_pnl:+,.1f}p (₹{pts_to_inr(open_pnl):+,.0f})</b></span>
+<span>🧾 Real Trade Fee (10Q): <b style="color:#fca5a5;">-823.8p (-₹70)</b></span>
 </div>
 <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; color:#cbd5e1; font-size:12px; background:#0f172a; padding:10px; border-radius:8px; text-align:center;">
 <div>Entry (10Q)<br><b style="color:#ffffff; font-size:14px;">{entry:,.1f}</b></div>
@@ -1043,7 +1084,7 @@ while True:
 </div>"""
         else:
             trade_box_html = f"""<div style="background:#1e293b; border:1px dashed #475569; border-radius:12px; padding:16px; margin-bottom:14px; text-align:center;">
-<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR {SIGNAL_TF.upper()} RENKO SUPERTREND SIGNAL (LIVE AUTO-EXIT ACTIVE)</div>
+<div style="color:#38bdf8; font-weight:bold; font-size:15px;">🔍 WAITING FOR {SIGNAL_TF.upper()} RENKO SUPERTREND SIGNAL (10Q: 1 PT = ₹0.85 • REAL FEE = ₹70/TRADE)</div>
 <div style="color:#facc15; font-size:12px; margin-top:4px; font-weight:bold;">🧱 Renko Step Line (rClose): {r_close:,.1f} ({brick_dir_txt} #{brick_streak}) | 🛡️ Special Renko ST: {st_line:,.1f}</div>
 <div style="color:#94a3b8; font-size:12px; margin-top:3px;">EMA21: <b>{ema21:,.1f}</b> | RSI: <b>{rsi14:.1f}</b> | Max Single Trend Run: <b>+{eng['max_single_run']:,.1f} pts/Q</b></div>
 </div>"""
@@ -1064,12 +1105,12 @@ while True:
 
         net_color = "#00e676" if net_pnl >= 0 else "#ff5252"
         wr_color = "#00e676" if win_rate >= 55.0 else "#facc15"
-        setup_str = f"Live TP1({TP1_BOOK_QTY}Q): +{box_size * TP1_BRICKS:.0f}p | {RUNNER_QTY}Q Live ST Trail | Live SL: ₹200"
+        setup_str = f"Live TP1({TP1_BOOK_QTY}Q): +{box_size * TP1_BRICKS:.0f}p | {RUNNER_QTY}Q Live ST Trail | SL: ₹200 (-235p)"
 
         raw_html = f"""<div style="background:#0f172a; color:#f8fafc; padding:20px; border-radius:16px; border:1px solid #1e293b; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:sans-serif;">
 <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
 <div>
-<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [{SIGNAL_TF.upper()} • INSTANT 2-SEC LIVE AUTO-EXIT ENGINE]</div>
+<div style="font-size:12px; color:#38bdf8; font-weight:700;">⚡ DR DEVENDRA AI-RENKO PRO [{SIGNAL_TF.upper()} • REAL DELTA CSV FEE (₹70/TRADE) & LIVE AUTO-EXIT]</div>
 <div style="font-size:34px; font-weight:800; color:#ffffff; line-height:1.15;">${price:,.2f}</div>
 </div>
 <div style="text-align:right;">
@@ -1096,24 +1137,24 @@ while True:
 पिछला परिणाम: {eng['last_result']}
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:12px; border:1px solid #334155;">
-<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE ({SIGNAL_TF.upper()} • {TP1_BOOK_QTY}Q TP1 + {RUNNER_QTY}Q Live Trail)</div>
+<div style="font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:8px;">📊 10-QTY MASTER BACKTEST TABLE (Real Delta CSV Fee: ₹70 [$0.824] Per Trade)</div>
 <table style="width:100%; border-collapse:collapse; font-size:13px;">
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">23H/Daily Range | 1 Brick (Div 10)</td><td style="padding:6px; color:#facc15; font-weight:bold; text-align:right;">{safe_range:,.1f} pts | Brick: {box_size:,.1f} pts</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Renko Step (rClose) | ST Line</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">{r_close:,.1f} | ST: {st_line:,.1f}</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">10-Qty Point Value (CSV Verified)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">1 BTC Pt = $0.01 (₹0.85) | ₹1 = 1.18 Pts</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Live Auto-Exit Rule</td><td style="padding:6px; color:#38bdf8; font-weight:bold; text-align:right;">{setup_str}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:6px; color:#ffffff; font-weight:bold; text-align:right;">{tot_trades} ({eng['wins']}W / {eng['losses']}L)</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Win Rate % | Big 7Q Runners</td><td style="padding:6px; color:{wr_color}; font-weight:bold; text-align:right;">{win_rate:.1f}% | 🚀 Big Runners: {eng['tp2_hits']}</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Profit (10 Qty)</td><td style="padding:6px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.1f} pts (₹{pts_to_inr(eng['gross_profit']):+,.0f})</td></tr>
 <tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Gross Loss (10 Qty)</td><td style="padding:6px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.1f} pts (-₹{pts_to_inr(eng['gross_loss']):,.0f})</td></tr>
-<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Brokerage/Tax (10 Qty)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts (-₹{pts_to_inr(eng['total_brok']):,.0f})</td></tr>
-<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (10 Qty Total)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts (₹{pts_to_inr(net_pnl):+,.0f})</td></tr>
+<tr style="border-bottom:1px solid #334155;"><td style="padding:6px; color:#94a3b8;">Real Delta Fee (823.8p / ₹70 × {tot_trades} Trds)</td><td style="padding:6px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.1f} pts (-₹{pts_to_inr(eng['total_brok']):,.0f})</td></tr>
+<tr style="background:#0f172a;"><td style="padding:8px 6px; color:#ffffff; font-weight:bold;">NET PROFIT (After Real ₹70/Trade Fee)</td><td style="padding:8px 6px; color:{net_color}; font-weight:800; font-size:15px; text-align:right;">{net_pnl:+,.1f} pts (₹{pts_to_inr(net_pnl):+,.0f})</td></tr>
 </table>
 </div>
 </div>
 <div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155; height:100%; box-sizing:border-box;">
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग ({SIGNAL_TF.upper()} Live Auto-Exit)</span>
+<span style="font-size:14px; font-weight:bold; color:#f8fafc;">📜 10-Qty ट्रेड इतिहास लॉग (Net PnL After ₹70 Fee)</span>
 <span style="font-size:11px; color:#94a3b8;">Blocked Late: {eng['blocked_late']}</span>
 </div>
 <div style="max-height:460px; overflow-y:auto;">
@@ -1124,7 +1165,7 @@ while True:
 <th style="padding:6px;">ट्रेड</th>
 <th style="padding:6px;">Entry → Exit</th>
 <th style="padding:6px;">स्टेटस</th>
-<th style="padding:6px; text-align:right;">10Q PnL (₹)</th>
+<th style="padding:6px; text-align:right;">10Q Net PnL (₹)</th>
 </tr>
 </thead>
 <tbody>
