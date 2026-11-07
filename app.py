@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import time
+import threading
 import json
 from datetime import datetime, timedelta
 import math
@@ -8,7 +9,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra AI-Renko Turbo Fast & Big Trades (v16)", layout="wide")
+st.set_page_config(page_title="Dr Devendra AI-Quantum Pro Terminal", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -21,7 +22,7 @@ div.stButton > button {
     border-radius: 8px !important;
     font-weight: 700 !important;
     font-size: 12px !important;
-    padding: 6px 12px !important;
+    padding: 6px 10px !important;
     width: 100% !important;
 }
 div.stButton > button:hover {
@@ -31,9 +32,9 @@ div.stButton > button:hover {
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
-# DELTA EXCHANGE DEMO API & CONNECTION HELPERS (KEPT INTACT, ALGO PAUSED)
+# DELTA EXCHANGE LIVE AUTO-EXECUTION API & CONNECTION HELPERS
 # ============================================================================
-ALGO_EXECUTION_ENABLED = False  # ⏸️ अभी एल्गो आर्डर बंद रखा गया है (केवल चार्ट व सिग्नल टेस्टिंग मोड)
+ALGO_EXECUTION_ENABLED = True  # ✅ डेल्टा ऑटोमैटिक ट्रेड एंट्री और एग्जिट अब 100% चालू है!
 
 DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
@@ -85,54 +86,80 @@ def delta_request(method, path, payload_dict=None):
             last_err = str(e)
     return False, last_err
 
-def place_delta_demo_order(side, qty, tag="Renko", is_exit=False, prod_id=27):
-    if not ALGO_EXECUTION_ENABLED or qty <= 0:
-        return False, "Algo Paused (Chart Test Mode)"
+def init_delta_product_id(eng):
+    for base_url in DELTA_URLS:
+        try:
+            r = requests.get(base_url + "/v2/products", timeout=5)
+            if r.status_code == 200:
+                items = r.json().get("result", [])
+                for p in items:
+                    sym = str(p.get("symbol", "")).upper()
+                    if sym in ["BTCUSD", "BTCUSDT"]:
+                        eng["delta_btc_product_id"] = int(p["id"])
+                        return
+        except Exception:
+            pass
+
+def place_delta_demo_order(eng, side, qty, tag="AI-Quantum", is_exit=False):
+    if (not ALGO_EXECUTION_ENABLED) or (not eng.get("initialized", False)) or qty <= 0:
+        return False
     try:
+        prod_id = int(eng.get("delta_btc_product_id", 27))
+        ist_now = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p")
+
         payload = {
-            "product_id": int(prod_id),
+            "product_id": prod_id,
             "size": int(qty),
             "side": side.lower(),
             "order_type": "market_order"
         }
         if is_exit:
             payload["reduce_only"] = True
+
         ok, resp = delta_request("POST", "/v2/orders", payload)
-        if (not ok) and is_exit:
-            payload.pop("reduce_only", None)
-            ok, resp = delta_request("POST", "/v2/orders", payload)
-        return ok, resp
+
+        # यदि लाइव ट्रेड इस सेशन में खुला था और reduce_only अटका, तो काउंटर मार्केट ऑर्डर से तुरंत एग्जिट करें
+        if (not ok) and is_exit and eng.get("live_order_active", False):
+            payload_fallback = {
+                "product_id": prod_id,
+                "size": int(qty),
+                "side": side.lower(),
+                "order_type": "market_order"
+            }
+            ok, resp = delta_request("POST", "/v2/orders", payload_fallback)
+
+        if ok:
+            eng["delta_status"] = f"✅ [{ist_now}] Delta {tag}: {side.upper()} {qty} Lots सफल!"
+        else:
+            eng["delta_status"] = f"⚠️ [{ist_now}] Delta {tag} ({side.upper()} {qty}L): {resp}"
+        return ok
     except Exception as e:
-        return False, str(e)
+        eng["delta_status"] = f"⚠️ Delta Error: {str(e)}"
+        return False
 
 # ============================================================================
-# V16 TURBO ENGINE: FASTER TRADES + MULTI-WAVE RE-ENTRY + BIG RUNNERS
+# CORE QUANTUM PARAMETERS (EXACT V16 TURBO LOGIC — STEALTH DESIGN)
 # ============================================================================
 USD_INR_RATE         = 85.0
 BROK_PER_QTY         = 82.38   # Real Delta CSV Fee: 82.38 pts/Qty ($0.08238 = ₹7.002 per Qty Round-Trip)
 
-# 🚀 V16 TURBO RE-ENTRY & BIG RUNNER RULES:
-# 1. Stage-1 Trigger (1.00B) पर कम से कम +215 pts/Q (10Q पर Net ₹+112 | 25Q पर Net ₹+280 | 50Q पर Net ₹+560) लॉक होगा।
-# 2. पुलबैक री-एंट्री (Pullback Continuation): अगर एक ट्रेंड में ट्रेड प्रॉफिट बुक करके निकल गया और सुपरट्रेंड अभी भी उसी दिशा में है,
-#    तो अगली फ्रेश मोमेंटम कैंडल या ब्रिक बनते ही तुरंत दूसरा ट्रेड (Wave-2 / Wave-3) ले लेगा ताकि कोई भी बड़ा मूव खाली न जाए!
-STAGE1_TRIG_BRICKS   = 1.00
-STAGE1_LOCK_BRICKS   = 0.85
-STAGE1_MIN_PTS_Q     = 215.0   # कम से कम +215 pts/Q (फीस काटने के बाद भी मजबूत मुनाफा)
-STAGE2_TRIG_BRICKS   = 1.75    # +1.75B पर तुरंत Big Wave Runner एक्टिव
-STAGE2_FLOOR_BRICKS  = 1.35    # +1.35B फ्लोर लॉक
-CLOSE_TRAIL_BRICKS   = 1.15    # केवल Candle Close पर ट्रेल (ताकि कैंडल की सुई/Wick से बड़ा ट्रेड कभी न कटे!)
+STAGE1_TRIG_UNITS    = 1.00
+STAGE1_LOCK_UNITS    = 0.85
+STAGE1_MIN_PTS_Q     = 215.0   # कम से कम +215 pts/Q लॉक
+STAGE2_TRIG_UNITS    = 1.75
+STAGE2_FLOOR_UNITS   = 1.35
+CLOSE_TRAIL_UNITS    = 1.15
 
-# ⚡ FAST ENTRY UNLOCK (ताकि जल्दी और ज़्यादा हाई-कन्विक्शन ट्रेड्स मिलें):
-MAX_BRICK_STREAK     = 5       # Streak #5 तक सभी मजबूत ब्रिक ब्रेकआउट्स की अनुमति
-MAX_EMA_DIST_BRICKS  = 2.6     # मजबूत ट्रेंड में EMA से दूर होने पर भी ट्रेड मिस नहीं करेगा
-MIN_VOL_DOM          = 50.0    # 50%+ ऑर्डरफ्लो डोमिनेंस
+MAX_WAVE_STREAK      = 5
+MAX_DLINE_DIST       = 2.6
+MIN_FLOW_DOM         = 50.0
 
 ATR_PERIOD           = 5
-USE_GAUSSIAN         = True
-GAUSS_PERIOD         = 14      # 20 से घटाकर 14 (तेज ब्रिक रिस्पॉन्स के लिए)
+USE_SMOOTHING        = True
+SMOOTH_PERIOD        = 14
 
-SL_BRICKS            = 1.40
-MAX_SL_PTS_PER_QTY   = 235.3   # 235.3 BTC pts/Q (10Q पर ₹200 SL)
+SL_UNITS             = 1.40
+MAX_SL_PTS_PER_QTY   = 235.3
 ANTI_WICK_SL         = True
 MINTICK              = 0.1
 
@@ -142,8 +169,24 @@ def pts_to_inr(lot_pts):
     return lot_pts * 0.001 * USD_INR_RATE
 
 # ============================================================================
-# FETCH HISTORICAL CANDLES & COMPUTE V16 TURBO RENKO ENGINE
+# MARKET DATA FETCHERS
 # ============================================================================
+def fetch_hl_live_mid_price():
+    try:
+        r = requests.post(
+            HYPERLIQUID_INFO_URL,
+            json={"type": "allMids"},
+            headers={"Content-Type": "application/json"},
+            timeout=3
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, dict) and "BTC" in data:
+                return float(data["BTC"])
+    except Exception:
+        pass
+    return None
+
 def fetch_hl_klines_range(interval, start_ms, end_ms):
     for attempt in range(3):
         try:
@@ -205,504 +248,678 @@ def calc_daily_atr5():
             rma[i] = (rma[i - 1] * (ATR_PERIOD - 1) + v) / float(ATR_PERIOD)
     return rma[-2]
 
-def build_chart_and_renko_signals(signal_tf="15m", st_factor=2.0, range_divisor=12.0, total_qty=25):
+# ============================================================================
+# REAL-TIME INTRABAR LIVE TICK MONITOR (STAGE LOCKS & CRASH SL AUTO-EXIT)
+# ============================================================================
+def check_live_intrabar_ticks(eng, live_px):
+    if not eng.get("initialized", False) or eng["trade_dir"] == 0 or live_px <= 0:
+        return
+
+    t_dir = eng["trade_dir"]
+    t_label = "LONG" if t_dir == 1 else "SHORT"
+    close_side = "sell" if t_dir == 1 else "buy"
+    total_qty = eng["total_qty"]
+    unit_size = eng["unit_size"]
+    brok_tot = BROK_PER_QTY * total_qty
+    s1_lock_pts_q = max(unit_size * STAGE1_LOCK_UNITS, STAGE1_MIN_PTS_Q)
+    now_ist = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%d %b %I:%M:%S %p")
+
+    # 1. Live Stage-1 Lock Trigger
+    hit_tp1_live = (not eng["tp1_reached"]) and ((live_px >= eng["tp1_price"]) if t_dir == 1 else (live_px <= eng["tp1_price"]))
+    if hit_tp1_live:
+        eng["tp1_reached"] = True
+        eng["wins"] += 1
+        s1_sl = (eng["entry_price"] + s1_lock_pts_q) if t_dir == 1 else (eng["entry_price"] - s1_lock_pts_q)
+        eng["stop_price"] = max(eng["stop_price"], s1_sl) if t_dir == 1 else min(eng["stop_price"], s1_sl)
+
+    # 2. Live Stage-2 Big Wave Trigger
+    hit_tp2_live = eng["tp1_reached"] and (not eng["tp2_reached"]) and ((live_px >= eng["tp2_price"]) if t_dir == 1 else (live_px <= eng["tp2_price"]))
+    if hit_tp2_live:
+        eng["tp2_reached"] = True
+        eng["tp2_hits"] += 1
+        s2_floor_pts = max(unit_size * STAGE2_FLOOR_UNITS, s1_lock_pts_q + 85.0)
+        s2_sl = (eng["entry_price"] + s2_floor_pts) if t_dir == 1 else (eng["entry_price"] - s2_floor_pts)
+        eng["stop_price"] = max(eng["stop_price"], s2_sl) if t_dir == 1 else min(eng["stop_price"], s2_sl)
+
+    # 3. Live Hard Crash Protection before Stage-1
+    if not eng["tp1_reached"]:
+        hit_hard_crash = (live_px <= eng["hard_stop_price"]) if t_dir == 1 else (live_px >= eng["hard_stop_price"])
+        if hit_hard_crash:
+            eng["losses"] += 1
+            loss_per_qty = eng["locked_sl_pts"]
+            total_loss_tot = loss_per_qty * total_qty
+            eng["gross_loss"] += total_loss_tot
+            eng["total_brok"] += brok_tot
+            net_loss_inr = pts_to_inr(-(total_loss_tot + brok_tot))
+
+            eng["trade_logs"].insert(0, {
+                "time": now_ist, "type": f"{t_label} ({total_qty}L {eng['entry_tag']})", "entry": eng["entry_price"],
+                "exit": live_px, "status": f"🛑 LIVE SHIELD SL ({total_qty}L)",
+                "pnl": f"-{loss_per_qty:,.0f}p/L (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"
+            })
+            eng["trade_logs"] = eng["trade_logs"][:50]
+            place_delta_demo_order(eng, close_side, total_qty, tag="Live Shield SL Exit", is_exit=True)
+            eng["trade_dir"] = 0
+            eng["live_order_active"] = False
+
+# ============================================================================
+# STATEFUL BAR PROCESSOR (HANDLES BOTH HISTORICAL WARMUP & LIVE AUTO-TRADING)
+# ============================================================================
+def process_closed_bar(eng, kline):
+    bar_time_ms = int(kline[0])
+    if bar_time_ms <= eng["last_bar_time"]:
+        return
+
+    ist_offset_sec = 19800
+    t_sec_ist = int(bar_time_ms // 1000) + ist_offset_sec
+    o = float(kline[1])
+    h = float(kline[2])
+    l = float(kline[3])
+    c = float(kline[4])
+    v = float(kline[5])
+    bar_ist = (datetime.utcfromtimestamp(bar_time_ms / 1000.0) + timedelta(hours=5, minutes=30)).strftime("%d %b %I:%M %p")
+
+    idx = eng["bar_count"]
+    unit_size = eng["unit_size"]
+    st_factor = eng["st_factor"]
+    total_qty = eng["total_qty"]
+    brok_tot = BROK_PER_QTY * total_qty
+
+    s1_lock_pts_q = max(unit_size * STAGE1_LOCK_UNITS, STAGE1_MIN_PTS_Q)
+    s1_trig_pts_q = max(unit_size * STAGE1_TRIG_UNITS, s1_lock_pts_q + 30.0)
+
+    if idx == 0:
+        eng["atr14"] = h - l
+        eng["ema21"] = c
+        eng["rsi14"] = 50.0
+    else:
+        prev_c = eng["prev_close"]
+        tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+        if idx < 14:
+            eng["tr_sum"] += tr
+            eng["atr14"] = eng["tr_sum"] / float(idx + 1)
+        else:
+            eng["atr14"] = (eng["atr14"] * 13.0 + tr) / 14.0
+
+        k_ema = 2.0 / 22.0
+        eng["ema21"] = c * k_ema + eng["ema21"] * (1.0 - k_ema)
+
+        diff = c - prev_c
+        up = max(diff, 0.0)
+        dn = max(-diff, 0.0)
+        if idx < 14:
+            eng["up_sum"] += up
+            eng["dn_sum"] += dn
+            eng["rma_up"] = eng["up_sum"] / float(idx)
+            eng["rma_dn"] = eng["dn_sum"] / float(idx)
+        else:
+            eng["rma_up"] = (eng["rma_up"] * 13.0 + up) / 14.0
+            eng["rma_dn"] = (eng["rma_dn"] * 13.0 + dn) / 14.0
+
+        if eng["rma_dn"] == 0:
+            eng["rsi14"] = 100.0
+        elif eng["rma_up"] == 0:
+            eng["rsi14"] = 0.0
+        else:
+            rs = eng["rma_up"] / eng["rma_dn"]
+            eng["rsi14"] = 100.0 - (100.0 / (1.0 + rs))
+
+    w = (2.0 * math.pi) / float(SMOOTH_PERIOD)
+    b_g = (1.0 - math.cos(w)) / (1.41421356 - 1.0)
+    a_g = -b_g + math.sqrt(b_g * b_g + 2.0 * b_g)
+    if idx == 0:
+        g_val = c
+    elif idx == 1:
+        g_val = (a_g ** 2) * c + 2.0 * (1.0 - a_g) * eng["g1"] - ((1.0 - a_g) ** 2) * c
+    else:
+        g_val = (a_g ** 2) * c + 2.0 * (1.0 - a_g) * eng["g1"] - ((1.0 - a_g) ** 2) * eng["g2"]
+    eng["g2"] = eng["g1"]
+    eng["g1"] = g_val
+
+    rng = max(h - l, MINTICK)
+    u_wick = h - max(o, c)
+    l_wick = min(o, c) - l
+    body = abs(c - o)
+    bull_score = (c - l) + (l_wick * 1.1) + (body * 0.85 if c > o else 0.0)
+    bear_score = (h - c) + (u_wick * 1.1) + (body * 0.85 if c < o else 0.0)
+    bull_pow = math.pow(max(bull_score / rng, 0.01), 1.8)
+    bear_pow = math.pow(max(bear_score / rng, 0.01), 1.8)
+    tot_pow = bull_pow + bear_pow
+    bar_buy_v = v * (bull_pow / tot_pow) if tot_pow > 0 else v * 0.5
+    bar_sell_v = v * (bear_pow / tot_pow) if tot_pow > 0 else v * 0.5
+
+    roll_buy = (bar_buy_v * 1.4) + eng["buy_v1"] + eng["buy_v2"]
+    roll_sell = (bar_sell_v * 1.4) + eng["sell_v1"] + eng["sell_v2"]
+    roll_tot = roll_buy + roll_sell
+    buy_dom_pct = (roll_buy / roll_tot) * 100.0 if roll_tot > 0 else 50.0
+    sell_dom_pct = 100.0 - buy_dom_pct
+
+    eng["buy_v2"] = eng["buy_v1"]
+    eng["buy_v1"] = bar_buy_v
+    eng["sell_v2"] = eng["sell_v1"]
+    eng["sell_v1"] = bar_sell_v
+    eng["buy_dom_pct"] = buy_dom_pct
+    eng["sell_dom_pct"] = sell_dom_pct
+
+    eval_price = (c * 0.70 + g_val * 0.30) if USE_SMOOTHING else c
+
+    step_up = False
+    step_dn = False
+
+    if idx == 0:
+        eng["q_top"] = c
+        eng["q_bot"] = c - unit_size
+        eng["q_dir"] = 1
+        eng["q_streak"] = 1
+    else:
+        if eval_price >= eng["q_top"] + unit_size:
+            steps = int(math.floor((eval_price - eng["q_top"]) / unit_size))
+            eng["q_top"] = eng["q_top"] + (steps * unit_size)
+            eng["q_bot"] = eng["q_top"] - unit_size
+            step_up = True
+            eng["q_streak"] = steps if eng["q_dir"] == -1 else (eng["q_streak"] + steps)
+            eng["q_dir"] = 1
+        elif eval_price <= eng["q_bot"] - unit_size:
+            steps = int(math.floor((eng["q_bot"] - eval_price) / unit_size))
+            eng["q_bot"] = eng["q_bot"] - (steps * unit_size)
+            eng["q_top"] = eng["q_bot"] + unit_size
+            step_dn = True
+            eng["q_streak"] = steps if eng["q_dir"] == 1 else (eng["q_streak"] + steps)
+            eng["q_dir"] = -1
+
+    q_core = eng["q_top"] if eng["q_dir"] == 1 else eng["q_bot"]
+    eng["q_core"] = q_core
+
+    band_distance = unit_size * float(st_factor)
+    raw_support = q_core - band_distance
+    raw_resistance = q_core + band_distance
+
+    prev_trend = eng["n_trend"]
+    prev_supp = eng["support_band"]
+    prev_res = eng["resistance_band"]
+
+    if prev_supp is None:
+        support_band = raw_support
+    elif prev_trend == 1:
+        support_band = raw_support if (eng["q_dir"] == 1 and raw_support > prev_supp) else prev_supp
+    else:
+        support_band = raw_support
+
+    if prev_res is None:
+        resistance_band = raw_resistance
+    elif prev_trend == -1:
+        resistance_band = raw_resistance if (eng["q_dir"] == -1 and raw_resistance < prev_res) else prev_res
+    else:
+        resistance_band = raw_resistance
+
+    if prev_trend == -1 and eng["q_dir"] == 1 and prev_res is not None and q_core > prev_res:
+        n_trend = 1
+        support_band = q_core - band_distance
+    elif prev_trend == 1 and eng["q_dir"] == -1 and prev_supp is not None and q_core < prev_supp:
+        n_trend = -1
+        resistance_band = q_core + band_distance
+    else:
+        n_trend = prev_trend
+
+    eng["support_band"] = support_band
+    eng["resistance_band"] = resistance_band
+    eng["n_trend"] = n_trend
+
+    n_line = support_band if n_trend == 1 else resistance_band
+    eng["n_line"] = n_line
+
+    flip_buy = (idx > 0) and (n_trend == 1 and prev_trend == -1)
+    flip_sell = (idx > 0) and (n_trend == -1 and prev_trend == 1)
+
+    if flip_buy or flip_sell:
+        eng["q_streak"] = 1
+
+    if flip_buy:
+        eng["pending_flip_buy"] = True
+        eng["pending_flip_sell"] = False
+    if flip_sell:
+        eng["pending_flip_sell"] = True
+        eng["pending_flip_buy"] = False
+    if n_trend == -1:
+        eng["pending_flip_buy"] = False
+    if n_trend == 1:
+        eng["pending_flip_sell"] = False
+
+    # Save to chart series
+    eng["candles_js"].append({"time": t_sec_ist, "open": round(o, 1), "high": round(h, 1), "low": round(l, 1), "close": round(c, 1)})
+    eng["qcore_js"].append({"time": t_sec_ist, "value": round(q_core, 1)})
+    eng["nline_js"].append({"time": t_sec_ist, "value": round(n_line, 1), "color": "#00e676" if n_trend == 1 else "#ff5252"})
+    eng["dline_js"].append({"time": t_sec_ist, "value": round(eng["ema21"], 1)})
+
+    # ========================================================================
+    # MANAGE ACTIVE TRADE & AUTO-EXIT ON DELTA
+    # ========================================================================
+    if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
+        t_dir = eng["trade_dir"]
+        t_label = "LONG" if t_dir == 1 else "SHORT"
+        close_side = "sell" if t_dir == 1 else "buy"
+        eng["max_fav_close"] = max(eng["max_fav_close"], c) if t_dir == 1 else min(eng["max_fav_close"], c)
+
+        hit_tp1_now = (not eng["tp1_reached"]) and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"]))
+        if hit_tp1_now:
+            eng["tp1_reached"] = True
+            eng["wins"] += 1
+            s1_sl = (eng["entry_price"] + s1_lock_pts_q) if t_dir == 1 else (eng["entry_price"] - s1_lock_pts_q)
+            eng["stop_price"] = max(eng["stop_price"], s1_sl) if t_dir == 1 else min(eng["stop_price"], s1_sl)
+
+        hit_tp2_now = eng["tp1_reached"] and (not eng["tp2_reached"]) and ((h >= eng["tp2_price"]) if t_dir == 1 else (l <= eng["tp2_price"]))
+        if hit_tp2_now:
+            eng["tp2_reached"] = True
+            eng["tp2_hits"] += 1
+            s2_floor_pts = max(unit_size * STAGE2_FLOOR_UNITS, s1_lock_pts_q + 85.0)
+            s2_sl = (eng["entry_price"] + s2_floor_pts) if t_dir == 1 else (eng["entry_price"] - s2_floor_pts)
+            eng["stop_price"] = max(eng["stop_price"], s2_sl) if t_dir == 1 else min(eng["stop_price"], s2_sl)
+
+        if eng["tp1_reached"]:
+            if t_dir == 1 and n_trend == 1 and n_line > eng["stop_price"]:
+                eng["stop_price"] = n_line
+            elif t_dir == -1 and n_trend == -1 and n_line < eng["stop_price"]:
+                eng["stop_price"] = n_line
+
+        if eng["trade_dir"] != 0 and eng["tp2_reached"]:
+            gap_dist = unit_size * CLOSE_TRAIL_UNITS
+            q_trail = (q_core - gap_dist) if t_dir == 1 else (q_core + gap_dist)
+            close_trail = (eng["max_fav_close"] - gap_dist) if t_dir == 1 else (eng["max_fav_close"] + gap_dist)
+            cand_trail = max(q_trail, close_trail, n_line if n_trend == 1 else 0.0) if t_dir == 1 else min(q_trail, close_trail, n_line if n_trend == -1 else 999999.0)
+            eng["stop_price"] = max(eng["stop_price"], cand_trail) if t_dir == 1 else min(eng["stop_price"], cand_trail)
+
+            close_hit_trail = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
+            n_reversed      = (n_trend == -1) if t_dir == 1 else (n_trend == 1)
+
+            if (close_hit_trail or n_reversed) and not hit_tp2_now:
+                exit_p = max(c, eng["stop_price"]) if t_dir == 1 else min(c, eng["stop_price"])
+                s2_min_q = max(unit_size * STAGE2_FLOOR_UNITS, s1_lock_pts_q + 85.0)
+                run_pts_per_q = max(s2_min_q, (exit_p - eng["entry_price"]) if t_dir == 1 else (eng["entry_price"] - exit_p))
+                total_trade_pnl = run_pts_per_q * total_qty
+                eng["gross_profit"] += total_trade_pnl
+                eng["total_brok"] += brok_tot
+                net_inr = pts_to_inr(total_trade_pnl - brok_tot)
+
+                eng["markers_js"].append({
+                    "time": t_sec_ist,
+                    "position": "aboveBar" if t_dir == 1 else "belowBar",
+                    "color": "#38bdf8",
+                    "shape": "circle",
+                    "text": f"🚀 WAVE EXIT (₹{net_inr:+,.0f})"
+                })
+                eng["trade_logs"].insert(0, {
+                    "time": bar_ist, "type": f"{t_label} ({total_qty}L {eng['entry_tag']})", "entry": eng["entry_price"],
+                    "exit": exit_p, "status": "🚀 QUANTUM WAVE EXIT",
+                    "pnl": f"+{run_pts_per_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"
+                })
+                eng["trade_logs"] = eng["trade_logs"][:50]
+                place_delta_demo_order(eng, close_side, total_qty, tag="Quantum Wave Exit", is_exit=True)
+                eng["trade_dir"] = 0
+                eng["live_order_active"] = False
+
+        if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
+            if not eng["tp1_reached"]:
+                adverse_close_pts = (eng["entry_price"] - c) if t_dir == 1 else (c - eng["entry_price"])
+                unit_sl_price = (eng["entry_price"] - unit_size * SL_UNITS) if t_dir == 1 else (eng["entry_price"] + unit_size * SL_UNITS)
+                close_hit_sl = (c <= unit_sl_price) if t_dir == 1 else (c >= unit_sl_price)
+                q_turned_bad = (
+                    (eng["q_dir"] == -1 and c < eng["q_bot"] and adverse_close_pts >= MAX_SL_PTS_PER_QTY * 0.65)
+                    if t_dir == 1
+                    else (eng["q_dir"] == 1 and c > eng["q_top"] and adverse_close_pts >= MAX_SL_PTS_PER_QTY * 0.65)
+                )
+                n_turned_bad = ((n_trend == -1) if t_dir == 1 else (n_trend == 1)) and (adverse_close_pts > 0)
+                hard_crash = (l <= eng["hard_stop_price"]) if t_dir == 1 else (h >= eng["hard_stop_price"])
+
+                if close_hit_sl or q_turned_bad or n_turned_bad or hard_crash:
+                    eng["losses"] += 1
+                    loss_per_qty = min(adverse_close_pts, eng["locked_sl_pts"]) if (ANTI_WICK_SL and not hard_crash and adverse_close_pts > 0) else eng["locked_sl_pts"]
+                    total_loss_tot = loss_per_qty * total_qty
+                    eng["gross_loss"] += total_loss_tot
+                    eng["total_brok"] += brok_tot
+                    net_loss_inr = pts_to_inr(-(total_loss_tot + brok_tot))
+
+                    eng["markers_js"].append({
+                        "time": t_sec_ist,
+                        "position": "belowBar" if t_dir == 1 else "aboveBar",
+                        "color": "#f87171",
+                        "shape": "circle",
+                        "text": f"🛑 SL (₹{net_loss_inr:+,.0f})"
+                    })
+                    eng["trade_logs"].insert(0, {
+                        "time": bar_ist, "type": f"{t_label} ({total_qty}L {eng['entry_tag']})", "entry": eng["entry_price"],
+                        "exit": c, "status": f"🛑 SHIELD SL ({total_qty}L)",
+                        "pnl": f"-{loss_per_qty:,.0f}p/L (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"
+                    })
+                    eng["trade_logs"] = eng["trade_logs"][:50]
+                    place_delta_demo_order(eng, close_side, total_qty, tag="Shield SL Exit", is_exit=True)
+                    eng["trade_dir"] = 0
+                    eng["live_order_active"] = False
+            else:
+                hit_s1_close = (c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])
+                n_turned_bad = (n_trend == -1) if t_dir == 1 else (n_trend == 1)
+
+                if (hit_s1_close or n_turned_bad) and not hit_tp1_now:
+                    exit_p = max(c, eng["stop_price"]) if t_dir == 1 else min(c, eng["stop_price"])
+                    locked_pts_q = max(s1_lock_pts_q, (exit_p - eng["entry_price"]) if t_dir == 1 else (eng["entry_price"] - exit_p))
+                    total_trade_pnl = locked_pts_q * total_qty
+                    eng["gross_profit"] += total_trade_pnl
+                    eng["total_brok"] += brok_tot
+                    net_inr = pts_to_inr(total_trade_pnl - brok_tot)
+
+                    eng["markers_js"].append({
+                        "time": t_sec_ist,
+                        "position": "aboveBar" if t_dir == 1 else "belowBar",
+                        "color": "#4ade80",
+                        "shape": "circle",
+                        "text": f"✅ S1 LOCK (₹{net_inr:+,.0f})"
+                    })
+                    eng["trade_logs"].insert(0, {
+                        "time": bar_ist, "type": f"{t_label} ({total_qty}L {eng['entry_tag']})", "entry": eng["entry_price"],
+                        "exit": exit_p, "status": "✅ STAGE-1 PROFIT LOCK",
+                        "pnl": f"+{locked_pts_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#22c55e"
+                    })
+                    eng["trade_logs"] = eng["trade_logs"][:50]
+                    place_delta_demo_order(eng, close_side, total_qty, tag="Stage-1 Lock Exit", is_exit=True)
+                    eng["trade_dir"] = 0
+                    eng["live_order_active"] = False
+
+    # ========================================================================
+    # NEW ENTRY SIGNALS & AUTO-ENTRY ON DELTA (STEALTH TAGS)
+    # ========================================================================
+    ema21 = eng["ema21"]
+    rsi14 = eng["rsi14"]
+    q_dir = eng["q_dir"]
+    q_streak = eng["q_streak"]
+
+    candle_not_giant = (h - l) <= unit_size * 1.90
+    bull_filter_ok   = candle_not_giant and buy_dom_pct >= MIN_FLOW_DOM and 48.0 <= rsi14 < 76.0
+    bear_filter_ok   = candle_not_giant and sell_dom_pct >= MIN_FLOW_DOM and 24.0 < rsi14 <= 52.0
+
+    trigger_flip_buy  = eng["pending_flip_buy"] and n_trend == 1 and bull_filter_ok and c > o
+    trigger_flip_sell = eng["pending_flip_sell"] and n_trend == -1 and bear_filter_ok and c < o
+
+    streak_ok  = q_streak <= MAX_WAVE_STREAK
+    stretch_ok = abs(c - ema21) <= unit_size * MAX_DLINE_DIST
+    trigger_cont_buy  = (not trigger_flip_buy) and n_trend == 1 and q_dir == 1 and step_up and bull_filter_ok and c > ema21 and streak_ok and stretch_ok
+    trigger_cont_sell = (not trigger_flip_sell) and n_trend == -1 and q_dir == -1 and step_dn and bear_filter_ok and c < ema21 and streak_ok and stretch_ok
+
+    pullback_bounce_buy  = (not trigger_flip_buy) and (not trigger_cont_buy) and n_trend == 1 and q_dir == 1 and l <= (ema21 + unit_size * 0.15) and c > ema21 and c > o and (c - o) >= (unit_size * 0.30) and buy_dom_pct >= 54.0 and 50.0 < rsi14 < 70.0
+    pullback_bounce_sell = (not trigger_flip_sell) and (not trigger_cont_sell) and n_trend == -1 and q_dir == -1 and h >= (ema21 - unit_size * 0.15) and c < ema21 and c < o and (o - c) >= (unit_size * 0.30) and sell_dom_pct >= 54.0 and 30.0 < rsi14 < 50.0
+
+    can_open_trade = (eng["trade_dir"] == 0) or (eng["tp1_reached"] and (flip_buy or flip_sell))
+
+    if can_open_trade and (trigger_flip_buy or trigger_cont_buy or pullback_bounce_buy or trigger_flip_sell or trigger_cont_sell or pullback_bounce_sell):
+        if eng["trade_dir"] != 0 and eng["tp1_reached"]:
+            old_label = "LONG" if eng["trade_dir"] == 1 else "SHORT"
+            old_close_side = "sell" if eng["trade_dir"] == 1 else "buy"
+            runner_pts_q = max(s1_lock_pts_q, (c - eng["entry_price"]) if eng["trade_dir"] == 1 else (eng["entry_price"] - c))
+            tot_flip_pnl = runner_pts_q * total_qty
+            eng["gross_profit"] += tot_flip_pnl
+            eng["total_brok"] += brok_tot
+            net_flip_inr = pts_to_inr(tot_flip_pnl - brok_tot)
+            eng["trade_logs"].insert(0, {
+                "time": bar_ist, "type": f"{old_label} ({total_qty}L {eng['entry_tag']})", "entry": eng["entry_price"],
+                "exit": c, "status": "✅ MATRIX FLIP WIN",
+                "pnl": f"+{runner_pts_q:,.0f}p/L (Net ₹{net_flip_inr:+,.0f})", "color": "#22c55e"
+            })
+            eng["trade_logs"] = eng["trade_logs"][:50]
+            place_delta_demo_order(eng, old_close_side, total_qty, tag="Matrix Flip Close", is_exit=True)
+
+        is_long = trigger_flip_buy or trigger_cont_buy or pullback_bounce_buy
+        if is_long:
+            eng["pending_flip_buy"] = False
+        else:
+            eng["pending_flip_sell"] = False
+
+        eng["trade_dir"] = 1 if is_long else -1
+        eng["entry_bar"] = idx
+        eng["entry_price"] = c
+        eng["max_fav_close"] = c
+        eng["tp1_reached"] = False
+        eng["tp2_reached"] = False
+        if trigger_flip_buy or trigger_flip_sell:
+            eng["entry_tag"] = "🔥 Q-Alpha"
+        elif pullback_bounce_buy or pullback_bounce_sell:
+            eng["entry_tag"] = "🎯 P-Pulse"
+        else:
+            eng["entry_tag"] = f"⚡ W#{q_streak}"
+        eng["entry_time_str"] = bar_ist
+
+        eng["locked_tp1_pts"] = s1_trig_pts_q
+        eng["locked_tp2_pts"] = unit_size * STAGE2_TRIG_UNITS
+        eng["locked_sl_pts"]  = MAX_SL_PTS_PER_QTY
+
+        eng["tp1_price"]       = (c + eng["locked_tp1_pts"]) if is_long else (c - eng["locked_tp1_pts"])
+        eng["tp2_price"]       = (c + eng["locked_tp2_pts"]) if is_long else (c - eng["locked_tp2_pts"])
+        eng["stop_price"]      = (c - eng["locked_sl_pts"]) if is_long else (c + eng["locked_sl_pts"])
+        eng["hard_stop_price"] = (c - unit_size * 1.65) if is_long else (c + unit_size * 1.65)
+
+        eng["markers_js"].append({
+            "time": t_sec_ist,
+            "position": "belowBar" if is_long else "aboveBar",
+            "color": "#00e676" if is_long else "#ff1744",
+            "shape": "arrowUp" if is_long else "arrowDown",
+            "text": f"{'BUY' if is_long else 'SELL'} {eng['entry_tag']} @ {c:,.0f}"
+        })
+
+        entry_side = "buy" if is_long else "sell"
+        if eng.get("initialized", False):
+            eng["live_order_active"] = True
+            place_delta_demo_order(eng, entry_side, total_qty, tag=f"AI Entry ({eng['entry_tag']})", is_exit=False)
+        else:
+            eng["live_order_active"] = False
+
+    eng["prev_close"] = c
+    eng["last_bar_time"] = bar_time_ms
+    eng["bar_count"] += 1
+
+# ============================================================================
+# ENGINE INITIALIZER & 24x7 BACKGROUND AUTO-TRADING WORKER
+# ============================================================================
+def reset_and_warmup_engine(eng, signal_tf, st_factor, range_divisor, total_qty):
+    eng["initialized"] = False
+    eng["signal_tf"] = signal_tf
+    eng["st_factor"] = float(st_factor)
+    eng["range_divisor"] = float(range_divisor)
+    eng["total_qty"] = int(total_qty)
+    eng["config_key"] = f"{signal_tf}_{st_factor}_{range_divisor}_{total_qty}"
+
     macro_range = calc_daily_atr5()
+    eng["macro_range"] = macro_range
+    eng["unit_size"] = max(macro_range / float(range_divisor), MINTICK * 2.0)
+
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
     days_back = 45 if signal_tf == "1h" else (25 if signal_tf == "15m" else 10)
+    eng["days_back"] = days_back
     anchor_start_ms = (today_00_utc_sec - (days_back * 86400)) * 1000
     now_ms = now_sec * 1000
 
+    eng["bar_count"] = 0
+    eng["last_bar_time"] = 0
+    eng["prev_close"] = 0.0
+    eng["tr_sum"] = 0.0
+    eng["atr14"] = 15.0
+    eng["ema21"] = 0.0
+    eng["up_sum"] = 0.0
+    eng["dn_sum"] = 0.0
+    eng["rma_up"] = 0.0
+    eng["rma_dn"] = 0.0
+    eng["rsi14"] = 50.0
+    eng["g1"] = 0.0
+    eng["g2"] = 0.0
+    eng["buy_v1"] = 0.0
+    eng["buy_v2"] = 0.0
+    eng["sell_v1"] = 0.0
+    eng["sell_v2"] = 0.0
+    eng["buy_dom_pct"] = 50.0
+    eng["sell_dom_pct"] = 50.0
+    eng["q_top"] = 0.0
+    eng["q_bot"] = 0.0
+    eng["q_dir"] = 1
+    eng["q_streak"] = 1
+    eng["q_core"] = 0.0
+    eng["support_band"] = None
+    eng["resistance_band"] = None
+    eng["n_trend"] = 1
+    eng["n_line"] = 0.0
+    eng["pending_flip_buy"] = False
+    eng["pending_flip_sell"] = False
+
+    eng["trade_dir"] = 0
+    eng["entry_bar"] = -1
+    eng["entry_price"] = 0.0
+    eng["tp1_price"] = 0.0
+    eng["tp2_price"] = 0.0
+    eng["stop_price"] = 0.0
+    eng["hard_stop_price"] = 0.0
+    eng["max_fav_close"] = 0.0
+    eng["locked_tp1_pts"] = 0.0
+    eng["locked_tp2_pts"] = 0.0
+    eng["locked_sl_pts"] = 0.0
+    eng["tp1_reached"] = False
+    eng["tp2_reached"] = False
+    eng["entry_tag"] = ""
+    eng["entry_time_str"] = ""
+    eng["wins"] = 0
+    eng["losses"] = 0
+    eng["tp2_hits"] = 0
+    eng["gross_profit"] = 0.0
+    eng["gross_loss"] = 0.0
+    eng["total_brok"] = 0.0
+
+    eng["candles_js"] = []
+    eng["qcore_js"] = []
+    eng["nline_js"] = []
+    eng["dline_js"] = []
+    eng["markers_js"] = []
+    eng["trade_logs"] = []
+
     klines = fetch_hl_klines_range(signal_tf, anchor_start_ms, now_ms)
-    if not klines or len(klines) < 30:
-        return None
+    if klines and len(klines) > 30:
+        for b in klines[:-1]:
+            process_closed_bar(eng, b)
+        last_k = klines[-1]
+        eng["live_bar"] = {
+            "time": int(last_k[0] // 1000) + 19800,
+            "open": round(float(last_k[1]), 1),
+            "high": round(float(last_k[2]), 1),
+            "low": round(float(last_k[3]), 1),
+            "close": round(float(last_k[4]), 1)
+        }
+        eng["last_price"] = float(last_k[4])
+        eng["initialized"] = True
 
-    box_size = max(macro_range / float(range_divisor), MINTICK * 2.0)
-    brok_tot = BROK_PER_QTY * total_qty
-    ist_offset_sec = 19800  # +5:30 IST offset
+def background_worker(eng, my_worker_id):
+    init_delta_product_id(eng)
+    last_kline_poll = 0.0
 
-    s1_lock_pts_q = max(box_size * STAGE1_LOCK_BRICKS, STAGE1_MIN_PTS_Q)
-    s1_trig_pts_q = max(box_size * STAGE1_TRIG_BRICKS, s1_lock_pts_q + 30.0)
+    while True:
+        if eng.get("active_worker_id") != my_worker_id:
+            break
+        try:
+            if eng.get("initialized", False):
+                now_ts = time.time()
 
-    candles_js = []
-    rclose_js = []
-    st_js = []
-    ema_js = []
-    markers_js = []
-    trade_logs = []
+                # 1. हर 2 सेकंड में लाइव टिक प्राइस चेक और इंट्रा-बार स्टेज/SL लॉक
+                live_px = fetch_hl_live_mid_price()
+                if live_px and live_px > 0:
+                    eng["last_price"] = live_px
+                    lb = eng.get("live_bar")
+                    if lb:
+                        lb["high"] = round(max(lb["high"], live_px), 1)
+                        lb["low"] = round(min(lb["low"], live_px), 1)
+                        lb["close"] = round(live_px, 1)
+                    check_live_intrabar_ticks(eng, live_px)
 
-    prev_close = 0.0
-    tr_sum = 0.0
-    atr14 = 15.0
-    ema21 = 0.0
-    up_sum = 0.0
-    dn_sum = 0.0
-    rma_up = 0.0
-    rma_dn = 0.0
-    rsi14 = 50.0
-    g1 = 0.0
-    g2 = 0.0
-    buy_v1 = 0.0
-    buy_v2 = 0.0
-    sell_v1 = 0.0
-    sell_v2 = 0.0
-    buy_dom_pct = 50.0
-    sell_dom_pct = 50.0
+                # 2. हर 4 सेकंड में नई क्लोज हुई कैंडल चेक करें -> नया सिग्नल या एग्जिट आते ही तुरंत डेल्टा आर्डर फायर करें!
+                if now_ts - last_kline_poll >= 4.0:
+                    tf = eng["signal_tf"]
+                    tf_ms = 3600000 if tf == "1h" else (900000 if tf == "15m" else 300000)
+                    end_ms = int(now_ts * 1000)
+                    start_ms = end_ms - (8 * tf_ms)
+                    recent_klines = fetch_hl_klines_range(tf, start_ms, end_ms)
+                    if recent_klines and len(recent_klines) >= 2:
+                        for b in recent_klines[:-1]:
+                            process_closed_bar(eng, b)
+                        lk = recent_klines[-1]
+                        eng["live_bar"] = {
+                            "time": int(lk[0] // 1000) + 19800,
+                            "open": round(float(lk[1]), 1),
+                            "high": round(float(lk[2]), 1),
+                            "low": round(float(lk[3]), 1),
+                            "close": round(float(lk[4]), 1)
+                        }
+                        eng["last_price"] = float(lk[4])
+                    last_kline_poll = now_ts
+        except Exception as e:
+            eng["last_error"] = str(e)
+        time.sleep(2.0)
 
-    brick_top = 0.0
-    brick_bot = 0.0
-    brick_dir = 1
-    brick_streak = 1
-    r_close = 0.0
-    support_band = None
-    resistance_band = None
-    st_trend = 1
-    st_line = 0.0
-    pending_flip_buy = False
-    pending_flip_sell = False
-
-    trade_dir = 0
-    entry_bar = -1
-    entry_price = 0.0
-    tp1_price = 0.0
-    tp2_price = 0.0
-    stop_price = 0.0
-    hard_stop_price = 0.0
-    max_fav_close = 0.0
-    locked_sl_pts = 0.0
-    tp1_reached = False
-    tp2_reached = False
-    entry_tag = ""
-    entry_time_str = ""
-
-    wins = 0
-    losses = 0
-    tp2_hits = 0
-    gross_profit = 0.0
-    gross_loss = 0.0
-    total_brok = 0.0
-
-    for idx, kline in enumerate(klines):
-        bar_time_ms = int(kline[0])
-        t_sec_ist = int(bar_time_ms // 1000) + ist_offset_sec
-        o = float(kline[1])
-        h = float(kline[2])
-        l = float(kline[3])
-        c = float(kline[4])
-        v = float(kline[5])
-        bar_ist = (datetime.utcfromtimestamp(bar_time_ms / 1000.0) + timedelta(hours=5, minutes=30)).strftime("%d %b %I:%M %p")
-
-        if idx == 0:
-            atr14 = h - l
-            ema21 = c
-            rsi14 = 50.0
-        else:
-            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
-            if idx < 14:
-                tr_sum += tr
-                atr14 = tr_sum / float(idx + 1)
-            else:
-                atr14 = (atr14 * 13.0 + tr) / 14.0
-
-            k_ema = 2.0 / 22.0
-            ema21 = c * k_ema + ema21 * (1.0 - k_ema)
-
-            diff = c - prev_close
-            up = max(diff, 0.0)
-            dn = max(-diff, 0.0)
-            if idx < 14:
-                up_sum += up
-                dn_sum += dn
-                rma_up = up_sum / float(idx)
-                rma_dn = dn_sum / float(idx)
-            else:
-                rma_up = (rma_up * 13.0 + up) / 14.0
-                rma_dn = (rma_dn * 13.0 + dn) / 14.0
-
-            if rma_dn == 0:
-                rsi14 = 100.0
-            elif rma_up == 0:
-                rsi14 = 0.0
-            else:
-                rs = rma_up / rma_dn
-                rsi14 = 100.0 - (100.0 / (1.0 + rs))
-
-        w = (2.0 * math.pi) / float(GAUSS_PERIOD)
-        b_g = (1.0 - math.cos(w)) / (1.41421356 - 1.0)
-        a_g = -b_g + math.sqrt(b_g * b_g + 2.0 * b_g)
-        if idx == 0:
-            g_val = c
-        elif idx == 1:
-            g_val = (a_g ** 2) * c + 2.0 * (1.0 - a_g) * g1 - ((1.0 - a_g) ** 2) * c
-        else:
-            g_val = (a_g ** 2) * c + 2.0 * (1.0 - a_g) * g1 - ((1.0 - a_g) ** 2) * g2
-        g2 = g1
-        g1 = g_val
-
-        rng = max(h - l, MINTICK)
-        u_wick = h - max(o, c)
-        l_wick = min(o, c) - l
-        body = abs(c - o)
-        bull_score = (c - l) + (l_wick * 1.1) + (body * 0.85 if c > o else 0.0)
-        bear_score = (h - c) + (u_wick * 1.1) + (body * 0.85 if c < o else 0.0)
-        bull_pow = math.pow(max(bull_score / rng, 0.01), 1.8)
-        bear_pow = math.pow(max(bear_score / rng, 0.01), 1.8)
-        tot_pow = bull_pow + bear_pow
-        bar_buy_v = v * (bull_pow / tot_pow) if tot_pow > 0 else v * 0.5
-        bar_sell_v = v * (bear_pow / tot_pow) if tot_pow > 0 else v * 0.5
-
-        roll_buy = (bar_buy_v * 1.4) + buy_v1 + buy_v2
-        roll_sell = (bar_sell_v * 1.4) + sell_v1 + sell_v2
-        roll_tot = roll_buy + roll_sell
-        buy_dom_pct = (roll_buy / roll_tot) * 100.0 if roll_tot > 0 else 50.0
-        sell_dom_pct = 100.0 - buy_dom_pct
-
-        buy_v2 = buy_v1
-        buy_v1 = bar_buy_v
-        sell_v2 = sell_v1
-        sell_v1 = bar_sell_v
-
-        eval_price = (c * 0.70 + g_val * 0.30) if USE_GAUSSIAN else c
-
-        brick_step_up = False
-        brick_step_dn = False
-
-        if idx == 0:
-            brick_top = c
-            brick_bot = c - box_size
-            brick_dir = 1
-            brick_streak = 1
-        else:
-            if eval_price >= brick_top + box_size:
-                steps = int(math.floor((eval_price - brick_top) / box_size))
-                brick_top = brick_top + (steps * box_size)
-                brick_bot = brick_top - box_size
-                brick_step_up = True
-                brick_streak = steps if brick_dir == -1 else (brick_streak + steps)
-                brick_dir = 1
-            elif eval_price <= brick_bot - box_size:
-                steps = int(math.floor((brick_bot - eval_price) / box_size))
-                brick_bot = brick_bot - (steps * box_size)
-                brick_top = brick_bot + box_size
-                brick_step_dn = True
-                brick_streak = steps if brick_dir == 1 else (brick_streak + steps)
-                brick_dir = -1
-
-        r_close = brick_top if brick_dir == 1 else brick_bot
-
-        band_distance = box_size * float(st_factor)
-        raw_support = r_close - band_distance
-        raw_resistance = r_close + band_distance
-
-        prev_trend = st_trend
-        prev_supp = support_band
-        prev_res = resistance_band
-
-        if prev_supp is None:
-            support_band = raw_support
-        elif prev_trend == 1:
-            support_band = raw_support if (brick_dir == 1 and raw_support > prev_supp) else prev_supp
-        else:
-            support_band = raw_support
-
-        if prev_res is None:
-            resistance_band = raw_resistance
-        elif prev_trend == -1:
-            resistance_band = raw_resistance if (brick_dir == -1 and raw_resistance < prev_res) else prev_res
-        else:
-            resistance_band = raw_resistance
-
-        if prev_trend == -1 and brick_dir == 1 and prev_res is not None and r_close > prev_res:
-            st_trend = 1
-            support_band = r_close - band_distance
-        elif prev_trend == 1 and brick_dir == -1 and prev_supp is not None and r_close < prev_supp:
-            st_trend = -1
-            resistance_band = r_close + band_distance
-        else:
-            st_trend = prev_trend
-
-        st_line = support_band if st_trend == 1 else resistance_band
-
-        st_flip_buy = (idx > 0) and (st_trend == 1 and prev_trend == -1)
-        st_flip_sell = (idx > 0) and (st_trend == -1 and prev_trend == 1)
-
-        if st_flip_buy or st_flip_sell:
-            brick_streak = 1
-
-        if st_flip_buy:
-            pending_flip_buy = True
-            pending_flip_sell = False
-        if st_flip_sell:
-            pending_flip_sell = True
-            pending_flip_buy = False
-        if st_trend == -1:
-            pending_flip_buy = False
-        if st_trend == 1:
-            pending_flip_sell = False
-
-        candles_js.append({"time": t_sec_ist, "open": round(o, 1), "high": round(h, 1), "low": round(l, 1), "close": round(c, 1)})
-        rclose_js.append({"time": t_sec_ist, "value": round(r_close, 1)})
-        st_js.append({"time": t_sec_ist, "value": round(st_line, 1), "color": "#00e676" if st_trend == 1 else "#ff5252"})
-        ema_js.append({"time": t_sec_ist, "value": round(ema21, 1)})
-
-        # ====================================================================
-        # V16 TURBO MULTI-WAVE ENGINE (FAST TRADES + BIG PROFITS)
-        # ====================================================================
-        if idx < len(klines) - 1:
-            if trade_dir != 0 and idx > entry_bar:
-                t_dir = trade_dir
-                t_label = "LONG" if t_dir == 1 else "SHORT"
-                max_fav_close = max(max_fav_close, c) if t_dir == 1 else min(max_fav_close, c)
-
-                # 1. Stage-1 Trigger -> Locks +215.0 pts/Q
-                hit_tp1_now = (not tp1_reached) and ((h >= tp1_price) if t_dir == 1 else (l <= tp1_price))
-                if hit_tp1_now:
-                    tp1_reached = True
-                    wins += 1
-                    s1_sl = (entry_price + s1_lock_pts_q) if t_dir == 1 else (entry_price - s1_lock_pts_q)
-                    stop_price = max(stop_price, s1_sl) if t_dir == 1 else min(stop_price, s1_sl)
-
-                # 2. Stage-2 Trigger (+1.75 Bricks) -> Big Wave Runner Mode
-                hit_tp2_now = tp1_reached and (not tp2_reached) and ((h >= tp2_price) if t_dir == 1 else (l <= tp2_price))
-                if hit_tp2_now:
-                    tp2_reached = True
-                    tp2_hits += 1
-                    s2_floor_pts = max(box_size * STAGE2_FLOOR_BRICKS, s1_lock_pts_q + 85.0)
-                    s2_sl = (entry_price + s2_floor_pts) if t_dir == 1 else (entry_price - s2_floor_pts)
-                    stop_price = max(stop_price, s2_sl) if t_dir == 1 else min(stop_price, s2_sl)
-
-                if tp1_reached:
-                    if t_dir == 1 and st_trend == 1 and st_line > stop_price:
-                        stop_price = st_line
-                    elif t_dir == -1 and st_trend == -1 and st_line < stop_price:
-                        stop_price = st_line
-
-                # 3. Stage-2 Big Wave Trailing (Candle Close Only)
-                if trade_dir != 0 and tp2_reached:
-                    gap_dist = box_size * CLOSE_TRAIL_BRICKS
-                    brick_trail = (r_close - gap_dist) if t_dir == 1 else (r_close + gap_dist)
-                    close_trail = (max_fav_close - gap_dist) if t_dir == 1 else (max_fav_close + gap_dist)
-                    cand_trail = max(brick_trail, close_trail, st_line if st_trend == 1 else 0.0) if t_dir == 1 else min(brick_trail, close_trail, st_line if st_trend == -1 else 999999.0)
-                    stop_price = max(stop_price, cand_trail) if t_dir == 1 else min(stop_price, cand_trail)
-
-                    close_hit_trail = (c <= stop_price) if t_dir == 1 else (c >= stop_price)
-                    st_reversed     = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
-
-                    if (close_hit_trail or st_reversed) and not hit_tp2_now:
-                        exit_p = max(c, stop_price) if t_dir == 1 else min(c, stop_price)
-                        s2_min_q = max(box_size * STAGE2_FLOOR_BRICKS, s1_lock_pts_q + 85.0)
-                        run_pts_per_q = max(s2_min_q, (exit_p - entry_price) if t_dir == 1 else (entry_price - exit_p))
-                        total_trade_pnl = run_pts_per_q * total_qty
-                        gross_profit += total_trade_pnl
-                        total_brok += brok_tot
-                        net_inr = pts_to_inr(total_trade_pnl - brok_tot)
-
-                        markers_js.append({
-                            "time": t_sec_ist,
-                            "position": "aboveBar" if t_dir == 1 else "belowBar",
-                            "color": "#38bdf8",
-                            "shape": "circle",
-                            "text": f"🚀 BIG WAVE (₹{net_inr:+,.0f})"
-                        })
-                        trade_logs.insert(0, {
-                            "time": bar_ist, "type": f"{t_label} ({total_qty}Q {entry_tag})", "entry": entry_price,
-                            "exit": exit_p, "status": "🚀 BIG ST WAVE EXIT",
-                            "pnl": f"+{run_pts_per_q:,.0f}p/Q (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"
-                        })
-                        trade_dir = 0
-
-                # 4. Pre-Stage-2 Exit Check
-                if trade_dir != 0 and not tp2_reached:
-                    if not tp1_reached:
-                        adverse_close_pts = (entry_price - c) if t_dir == 1 else (c - entry_price)
-                        renko_sl_price = (entry_price - box_size * SL_BRICKS) if t_dir == 1 else (entry_price + box_size * SL_BRICKS)
-                        close_hit_renko_sl = (c <= renko_sl_price) if t_dir == 1 else (c >= renko_sl_price)
-                        brick_turned_bad = (
-                            (brick_dir == -1 and c < brick_bot and adverse_close_pts >= MAX_SL_PTS_PER_QTY * 0.65)
-                            if t_dir == 1
-                            else (brick_dir == 1 and c > brick_top and adverse_close_pts >= MAX_SL_PTS_PER_QTY * 0.65)
-                        )
-                        st_turned_bad = ((st_trend == -1) if t_dir == 1 else (st_trend == 1)) and (adverse_close_pts > 0)
-                        hard_crash = (l <= hard_stop_price) if t_dir == 1 else (h >= hard_stop_price)
-
-                        if close_hit_renko_sl or brick_turned_bad or st_turned_bad or hard_crash:
-                            losses += 1
-                            loss_per_qty = min(adverse_close_pts, locked_sl_pts) if (ANTI_WICK_SL and not hard_crash and adverse_close_pts > 0) else locked_sl_pts
-                            total_loss_tot = loss_per_qty * total_qty
-                            gross_loss += total_loss_tot
-                            total_brok += brok_tot
-                            net_loss_inr = pts_to_inr(-(total_loss_tot + brok_tot))
-
-                            markers_js.append({
-                                "time": t_sec_ist,
-                                "position": "belowBar" if t_dir == 1 else "aboveBar",
-                                "color": "#f87171",
-                                "shape": "circle",
-                                "text": f"🛑 SL (₹{net_loss_inr:+,.0f})"
-                            })
-                            trade_logs.insert(0, {
-                                "time": bar_ist, "type": f"{t_label} ({total_qty}Q {entry_tag})", "entry": entry_price,
-                                "exit": c, "status": f"🛑 SL HIT ({total_qty}Q)",
-                                "pnl": f"-{loss_per_qty:,.0f}p/Q (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"
-                            })
-                            trade_dir = 0
-                    else:
-                        hit_s1_close = (c <= stop_price) if t_dir == 1 else (c >= stop_price)
-                        st_turned_bad = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
-
-                        if (hit_s1_close or st_turned_bad) and not hit_tp1_now:
-                            exit_p = max(c, stop_price) if t_dir == 1 else min(c, stop_price)
-                            locked_pts_q = max(s1_lock_pts_q, (exit_p - entry_price) if t_dir == 1 else (entry_price - exit_p))
-                            total_trade_pnl = locked_pts_q * total_qty
-                            gross_profit += total_trade_pnl
-                            total_brok += brok_tot
-                            net_inr = pts_to_inr(total_trade_pnl - brok_tot)
-
-                            markers_js.append({
-                                "time": t_sec_ist,
-                                "position": "aboveBar" if t_dir == 1 else "belowBar",
-                                "color": "#4ade80",
-                                "shape": "circle",
-                                "text": f"✅ S1 WIN (₹{net_inr:+,.0f})"
-                            })
-                            trade_logs.insert(0, {
-                                "time": bar_ist, "type": f"{t_label} ({total_qty}Q {entry_tag})", "entry": entry_price,
-                                "exit": exit_p, "status": "✅ STAGE-1 WIN LOCK",
-                                "pnl": f"+{locked_pts_q:,.0f}p/Q (Net ₹{net_inr:+,.0f})", "color": "#22c55e"
-                            })
-                            trade_dir = 0
-
-            # ================================================================
-            # V16 TURBO ENTRY ENGINE (ST FLIP + BRICK STEP + PULLBACK BOUNCE!)
-            # ================================================================
-            candle_not_giant = (h - l) <= box_size * 1.90
-            bull_filter_ok   = candle_not_giant and buy_dom_pct >= MIN_VOL_DOM and 48.0 <= rsi14 < 76.0
-            bear_filter_ok   = candle_not_giant and sell_dom_pct >= MIN_VOL_DOM and 24.0 < rsi14 <= 52.0
-
-            # 1. Supertrend Flip Entry
-            trigger_flip_buy  = pending_flip_buy and st_trend == 1 and bull_filter_ok and c > o
-            trigger_flip_sell = pending_flip_sell and st_trend == -1 and bear_filter_ok and c < o
-
-            # 2. Brick-Step Continuation Entry (Up to Streak #5)
-            streak_ok  = brick_streak <= MAX_BRICK_STREAK
-            stretch_ok = abs(c - ema21) <= box_size * MAX_EMA_DIST_BRICKS
-            trigger_cont_buy  = (not trigger_flip_buy) and st_trend == 1 and brick_dir == 1 and brick_step_up and bull_filter_ok and c > ema21 and streak_ok and stretch_ok
-            trigger_cont_sell = (not trigger_flip_sell) and st_trend == -1 and brick_dir == -1 and brick_step_dn and bear_filter_ok and c < ema21 and streak_ok and stretch_ok
-
-            # 3. NEW: EMA21 Pullback Bounce Re-Entry (जब ट्रेंड चालू हो और प्राइस EMA21 को छूकर वापस ट्रेंड की दिशा में मजबूत कैंडल बनाए!)
-            pullback_bounce_buy  = (not trigger_flip_buy) and (not trigger_cont_buy) and st_trend == 1 and brick_dir == 1 and l <= (ema21 + box_size * 0.15) and c > ema21 and c > o and (c - o) >= (box_size * 0.30) and buy_dom_pct >= 54.0 and 50.0 < rsi14 < 70.0
-            pullback_bounce_sell = (not trigger_flip_sell) and (not trigger_cont_sell) and st_trend == -1 and brick_dir == -1 and h >= (ema21 - box_size * 0.15) and c < ema21 and c < o and (o - c) >= (box_size * 0.30) and sell_dom_pct >= 54.0 and 30.0 < rsi14 < 50.0
-
-            can_open_trade = (trade_dir == 0) or (tp1_reached and (st_flip_buy or st_flip_sell))
-
-            if can_open_trade and (trigger_flip_buy or trigger_cont_buy or pullback_bounce_buy or trigger_flip_sell or trigger_cont_sell or pullback_bounce_sell):
-                if trade_dir != 0 and tp1_reached:
-                    old_label = "LONG" if trade_dir == 1 else "SHORT"
-                    runner_pts_q = max(s1_lock_pts_q, (c - entry_price) if trade_dir == 1 else (entry_price - c))
-                    tot_flip_pnl = runner_pts_q * total_qty
-                    gross_profit += tot_flip_pnl
-                    total_brok += brok_tot
-                    net_flip_inr = pts_to_inr(tot_flip_pnl - brok_tot)
-                    trade_logs.insert(0, {
-                        "time": bar_ist, "type": f"{old_label} ({total_qty}Q {entry_tag})", "entry": entry_price,
-                        "exit": c, "status": "✅ ST FLIP WIN",
-                        "pnl": f"+{runner_pts_q:,.0f}p/Q (Net ₹{net_flip_inr:+,.0f})", "color": "#22c55e"
-                    })
-
-                is_long = trigger_flip_buy or trigger_cont_buy or pullback_bounce_buy
-                if is_long:
-                    pending_flip_buy = False
-                else:
-                    pending_flip_sell = False
-
-                trade_dir = 1 if is_long else -1
-                entry_bar = idx
-                entry_price = c
-                max_fav_close = c
-                tp1_reached = False
-                tp2_reached = False
-                if trigger_flip_buy or trigger_flip_sell:
-                    entry_tag = "🔥 ST"
-                elif pullback_bounce_buy or pullback_bounce_sell:
-                    entry_tag = "⚡ PB"
-                else:
-                    entry_tag = f"🧱 B#{brick_streak}"
-                entry_time_str = bar_ist
-
-                locked_tp1_pts = s1_trig_pts_q
-                locked_tp2_pts = box_size * STAGE2_TRIG_BRICKS
-                locked_sl_pts  = MAX_SL_PTS_PER_QTY
-
-                tp1_price       = (c + locked_tp1_pts) if is_long else (c - locked_tp1_pts)
-                tp2_price       = (c + locked_tp2_pts) if is_long else (c - locked_tp2_pts)
-                stop_price      = (c - locked_sl_pts) if is_long else (c + locked_sl_pts)
-                hard_stop_price = (c - box_size * 1.65) if is_long else (c + box_size * 1.65)
-
-                markers_js.append({
-                    "time": t_sec_ist,
-                    "position": "belowBar" if is_long else "aboveBar",
-                    "color": "#00e676" if is_long else "#ff1744",
-                    "shape": "arrowUp" if is_long else "arrowDown",
-                    "text": f"{'BUY' if is_long else 'SELL'} {entry_tag} @ {c:,.0f}"
-                })
-
-        prev_close = c
-
-    active_trade_info = {
-        "active": trade_dir != 0,
-        "dir": "LONG ▲" if trade_dir == 1 else ("SHORT ▼" if trade_dir == -1 else "NONE"),
-        "dir_code": trade_dir,
-        "tag": entry_tag,
-        "time": entry_time_str,
-        "entry": round(entry_price, 1),
-        "tp1": round(tp1_price, 1),
-        "tp2": round(tp2_price, 1),
-        "sl": round(stop_price, 1),
-        "tp1_reached": tp1_reached,
-        "tp2_reached": tp2_reached
+@st.cache_resource
+def get_quantum_live_v17_engine():
+    worker_id = int(time.time() * 1000)
+    eng = {
+        "active_worker_id": worker_id,
+        "initialized": False,
+        "live_order_active": False,
+        "config_key": "",
+        "signal_tf": "15m",
+        "st_factor": 2.0,
+        "range_divisor": 12.0,
+        "total_qty": 25,
+        "delta_btc_product_id": 27,
+        "delta_status": "🤖 Delta Live Algo: ACTIVE (Auto-Entry & Auto-Exit Ready)",
+        "last_price": 0.0,
+        "live_bar": None,
+        "last_error": None
     }
+    reset_and_warmup_engine(eng, "15m", 2.0, 12.0, 25)
+    t = threading.Thread(target=background_worker, args=(eng, worker_id), daemon=True)
+    t.start()
+    return eng
 
-    return {
-        "candles": candles_js,
-        "rclose": rclose_js,
-        "st_line": st_js,
-        "ema21": ema_js,
-        "markers": markers_js,
-        "logs": trade_logs[:50],
-        "box_size": box_size,
-        "macro_range": macro_range,
-        "last_price": candles_js[-1]["close"],
-        "r_close_now": rclose_js[-1]["value"],
-        "st_now": st_js[-1]["value"],
-        "st_trend": st_trend,
-        "brick_dir": brick_dir,
-        "brick_streak": brick_streak,
-        "wins": wins,
-        "losses": losses,
-        "tp2_hits": tp2_hits,
-        "days_back": days_back,
-        "net_pnl": gross_profit - gross_loss - total_brok,
-        "active_trade": active_trade_info
-    }
-
-# ============================================================================
-# TOP CONTROL BAR (15M FAST MODE + LOT SIZE MULTIPLIER FOR BIGGER PROFITS!)
-# ============================================================================
+eng = get_quantum_live_v17_engine()
 server_ip = get_server_public_ip()
-if "delta_msg" not in st.session_state:
-    st.session_state["delta_msg"] = "⏸️ Algo Paused (v16 Turbo: Faster 15m Multi-Wave + Lot Scaling)"
 
-c1, c2, c3, c4, c5, c6 = st.columns([0.24, 0.12, 0.16, 0.18, 0.16, 0.14])
-with c1:
+# ============================================================================
+# TOP CONTROL BAR (STEALTH LABELS + DELTA CONNECTION TEST BUTTON + FORCE EXIT)
+# ============================================================================
+r1_c1, r1_c2, r1_c3, r1_c4 = st.columns([0.46, 0.18, 0.18, 0.18])
+with r1_c1:
     st.markdown(
-        f"**🌐 IP:** `{server_ip}` | <span style='color:#facc15;font-weight:700;'>{st.session_state['delta_msg']}</span>",
+        f"**🌐 Server IP:** `{server_ip}` | <span style='color:#4ade80;font-weight:700;'>{eng.get('delta_status', 'Ready')}</span>",
         unsafe_allow_html=True
     )
-with c2:
-    selected_tf = st.selectbox("⏱️ टाइमफ्रेम", ["15m", "5m", "1h"], index=0, label_visibility="collapsed")
-with c3:
+with r1_c2:
+    if st.button("🔌 Delta API कनेक्शन टेस्ट करें"):
+        ok, resp = delta_request("GET", "/v2/wallet/balances")
+        if ok:
+            eng["delta_status"] = f"✅ Delta Demo API Connected! (Auto-Trading ON | IP: {server_ip})"
+        else:
+            eng["delta_status"] = f"⚠️ Delta API Error: {resp}"
+        st.rerun()
+with r1_c3:
+    if st.button("🛑 Force Close Delta Trade"):
+        if eng.get("trade_dir", 0) != 0:
+            close_side = "sell" if eng["trade_dir"] == 1 else "buy"
+            eng["live_order_active"] = True
+            place_delta_demo_order(eng, close_side, eng["total_qty"], tag="Manual Force Exit", is_exit=True)
+            eng["trade_dir"] = 0
+            eng["live_order_active"] = False
+        else:
+            eng["delta_status"] = "ℹ️ अभी कोई ओपन ट्रेड नहीं है"
+        st.rerun()
+with r1_c4:
+    if st.button("🔄 चार्ट व डेटा सिंक करें"):
+        st.rerun()
+
+r2_c1, r2_c2, r2_c3, r2_c4 = st.columns([0.22, 0.26, 0.26, 0.26])
+with r2_c1:
+    selected_tf = st.selectbox("⏱️ Timeframe", ["15m", "5m", "1h"], index=0, label_visibility="collapsed")
+with r2_c2:
     qty_label = st.selectbox(
-        "📦 Lot Size (Qty)",
+        "📦 Position Size",
         [
             "25 Lots (1p = ₹2.12)",
             "50 Lots (1p = ₹4.25)",
@@ -714,60 +931,87 @@ with c3:
         label_visibility="collapsed"
     )
     selected_qty = int(qty_label.split()[0])
-with c4:
+with r2_c3:
     div_label = st.selectbox(
-        "🧱 Brick Size (Divisor)",
+        "🧬 Matrix Grid Mode",
         [
-            "Div 12 (~250p Fast & Stable)",
-            "Div 14 (~210p Faster Trades)",
-            "Div 10 (~300p Big Brick)",
-            "Div 16 (~180p Scalper)"
+            "Mode 12 (Balanced Pro)",
+            "Mode 14 (High Frequency)",
+            "Mode 10 (Macro Wave)",
+            "Mode 16 (Turbo Scalper)"
         ],
         index=0,
         label_visibility="collapsed"
     )
     selected_divisor = float(div_label.split()[1])
-with c5:
+with r2_c4:
     st_mult_label = st.selectbox(
-        "⚡ ST Multiplier",
-        ["ST 2.0 (Fast - Best)", "ST 2.2 (Balanced)", "ST 1.8 (Super Fast)", "ST 2.5 (Smooth)"],
+        "🛡️ Neural Shield Sensitivity",
+        [
+            "Core 2.0 (Fast Shield - Best)",
+            "Core 2.2 (Balanced Shield)",
+            "Core 1.8 (Ultra Shield)",
+            "Core 2.5 (Wide Shield)"
+        ],
         index=0,
         label_visibility="collapsed"
     )
     selected_st_mult = float(st_mult_label.split()[1])
-with c6:
-    if st.button("🔄 चार्ट रिफ्रेश"):
-        st.rerun()
 
-data = build_chart_and_renko_signals(
-    signal_tf=selected_tf,
-    st_factor=selected_st_mult,
-    range_divisor=selected_divisor,
-    total_qty=selected_qty
-)
+desired_cfg = f"{selected_tf}_{selected_st_mult}_{selected_divisor}_{selected_qty}"
+if eng.get("config_key") != desired_cfg:
+    reset_and_warmup_engine(eng, selected_tf, selected_st_mult, selected_divisor, selected_qty)
 
-if not data:
-    st.warning("⏳ Hyperliquid से BTC चार्ट डेटा लोड हो रहा है, कृपया 2 सेकंड बाद रिफ्रेश करें...")
+if not eng.get("initialized", False) or not eng.get("candles_js"):
+    st.warning("⏳ Dr Devendra AI-Quantum Pro: लाइव चार्ट और न्यूरल सिग्नल्स सिंक हो रहे हैं...")
     st.stop()
 
-tot_tr = data["wins"] + data["losses"]
-wr_pct = (data["wins"] / tot_tr * 100.0) if tot_tr > 0 else 0.0
-net_inr_val = pts_to_inr(data["net_pnl"])
+# Build combined chart series including the currently forming live bar
+candles_full = list(eng["candles_js"])
+qcore_full   = list(eng["qcore_js"])
+nline_full   = list(eng["nline_js"])
+dline_full   = list(eng["dline_js"])
+
+if eng.get("live_bar"):
+    lb = eng["live_bar"]
+    candles_full.append(lb)
+    qcore_full.append({"time": lb["time"], "value": round(eng["q_core"], 1)})
+    nline_full.append({"time": lb["time"], "value": round(eng["n_line"], 1), "color": "#00e676" if eng["n_trend"] == 1 else "#ff5252"})
+    dline_full.append({"time": lb["time"], "value": round(eng["ema21"], 1)})
+
+tot_tr = eng["wins"] + eng["losses"]
+wr_pct = (eng["wins"] / tot_tr * 100.0) if tot_tr > 0 else 0.0
+net_pnl_pts = eng["gross_profit"] - eng["gross_loss"] - eng["total_brok"]
+net_inr_val = pts_to_inr(net_pnl_pts)
 pt_inr = selected_qty * 0.001 * USD_INR_RATE
 fee_per_tr_inr = pts_to_inr(BROK_PER_QTY * selected_qty)
 
-st_txt = f"{selected_tf.upper()} RENKO ST ({selected_st_mult}): BUY ▲" if data["st_trend"] == 1 else f"{selected_tf.upper()} RENKO ST ({selected_st_mult}): SELL ▼"
-st_col = "#00e676" if data["st_trend"] == 1 else "#ff5252"
+matrix_txt = f"{selected_tf.upper()} AI MATRIX: BULLISH ▲" if eng["n_trend"] == 1 else f"{selected_tf.upper()} AI MATRIX: BEARISH ▼"
+matrix_col = "#00e676" if eng["n_trend"] == 1 else "#ff5252"
+
+active_trade_info = {
+    "active": eng["trade_dir"] != 0,
+    "dir": "LONG ▲" if eng["trade_dir"] == 1 else ("SHORT ▼" if eng["trade_dir"] == -1 else "NONE"),
+    "dir_code": eng["trade_dir"],
+    "tag": eng["entry_tag"],
+    "time": eng["entry_time_str"],
+    "entry": round(eng["entry_price"], 1),
+    "tp1": round(eng["tp1_price"], 1),
+    "tp2": round(eng["tp2_price"], 1),
+    "sl": round(eng["stop_price"], 1),
+    "tp1_reached": eng["tp1_reached"],
+    "tp2_reached": eng["tp2_reached"]
+}
 
 # ============================================================================
-# INTERACTIVE TRADINGVIEW LIGHTWEIGHT CHART (V16 TURBO MULTI-WAVE)
+# INTERACTIVE STEALTH AI-QUANTUM CHART (ZERO MENTION OF UNDERLYING INDICATORS)
 # ============================================================================
-candles_json = json.dumps(data["candles"])
-rclose_json  = json.dumps(data["rclose"])
-st_json      = json.dumps(data["st_line"])
-ema_json     = json.dumps(data["ema21"])
-markers_json = json.dumps(data["markers"])
-active_json  = json.dumps(data["active_trade"])
+candles_json = json.dumps(candles_full)
+qcore_json   = json.dumps(qcore_full)
+nline_json   = json.dumps(nline_full)
+dline_json   = json.dumps(dline_full)
+markers_json = json.dumps(eng["markers_js"])
+active_json  = json.dumps(active_trade_info)
 
 chart_html = f"""<!DOCTYPE html>
 <html>
@@ -790,7 +1034,7 @@ chart_html = f"""<!DOCTYPE html>
   .live-px {{ font-size: 28px; font-weight: 800; color: #ffffff; }}
   .badge {{
     padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700;
-    border: 1px solid {st_col}; color: {st_col}; background: #1e293b;
+    border: 1px solid {matrix_col}; color: {matrix_col}; background: #1e293b;
   }}
   .legend-bar {{
     display: flex; gap: 16px; font-size: 12px; color: #cbd5e1;
@@ -812,11 +1056,11 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div class="hud-left">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ BTCUSD ({selected_tf.upper()} • {selected_qty} LOTS • 1p = ₹{pt_inr:.2f}) v16 TURBO</span>
-      <span id="live-price-txt" class="live-px">${data['last_price']:,.2f}</span>
-      <span class="badge">{st_txt}</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ DR DEVENDRA AI-QUANTUM PRO ({selected_tf.upper()} • {selected_qty} LOTS • AUTO-ALGO ON)</span>
+      <span id="live-price-txt" class="live-px">${eng['last_price']:,.2f}</span>
+      <span class="badge">{matrix_txt}</span>
       <span style="font-size:12px; color:#facc15; font-weight:700;">
-        🧱 1 Brick: {data['box_size']:,.1f}p (₹{data['box_size']*pt_inr:,.0f}) | rClose: {data['r_close_now']:,.1f} | ST Line: {data['st_now']:,.1f}
+        🧬 Q-Grid: {eng['unit_size']:,.1f}p | Q-Core: {eng['q_core']:,.1f} | Neural Shield: {eng['n_line']:,.1f}
       </span>
     </div>
     <div class="btn-bar">
@@ -826,11 +1070,11 @@ chart_html = f"""<!DOCTYPE html>
   </div>
 
   <div class="legend-bar">
-    <div class="leg-item"><span class="dot" style="background:#facc15;"></span> Renko Step (rClose)</div>
-    <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Renko ST ({selected_st_mult})</div>
-    <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> EMA 21 (⚡PB Bounce)</div>
+    <div class="leg-item"><span class="dot" style="background:#facc15;"></span> Quantum Step (Q-Core)</div>
+    <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Neural Shield (N-Line)</div>
+    <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> Dynamic Pulse (D-Line)</div>
     <div id="hover-info" style="margin-left:auto; color:#e2e8f0; font-size:12.5px; font-weight:700;">
-      🗓️ Last {data['days_back']} Days: <span style="color:#facc15;">{tot_tr} Trades</span> ({data['wins']}W / {data['losses']}L) | 🏆 WR: <span style="color:#00e676;">{wr_pct:.1f}%</span> | 🚀 Big Waves: {data['tp2_hits']} | 💰 Net Profit ({selected_qty}Q After ₹{fee_per_tr_inr:.0f}/Trd Fee): <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
+      🗓️ {eng['days_back']} Days: <span style="color:#facc15;">{tot_tr} Trades</span> ({eng['wins']}W / {eng['losses']}L) | 🏆 Accuracy: <span style="color:#00e676;">{wr_pct:.1f}%</span> | 🚀 Quantum Waves: {eng['tp2_hits']} | 💰 Net Profit ({selected_qty}L After Fee): <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
     </div>
   </div>
 
@@ -839,9 +1083,9 @@ chart_html = f"""<!DOCTYPE html>
 
 <script>
 const candlesData = {candles_json};
-const rcloseData  = {rclose_json};
-const stData      = {st_json};
-const emaData     = {ema_json};
+const qcoreData   = {qcore_json};
+const nlineData   = {nline_json};
+const dlineData   = {dline_json};
 const markersData = {markers_json};
 const activeTrade = {active_json};
 
@@ -883,28 +1127,28 @@ const candleSeries = chart.addCandlestickSeries({{
 candleSeries.setData(candlesData);
 candleSeries.setMarkers(markersData);
 
-const rcloseSeries = chart.addLineSeries({{
+const qcoreSeries = chart.addLineSeries({{
   color: '#facc15',
   lineWidth: 2,
   lineType: LightweightCharts.LineType.WithSteps,
-  title: 'rClose (Brick)'
+  title: 'Q-Core'
 }});
-rcloseSeries.setData(rcloseData);
+qcoreSeries.setData(qcoreData);
 
-const stSeries = chart.addLineSeries({{
+const nlineSeries = chart.addLineSeries({{
   lineWidth: 3,
   lineType: LightweightCharts.LineType.WithSteps,
-  title: 'Renko ST (' + {selected_st_mult} + ')'
+  title: 'Neural Shield'
 }});
-stSeries.setData(stData);
+nlineSeries.setData(nlineData);
 
-const emaSeries = chart.addLineSeries({{
+const dlineSeries = chart.addLineSeries({{
   color: '#38bdf8',
   lineWidth: 1,
   lineStyle: LightweightCharts.LineStyle.Dashed,
-  title: 'EMA21'
+  title: 'D-Line'
 }});
-emaSeries.setData(emaData);
+dlineSeries.setData(dlineData);
 
 if (activeTrade && activeTrade.active) {{
   candleSeries.createPriceLine({{
@@ -913,7 +1157,7 @@ if (activeTrade && activeTrade.active) {{
     lineWidth: 2,
     lineStyle: LightweightCharts.LineStyle.Solid,
     axisLabelVisible: true,
-    title: 'ENTRY (' + activeTrade.dir + ')'
+    title: 'ACTIVE ENTRY (' + activeTrade.dir + ')'
   }});
   candleSeries.createPriceLine({{
     price: activeTrade.tp1,
@@ -921,7 +1165,7 @@ if (activeTrade && activeTrade.active) {{
     lineWidth: 2,
     lineStyle: LightweightCharts.LineStyle.Dashed,
     axisLabelVisible: true,
-    title: 'S1 Win Lock'
+    title: 'Stage-1 Lock'
   }});
   candleSeries.createPriceLine({{
     price: activeTrade.tp2,
@@ -929,7 +1173,7 @@ if (activeTrade && activeTrade.active) {{
     lineWidth: 2,
     lineStyle: LightweightCharts.LineStyle.Dashed,
     axisLabelVisible: true,
-    title: 'S2 Big Wave'
+    title: 'Quantum Wave'
   }});
   candleSeries.createPriceLine({{
     price: activeTrade.sl,
@@ -937,7 +1181,7 @@ if (activeTrade && activeTrade.active) {{
     lineWidth: 2,
     lineStyle: LightweightCharts.LineStyle.Solid,
     axisLabelVisible: true,
-    title: activeTrade.tp1_reached ? 'CLOSE-ONLY TRAIL SL' : 'INITIAL SL'
+    title: activeTrade.tp1_reached ? 'LOCKED SHIELD SL' : 'INITIAL SHIELD SL'
   }});
 }}
 
@@ -978,28 +1222,28 @@ setInterval(async () => {{
 </body>
 </html>"""
 
-components.html(chart_html, height=650, scrolling=False)
+components.html(chart_html, height=640, scrolling=False)
 
 # ============================================================================
-# ACTIVE SIGNAL BANNER & TRADE HISTORY LOG BELOW CHART
+# ACTIVE TRADE STATUS BANNER & STEALTH EXECUTION LOG
 # ============================================================================
-act = data["active_trade"]
+act = active_trade_info
 if act["active"]:
-    live_pts_q = (data["last_price"] - act["entry"]) if act["dir_code"] == 1 else (act["entry"] - data["last_price"])
+    live_pts_q = (eng["last_price"] - act["entry"]) if act["dir_code"] == 1 else (act["entry"] - eng["last_price"])
     live_net_inr = pts_to_inr((live_pts_q * selected_qty) - (BROK_PER_QTY * selected_qty))
     st.markdown(
         f"""<div style="background:#1e293b; border:1.5px solid #00e676; border-radius:10px; padding:10px 14px; margin-bottom:10px; font-size:13px;">
-        🔥 <b>चार्ट पर वर्तमान ओपन ट्रेड ({selected_qty} Lots • 1p = ₹{pt_inr:.2f}):</b>
+        🔥 <b>लाइव ओपन पोज़ीशन ({selected_qty} Lots • Auto-Exit Active):</b>
         <span style="color:#facc15;font-weight:bold;">{act['dir']} ({act['tag']} @ {act['time']})</span> |
-        <b>Entry:</b> {act['entry']:,.1f} | <b>Live Net PnL:</b> <span style="color:#4ade80;font-weight:800;">₹{live_net_inr:+,.0f} ({live_pts_q:+,.1f}p/Q)</span> |
-        <b>Stage-1:</b> {act['tp1']:,.1f} | <b>Stage-2:</b> {act['tp2']:,.1f} | <b>Current SL:</b> <span style="color:#38bdf8;font-weight:bold;">{act['sl']:,.1f}</span>
+        <b>Entry:</b> {act['entry']:,.1f} | <b>Live Net PnL:</b> <span style="color:#4ade80;font-weight:800;">₹{live_net_inr:+,.0f} ({live_pts_q:+,.1f}p/L)</span> |
+        <b>Stage-1 Lock:</b> {act['tp1']:,.1f} | <b>Quantum Wave:</b> {act['tp2']:,.1f} | <b>Shield SL:</b> <span style="color:#38bdf8;font-weight:bold;">{act['sl']:,.1f}</span>
         </div>""",
         unsafe_allow_html=True
     )
 
-with st.expander(f"📜 v16 Turbo ({selected_tf.upper()} • {selected_qty} Lots) के सभी सिग्नल्स और ट्रेड्स की लिस्ट देखें (Click to Expand)", expanded=True):
+with st.expander(f"📜 Dr Devendra AI-Quantum Pro ({selected_tf.upper()} • {selected_qty} Lots) सिग्नल व एग्जिट लॉग (Click to Expand)", expanded=True):
     rows_html = ""
-    for lg in data["logs"]:
+    for lg in eng["trade_logs"]:
         c_hex = lg["color"]
         rows_html += f"""<tr style="border-bottom:1px solid #334155; font-size:12.5px;">
         <td style="padding:7px; color:#94a3b8;">{lg['time']}</td>
@@ -1012,8 +1256,8 @@ with st.expander(f"📜 v16 Turbo ({selected_tf.upper()} • {selected_qty} Lots
         f"""<div style="max-height:320px; overflow-y:auto; background:#0f172a; border-radius:10px; padding:10px; border:1px solid #1e293b;">
         <table style="width:100%; border-collapse:collapse;">
         <thead><tr style="border-bottom:1px solid #475569; font-size:11.5px; color:#94a3b8; text-align:left;">
-        <th style="padding:6px;">समय (IST)</th><th style="padding:6px;">सिग्नल</th><th style="padding:6px;">Entry → Exit</th>
-        <th style="padding:6px;">एग्जिट स्टेटस</th><th style="padding:6px; text-align:right;">{selected_qty}Q Net PnL (₹{fee_per_tr_inr:.0f} फीस काटकर)</th>
+        <th style="padding:6px;">समय (IST)</th><th style="padding:6px;">AI सिग्नल</th><th style="padding:6px;">Entry → Exit</th>
+        <th style="padding:6px;">एग्जिट स्टेटस</th><th style="padding:6px; text-align:right;">{selected_qty}L Net PnL (₹{fee_per_tr_inr:.0f} फीस काटकर)</th>
         </tr></thead><tbody>{rows_html}</tbody></table></div>""",
         unsafe_allow_html=True
     )
