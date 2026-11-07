@@ -8,7 +8,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra AI-Renko 75%+ Win-Rate Chart (v15 - ₹100 S1 Lock)", layout="wide")
+st.set_page_config(page_title="Dr Devendra AI-Renko Turbo Fast & Big Trades (v16)", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -85,7 +85,7 @@ def delta_request(method, path, payload_dict=None):
             last_err = str(e)
     return False, last_err
 
-def place_delta_demo_order(side, qty, tag="Renko 10Q", is_exit=False, prod_id=27):
+def place_delta_demo_order(side, qty, tag="Renko", is_exit=False, prod_id=27):
     if not ALGO_EXECUTION_ENABLED or qty <= 0:
         return False, "Algo Paused (Chart Test Mode)"
     try:
@@ -106,34 +106,33 @@ def place_delta_demo_order(side, qty, tag="Renko 10Q", is_exit=False, prod_id=27
         return False, str(e)
 
 # ============================================================================
-# V15 PARAMETERS: STAGE-1 WIN LOCK UPGRADED FROM NET ₹+55 TO NET ₹+100!
+# V16 TURBO ENGINE: FASTER TRADES + MULTI-WAVE RE-ENTRY + BIG RUNNERS
 # ============================================================================
-TOTAL_QTY            = 10
 USD_INR_RATE         = 85.0
-BROK_PER_QTY         = 82.38   # Real Delta CSV Fee: ₹70.02 per 10Q trade (823.8 lot-pts)
+BROK_PER_QTY         = 82.38   # Real Delta CSV Fee: 82.38 pts/Qty ($0.08238 = ₹7.002 per Qty Round-Trip)
 
-# 🎯 STAGE-1 NET ₹+100 LOCK MATH:
-# ₹70.02 फीस काटने के बाद पूरे Net ₹+100 बचने के लिए Gross ₹170.02 = +2,001 lot-pts (+200.1 pts/Q) चाहिए!
-STAGE1_TRIG_BRICKS   = 1.00    # 1.00 Brick (~+238p) छूते ही Stage-1 Win Lock एक्टिव
-STAGE1_LOCK_BRICKS   = 0.843   # +0.843 Brick (~+200.1p/Q = +2,001p Gross -> ₹70 फीस काटकर सीधा Net ₹+100 पक्का!)
-STAGE1_MIN_PTS_Q     = 200.1   # कम से कम +200.1 pts/Q (Net ₹+100) गारंटीड फ्लोर
-STAGE2_TRIG_BRICKS   = 1.85    # +1.85 Bricks पर Big Wave Runner Mode एक्टिव
-STAGE2_FLOOR_BRICKS  = 1.35    # +1.35 Bricks फ्लोर
-CLOSE_TRAIL_BRICKS   = 1.10    # केवल Candle Close या Fast ST Line से ट्रेल (सुई/Wick से कभी बाहर नहीं होगा!)
+# 🚀 V16 TURBO RE-ENTRY & BIG RUNNER RULES:
+# 1. Stage-1 Trigger (1.00B) पर कम से कम +215 pts/Q (10Q पर Net ₹+112 | 25Q पर Net ₹+280 | 50Q पर Net ₹+560) लॉक होगा।
+# 2. पुलबैक री-एंट्री (Pullback Continuation): अगर एक ट्रेंड में ट्रेड प्रॉफिट बुक करके निकल गया और सुपरट्रेंड अभी भी उसी दिशा में है,
+#    तो अगली फ्रेश मोमेंटम कैंडल या ब्रिक बनते ही तुरंत दूसरा ट्रेड (Wave-2 / Wave-3) ले लेगा ताकि कोई भी बड़ा मूव खाली न जाए!
+STAGE1_TRIG_BRICKS   = 1.00
+STAGE1_LOCK_BRICKS   = 0.85
+STAGE1_MIN_PTS_Q     = 215.0   # कम से कम +215 pts/Q (फीस काटने के बाद भी मजबूत मुनाफा)
+STAGE2_TRIG_BRICKS   = 1.75    # +1.75B पर तुरंत Big Wave Runner एक्टिव
+STAGE2_FLOOR_BRICKS  = 1.35    # +1.35B फ्लोर लॉक
+CLOSE_TRAIL_BRICKS   = 1.15    # केवल Candle Close पर ट्रेल (ताकि कैंडल की सुई/Wick से बड़ा ट्रेड कभी न कटे!)
 
-USE_STREAK_FILTER    = True
-MAX_BRICK_STREAK     = 2
-USE_STRETCH_FILTER   = True
-MAX_EMA_DIST_BRICKS  = 1.75
-MIN_VOL_DOM          = 54.0
+# ⚡ FAST ENTRY UNLOCK (ताकि जल्दी और ज़्यादा हाई-कन्विक्शन ट्रेड्स मिलें):
+MAX_BRICK_STREAK     = 5       # Streak #5 तक सभी मजबूत ब्रिक ब्रेकआउट्स की अनुमति
+MAX_EMA_DIST_BRICKS  = 2.6     # मजबूत ट्रेंड में EMA से दूर होने पर भी ट्रेड मिस नहीं करेगा
+MIN_VOL_DOM          = 50.0    # 50%+ ऑर्डरफ्लो डोमिनेंस
 
 ATR_PERIOD           = 5
 USE_GAUSSIAN         = True
-GAUSS_PERIOD         = 20
+GAUSS_PERIOD         = 14      # 20 से घटाकर 14 (तेज ब्रिक रिस्पॉन्स के लिए)
 
-SL_BRICKS            = 1.45
-SL_RUPEES_CAP_10Q    = 200.0
-MAX_SL_PTS_PER_QTY   = round((SL_RUPEES_CAP_10Q / USD_INR_RATE) * (1000.0 / TOTAL_QTY), 1)
+SL_BRICKS            = 1.40
+MAX_SL_PTS_PER_QTY   = 235.3   # 235.3 BTC pts/Q (10Q पर ₹200 SL)
 ANTI_WICK_SL         = True
 MINTICK              = 0.1
 
@@ -143,7 +142,7 @@ def pts_to_inr(lot_pts):
     return lot_pts * 0.001 * USD_INR_RATE
 
 # ============================================================================
-# FETCH HISTORICAL CANDLES & COMPUTE V15 ENGINE (NET ₹+100 STAGE-1 LOCK)
+# FETCH HISTORICAL CANDLES & COMPUTE V16 TURBO RENKO ENGINE
 # ============================================================================
 def fetch_hl_klines_range(interval, start_ms, end_ms):
     for attempt in range(3):
@@ -206,7 +205,7 @@ def calc_daily_atr5():
             rma[i] = (rma[i - 1] * (ATR_PERIOD - 1) + v) / float(ATR_PERIOD)
     return rma[-2]
 
-def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=12.0):
+def build_chart_and_renko_signals(signal_tf="15m", st_factor=2.0, range_divisor=12.0, total_qty=25):
     macro_range = calc_daily_atr5()
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
@@ -219,12 +218,11 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
         return None
 
     box_size = max(macro_range / float(range_divisor), MINTICK * 2.0)
-    brok_10q = BROK_PER_QTY * TOTAL_QTY
+    brok_tot = BROK_PER_QTY * total_qty
     ist_offset_sec = 19800  # +5:30 IST offset
 
-    # Stage-1 Lock Points per Qty: Ensures at least +200.1 pts/Q (+2,001p Gross = Net ₹+100 after ₹70 fee!)
     s1_lock_pts_q = max(box_size * STAGE1_LOCK_BRICKS, STAGE1_MIN_PTS_Q)
-    s1_trig_pts_q = max(box_size * STAGE1_TRIG_BRICKS, s1_lock_pts_q + 35.0)
+    s1_trig_pts_q = max(box_size * STAGE1_TRIG_BRICKS, s1_lock_pts_q + 30.0)
 
     candles_js = []
     rclose_js = []
@@ -448,7 +446,7 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
         ema_js.append({"time": t_sec_ist, "value": round(ema21, 1)})
 
         # ====================================================================
-        # V15 ENGINE: STAGE-1 LOCKS NET ₹+100 (+2,001p) & STAGE-2 RIDES BIG WAVE
+        # V16 TURBO MULTI-WAVE ENGINE (FAST TRADES + BIG PROFITS)
         # ====================================================================
         if idx < len(klines) - 1:
             if trade_dir != 0 and idx > entry_bar:
@@ -456,7 +454,7 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
                 t_label = "LONG" if t_dir == 1 else "SHORT"
                 max_fav_close = max(max_fav_close, c) if t_dir == 1 else min(max_fav_close, c)
 
-                # 1. Stage-1 Trigger -> Locks +200.1 pts/Q (+2,001p Gross = Net ₹+100 Guaranteed!)
+                # 1. Stage-1 Trigger -> Locks +215.0 pts/Q
                 hit_tp1_now = (not tp1_reached) and ((h >= tp1_price) if t_dir == 1 else (l <= tp1_price))
                 if hit_tp1_now:
                     tp1_reached = True
@@ -464,23 +462,22 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
                     s1_sl = (entry_price + s1_lock_pts_q) if t_dir == 1 else (entry_price - s1_lock_pts_q)
                     stop_price = max(stop_price, s1_sl) if t_dir == 1 else min(stop_price, s1_sl)
 
-                # 2. Stage-2 Trigger (+1.85 Bricks) -> Locks +1.35B Floor & Rides ST Line / Close Trail!
+                # 2. Stage-2 Trigger (+1.75 Bricks) -> Big Wave Runner Mode
                 hit_tp2_now = tp1_reached and (not tp2_reached) and ((h >= tp2_price) if t_dir == 1 else (l <= tp2_price))
                 if hit_tp2_now:
                     tp2_reached = True
                     tp2_hits += 1
-                    s2_floor_pts = max(box_size * STAGE2_FLOOR_BRICKS, s1_lock_pts_q + 80.0)
+                    s2_floor_pts = max(box_size * STAGE2_FLOOR_BRICKS, s1_lock_pts_q + 85.0)
                     s2_sl = (entry_price + s2_floor_pts) if t_dir == 1 else (entry_price - s2_floor_pts)
                     stop_price = max(stop_price, s2_sl) if t_dir == 1 else min(stop_price, s2_sl)
 
-                # Ratchet stop_price up with Renko ST Line if ST Line is above current stop_price
                 if tp1_reached:
                     if t_dir == 1 and st_trend == 1 and st_line > stop_price:
                         stop_price = st_line
                     elif t_dir == -1 and st_trend == -1 and st_line < stop_price:
                         stop_price = st_line
 
-                # 3. Stage-2 Big Wave Trailing (Checks CANDLE CLOSE `c` or ST Reversal — NEVER Wicks!)
+                # 3. Stage-2 Big Wave Trailing (Candle Close Only)
                 if trade_dir != 0 and tp2_reached:
                     gap_dist = box_size * CLOSE_TRAIL_BRICKS
                     brick_trail = (r_close - gap_dist) if t_dir == 1 else (r_close + gap_dist)
@@ -493,12 +490,12 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
 
                     if (close_hit_trail or st_reversed) and not hit_tp2_now:
                         exit_p = max(c, stop_price) if t_dir == 1 else min(c, stop_price)
-                        s2_min_q = max(box_size * STAGE2_FLOOR_BRICKS, s1_lock_pts_q + 80.0)
+                        s2_min_q = max(box_size * STAGE2_FLOOR_BRICKS, s1_lock_pts_q + 85.0)
                         run_pts_per_q = max(s2_min_q, (exit_p - entry_price) if t_dir == 1 else (entry_price - exit_p))
-                        total_trade_pnl = run_pts_per_q * TOTAL_QTY
+                        total_trade_pnl = run_pts_per_q * total_qty
                         gross_profit += total_trade_pnl
-                        total_brok += brok_10q
-                        net_inr = pts_to_inr(total_trade_pnl - brok_10q)
+                        total_brok += brok_tot
+                        net_inr = pts_to_inr(total_trade_pnl - brok_tot)
 
                         markers_js.append({
                             "time": t_sec_ist,
@@ -508,13 +505,13 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
                             "text": f"🚀 BIG WAVE (₹{net_inr:+,.0f})"
                         })
                         trade_logs.insert(0, {
-                            "time": bar_ist, "type": f"{t_label} ({entry_tag})", "entry": entry_price,
-                            "exit": exit_p, "status": "🚀 10Q BIG ST WAVE EXIT",
-                            "pnl": f"+{total_trade_pnl:,.0f}p (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"
+                            "time": bar_ist, "type": f"{t_label} ({total_qty}Q {entry_tag})", "entry": entry_price,
+                            "exit": exit_p, "status": "🚀 BIG ST WAVE EXIT",
+                            "pnl": f"+{run_pts_per_q:,.0f}p/Q (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"
                         })
                         trade_dir = 0
 
-                # 4. Pre-Stage-2 Exit Check (Stage-1 Net ₹+100 Lock or Initial SL)
+                # 4. Pre-Stage-2 Exit Check
                 if trade_dir != 0 and not tp2_reached:
                     if not tp1_reached:
                         adverse_close_pts = (entry_price - c) if t_dir == 1 else (c - entry_price)
@@ -531,10 +528,10 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
                         if close_hit_renko_sl or brick_turned_bad or st_turned_bad or hard_crash:
                             losses += 1
                             loss_per_qty = min(adverse_close_pts, locked_sl_pts) if (ANTI_WICK_SL and not hard_crash and adverse_close_pts > 0) else locked_sl_pts
-                            total_loss_10q = loss_per_qty * TOTAL_QTY
-                            gross_loss += total_loss_10q
-                            total_brok += brok_10q
-                            net_loss_inr = pts_to_inr(-(total_loss_10q + brok_10q))
+                            total_loss_tot = loss_per_qty * total_qty
+                            gross_loss += total_loss_tot
+                            total_brok += brok_tot
+                            net_loss_inr = pts_to_inr(-(total_loss_tot + brok_tot))
 
                             markers_js.append({
                                 "time": t_sec_ist,
@@ -544,23 +541,22 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
                                 "text": f"🛑 SL (₹{net_loss_inr:+,.0f})"
                             })
                             trade_logs.insert(0, {
-                                "time": bar_ist, "type": f"{t_label} ({entry_tag})", "entry": entry_price,
-                                "exit": c, "status": "🛑 SL HIT (10Q)",
-                                "pnl": f"-{total_loss_10q:,.0f}p (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"
+                                "time": bar_ist, "type": f"{t_label} ({total_qty}Q {entry_tag})", "entry": entry_price,
+                                "exit": c, "status": f"🛑 SL HIT ({total_qty}Q)",
+                                "pnl": f"-{loss_per_qty:,.0f}p/Q (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"
                             })
                             trade_dir = 0
                     else:
-                        # Stage-1 Locked: Exits ONLY on Candle Close (`c <= stop_price`) or ST Flip -> Gives Net ₹+100+!
                         hit_s1_close = (c <= stop_price) if t_dir == 1 else (c >= stop_price)
                         st_turned_bad = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
 
                         if (hit_s1_close or st_turned_bad) and not hit_tp1_now:
                             exit_p = max(c, stop_price) if t_dir == 1 else min(c, stop_price)
                             locked_pts_q = max(s1_lock_pts_q, (exit_p - entry_price) if t_dir == 1 else (entry_price - exit_p))
-                            total_trade_pnl = locked_pts_q * TOTAL_QTY
+                            total_trade_pnl = locked_pts_q * total_qty
                             gross_profit += total_trade_pnl
-                            total_brok += brok_10q
-                            net_inr = pts_to_inr(total_trade_pnl - brok_10q)
+                            total_brok += brok_tot
+                            net_inr = pts_to_inr(total_trade_pnl - brok_tot)
 
                             markers_js.append({
                                 "time": t_sec_ist,
@@ -570,49 +566,50 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
                                 "text": f"✅ S1 WIN (₹{net_inr:+,.0f})"
                             })
                             trade_logs.insert(0, {
-                                "time": bar_ist, "type": f"{t_label} ({entry_tag})", "entry": entry_price,
-                                "exit": exit_p, "status": "✅ 10Q STAGE-1 WIN LOCK (₹100+)",
-                                "pnl": f"+{total_trade_pnl:,.0f}p (Net ₹{net_inr:+,.0f})", "color": "#22c55e"
+                                "time": bar_ist, "type": f"{t_label} ({total_qty}Q {entry_tag})", "entry": entry_price,
+                                "exit": exit_p, "status": "✅ STAGE-1 WIN LOCK",
+                                "pnl": f"+{locked_pts_q:,.0f}p/Q (Net ₹{net_inr:+,.0f})", "color": "#22c55e"
                             })
                             trade_dir = 0
 
             # ================================================================
-            # HIGH-PROBABILITY ENTRY SIGNALS (EMA21 ALIGNED + BRICK SYNCED)
+            # V16 TURBO ENTRY ENGINE (ST FLIP + BRICK STEP + PULLBACK BOUNCE!)
             # ================================================================
-            candle_not_giant = (h - l) <= box_size * 1.80
-            bull_filter_ok   = candle_not_giant and buy_dom_pct >= 52.0 and c > ema21 and 50.0 <= rsi14 < 74.0
-            bear_filter_ok   = candle_not_giant and sell_dom_pct >= 52.0 and c < ema21 and 26.0 < rsi14 <= 50.0
+            candle_not_giant = (h - l) <= box_size * 1.90
+            bull_filter_ok   = candle_not_giant and buy_dom_pct >= MIN_VOL_DOM and 48.0 <= rsi14 < 76.0
+            bear_filter_ok   = candle_not_giant and sell_dom_pct >= MIN_VOL_DOM and 24.0 < rsi14 <= 52.0
 
-            trigger_flip_buy  = pending_flip_buy and st_trend == 1 and brick_dir == 1 and bull_filter_ok and c > o
-            trigger_flip_sell = pending_flip_sell and st_trend == -1 and brick_dir == -1 and bear_filter_ok and c < o
+            # 1. Supertrend Flip Entry
+            trigger_flip_buy  = pending_flip_buy and st_trend == 1 and bull_filter_ok and c > o
+            trigger_flip_sell = pending_flip_sell and st_trend == -1 and bear_filter_ok and c < o
 
-            raw_cont_buy  = (not trigger_flip_buy) and st_trend == 1 and brick_dir == 1 and brick_step_up and buy_dom_pct >= MIN_VOL_DOM and c > ema21 and 52.0 < rsi14 < 71.0 and candle_not_giant
-            raw_cont_sell = (not trigger_flip_sell) and st_trend == -1 and brick_dir == -1 and brick_step_dn and sell_dom_pct >= MIN_VOL_DOM and c < ema21 and 29.0 < rsi14 < 48.0 and candle_not_giant
+            # 2. Brick-Step Continuation Entry (Up to Streak #5)
+            streak_ok  = brick_streak <= MAX_BRICK_STREAK
+            stretch_ok = abs(c - ema21) <= box_size * MAX_EMA_DIST_BRICKS
+            trigger_cont_buy  = (not trigger_flip_buy) and st_trend == 1 and brick_dir == 1 and brick_step_up and bull_filter_ok and c > ema21 and streak_ok and stretch_ok
+            trigger_cont_sell = (not trigger_flip_sell) and st_trend == -1 and brick_dir == -1 and brick_step_dn and bear_filter_ok and c < ema21 and streak_ok and stretch_ok
 
-            streak_ok  = (not USE_STREAK_FILTER) or (brick_streak <= MAX_BRICK_STREAK)
-            stretch_ok = (not USE_STRETCH_FILTER) or (abs(c - ema21) <= box_size * MAX_EMA_DIST_BRICKS)
-            late_safe  = streak_ok and stretch_ok
-
-            trigger_cont_buy  = raw_cont_buy and late_safe
-            trigger_cont_sell = raw_cont_sell and late_safe
+            # 3. NEW: EMA21 Pullback Bounce Re-Entry (जब ट्रेंड चालू हो और प्राइस EMA21 को छूकर वापस ट्रेंड की दिशा में मजबूत कैंडल बनाए!)
+            pullback_bounce_buy  = (not trigger_flip_buy) and (not trigger_cont_buy) and st_trend == 1 and brick_dir == 1 and l <= (ema21 + box_size * 0.15) and c > ema21 and c > o and (c - o) >= (box_size * 0.30) and buy_dom_pct >= 54.0 and 50.0 < rsi14 < 70.0
+            pullback_bounce_sell = (not trigger_flip_sell) and (not trigger_cont_sell) and st_trend == -1 and brick_dir == -1 and h >= (ema21 - box_size * 0.15) and c < ema21 and c < o and (o - c) >= (box_size * 0.30) and sell_dom_pct >= 54.0 and 30.0 < rsi14 < 50.0
 
             can_open_trade = (trade_dir == 0) or (tp1_reached and (st_flip_buy or st_flip_sell))
 
-            if can_open_trade and (trigger_flip_buy or trigger_cont_buy or trigger_flip_sell or trigger_cont_sell):
+            if can_open_trade and (trigger_flip_buy or trigger_cont_buy or pullback_bounce_buy or trigger_flip_sell or trigger_cont_sell or pullback_bounce_sell):
                 if trade_dir != 0 and tp1_reached:
                     old_label = "LONG" if trade_dir == 1 else "SHORT"
                     runner_pts_q = max(s1_lock_pts_q, (c - entry_price) if trade_dir == 1 else (entry_price - c))
-                    tot_flip_pnl = runner_pts_q * TOTAL_QTY
+                    tot_flip_pnl = runner_pts_q * total_qty
                     gross_profit += tot_flip_pnl
-                    total_brok += brok_10q
-                    net_flip_inr = pts_to_inr(tot_flip_pnl - brok_10q)
+                    total_brok += brok_tot
+                    net_flip_inr = pts_to_inr(tot_flip_pnl - brok_tot)
                     trade_logs.insert(0, {
-                        "time": bar_ist, "type": f"{old_label} ({entry_tag})", "entry": entry_price,
-                        "exit": c, "status": "✅ 10Q ST FLIP WIN",
-                        "pnl": f"+{tot_flip_pnl:,.0f}p (Net ₹{net_flip_inr:+,.0f})", "color": "#22c55e"
+                        "time": bar_ist, "type": f"{old_label} ({total_qty}Q {entry_tag})", "entry": entry_price,
+                        "exit": c, "status": "✅ ST FLIP WIN",
+                        "pnl": f"+{runner_pts_q:,.0f}p/Q (Net ₹{net_flip_inr:+,.0f})", "color": "#22c55e"
                     })
 
-                is_long = trigger_flip_buy or trigger_cont_buy
+                is_long = trigger_flip_buy or trigger_cont_buy or pullback_bounce_buy
                 if is_long:
                     pending_flip_buy = False
                 else:
@@ -624,7 +621,12 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
                 max_fav_close = c
                 tp1_reached = False
                 tp2_reached = False
-                entry_tag = f"🧱 B#{brick_streak}" if (trigger_cont_buy or trigger_cont_sell) else "🔥 ST"
+                if trigger_flip_buy or trigger_flip_sell:
+                    entry_tag = "🔥 ST"
+                elif pullback_bounce_buy or pullback_bounce_sell:
+                    entry_tag = "⚡ PB"
+                else:
+                    entry_tag = f"🧱 B#{brick_streak}"
                 entry_time_str = bar_ist
 
                 locked_tp1_pts = s1_trig_pts_q
@@ -666,7 +668,7 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
         "st_line": st_js,
         "ema21": ema_js,
         "markers": markers_js,
-        "logs": trade_logs[:40],
+        "logs": trade_logs[:50],
         "box_size": box_size,
         "macro_range": macro_range,
         "last_price": candles_js[-1]["close"],
@@ -678,59 +680,71 @@ def build_chart_and_renko_signals(signal_tf="1h", st_factor=2.0, range_divisor=1
         "wins": wins,
         "losses": losses,
         "tp2_hits": tp2_hits,
+        "days_back": days_back,
         "net_pnl": gross_profit - gross_loss - total_brok,
         "active_trade": active_trade_info
     }
 
 # ============================================================================
-# TOP CONTROL BAR (DEFAULTS LOCKED TO YOUR 75.6% WIN-RATE SETUP: 1H + DIV 12 + ST 2.0)
+# TOP CONTROL BAR (15M FAST MODE + LOT SIZE MULTIPLIER FOR BIGGER PROFITS!)
 # ============================================================================
 server_ip = get_server_public_ip()
 if "delta_msg" not in st.session_state:
-    st.session_state["delta_msg"] = "⏸️ Algo Paused (v15: Stage-1 Upgraded to Net ₹+100 Lock!)"
+    st.session_state["delta_msg"] = "⏸️ Algo Paused (v16 Turbo: Faster 15m Multi-Wave + Lot Scaling)"
 
-c1, c2, c3, c4, c5, c6 = st.columns([0.28, 0.12, 0.18, 0.16, 0.13, 0.13])
+c1, c2, c3, c4, c5, c6 = st.columns([0.24, 0.12, 0.16, 0.18, 0.16, 0.14])
 with c1:
     st.markdown(
         f"**🌐 IP:** `{server_ip}` | <span style='color:#facc15;font-weight:700;'>{st.session_state['delta_msg']}</span>",
         unsafe_allow_html=True
     )
 with c2:
-    selected_tf = st.selectbox("⏱️ टाइमफ्रेम", ["1h", "15m", "5m"], index=0, label_visibility="collapsed")
+    selected_tf = st.selectbox("⏱️ टाइमफ्रेम", ["15m", "5m", "1h"], index=0, label_visibility="collapsed")
 with c3:
+    qty_label = st.selectbox(
+        "📦 Lot Size (Qty)",
+        [
+            "25 Lots (1p = ₹2.12)",
+            "50 Lots (1p = ₹4.25)",
+            "30 Lots (1p = ₹2.55)",
+            "20 Lots (1p = ₹1.70)",
+            "10 Lots (1p = ₹0.85)"
+        ],
+        index=0,
+        label_visibility="collapsed"
+    )
+    selected_qty = int(qty_label.split()[0])
+with c4:
     div_label = st.selectbox(
         "🧱 Brick Size (Divisor)",
         [
-            "Div 12 (~250p Balanced - 75% WR)",
-            "Div 10 (~300p Stable)",
-            "Div 14 (~210p Medium)",
-            "Div 16 (~180p Small)"
+            "Div 12 (~250p Fast & Stable)",
+            "Div 14 (~210p Faster Trades)",
+            "Div 10 (~300p Big Brick)",
+            "Div 16 (~180p Scalper)"
         ],
         index=0,
         label_visibility="collapsed"
     )
     selected_divisor = float(div_label.split()[1])
-with c4:
+with c5:
     st_mult_label = st.selectbox(
         "⚡ ST Multiplier",
-        ["ST 2.0 (Fast - 75% WR Best)", "ST 2.2 (Balanced)", "ST 2.5 (Smooth Trend)", "ST 3.0 (Original)"],
+        ["ST 2.0 (Fast - Best)", "ST 2.2 (Balanced)", "ST 1.8 (Super Fast)", "ST 2.5 (Smooth)"],
         index=0,
         label_visibility="collapsed"
     )
     selected_st_mult = float(st_mult_label.split()[1])
-with c5:
-    if st.button("🔌 Delta API टेस्ट"):
-        ok, resp = delta_request("GET", "/v2/wallet/balances")
-        if ok:
-            st.session_state["delta_msg"] = "✅ Delta Connected!"
-        else:
-            st.session_state["delta_msg"] = f"⚠️ Error: {resp}"
-        st.rerun()
 with c6:
     if st.button("🔄 चार्ट रिफ्रेश"):
         st.rerun()
 
-data = build_chart_and_renko_signals(signal_tf=selected_tf, st_factor=selected_st_mult, range_divisor=selected_divisor)
+data = build_chart_and_renko_signals(
+    signal_tf=selected_tf,
+    st_factor=selected_st_mult,
+    range_divisor=selected_divisor,
+    total_qty=selected_qty
+)
 
 if not data:
     st.warning("⏳ Hyperliquid से BTC चार्ट डेटा लोड हो रहा है, कृपया 2 सेकंड बाद रिफ्रेश करें...")
@@ -739,11 +753,14 @@ if not data:
 tot_tr = data["wins"] + data["losses"]
 wr_pct = (data["wins"] / tot_tr * 100.0) if tot_tr > 0 else 0.0
 net_inr_val = pts_to_inr(data["net_pnl"])
+pt_inr = selected_qty * 0.001 * USD_INR_RATE
+fee_per_tr_inr = pts_to_inr(BROK_PER_QTY * selected_qty)
+
 st_txt = f"{selected_tf.upper()} RENKO ST ({selected_st_mult}): BUY ▲" if data["st_trend"] == 1 else f"{selected_tf.upper()} RENKO ST ({selected_st_mult}): SELL ▼"
 st_col = "#00e676" if data["st_trend"] == 1 else "#ff5252"
 
 # ============================================================================
-# INTERACTIVE TRADINGVIEW LIGHTWEIGHT CHART (V15 - ₹100 STAGE-1 LOCK)
+# INTERACTIVE TRADINGVIEW LIGHTWEIGHT CHART (V16 TURBO MULTI-WAVE)
 # ============================================================================
 candles_json = json.dumps(data["candles"])
 rclose_json  = json.dumps(data["rclose"])
@@ -795,11 +812,11 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div class="hud-left">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ BTCUSD ({selected_tf.upper()}) v15 (S1 LOCK = NET ₹+100)</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ BTCUSD ({selected_tf.upper()} • {selected_qty} LOTS • 1p = ₹{pt_inr:.2f}) v16 TURBO</span>
       <span id="live-price-txt" class="live-px">${data['last_price']:,.2f}</span>
       <span class="badge">{st_txt}</span>
       <span style="font-size:12px; color:#facc15; font-weight:700;">
-        🧱 1 Brick: {data['box_size']:,.1f}p | rClose: {data['r_close_now']:,.1f} | ST Line: {data['st_now']:,.1f}
+        🧱 1 Brick: {data['box_size']:,.1f}p (₹{data['box_size']*pt_inr:,.0f}) | rClose: {data['r_close_now']:,.1f} | ST Line: {data['st_now']:,.1f}
       </span>
     </div>
     <div class="btn-bar">
@@ -810,10 +827,10 @@ chart_html = f"""<!DOCTYPE html>
 
   <div class="legend-bar">
     <div class="leg-item"><span class="dot" style="background:#facc15;"></span> Renko Step (rClose)</div>
-    <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Renko Supertrend (ST {selected_st_mult})</div>
-    <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> EMA 21</div>
+    <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Renko ST ({selected_st_mult})</div>
+    <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> EMA 21 (⚡PB Bounce)</div>
     <div id="hover-info" style="margin-left:auto; color:#e2e8f0; font-size:12.5px; font-weight:700;">
-      🏆 Win Rate: <span style="color:#00e676;font-size:14px;">{wr_pct:.1f}%</span> ({data['wins']}W / {data['losses']}L) | 🚀 Big Waves: {data['tp2_hits']} | Net Profit (After ₹70 Fee): <span style="color:#4ade80;font-size:14px;">₹{net_inr_val:+,.0f}</span>
+      🗓️ Last {data['days_back']} Days: <span style="color:#facc15;">{tot_tr} Trades</span> ({data['wins']}W / {data['losses']}L) | 🏆 WR: <span style="color:#00e676;">{wr_pct:.1f}%</span> | 🚀 Big Waves: {data['tp2_hits']} | 💰 Net Profit ({selected_qty}Q After ₹{fee_per_tr_inr:.0f}/Trd Fee): <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
     </div>
   </div>
 
@@ -904,7 +921,7 @@ if (activeTrade && activeTrade.active) {{
     lineWidth: 2,
     lineStyle: LightweightCharts.LineStyle.Dashed,
     axisLabelVisible: true,
-    title: 'S1 Win Lock (Net ₹+100)'
+    title: 'S1 Win Lock'
   }});
   candleSeries.createPriceLine({{
     price: activeTrade.tp2,
@@ -912,7 +929,7 @@ if (activeTrade && activeTrade.active) {{
     lineWidth: 2,
     lineStyle: LightweightCharts.LineStyle.Dashed,
     axisLabelVisible: true,
-    title: 'S2 Big Wave (1.85B)'
+    title: 'S2 Big Wave'
   }});
   candleSeries.createPriceLine({{
     price: activeTrade.sl,
@@ -920,7 +937,7 @@ if (activeTrade && activeTrade.active) {{
     lineWidth: 2,
     lineStyle: LightweightCharts.LineStyle.Solid,
     axisLabelVisible: true,
-    title: activeTrade.tp1_reached ? 'CLOSE-ONLY TRAIL SL' : 'INITIAL SL (₹200)'
+    title: activeTrade.tp1_reached ? 'CLOSE-ONLY TRAIL SL' : 'INITIAL SL'
   }});
 }}
 
@@ -969,18 +986,18 @@ components.html(chart_html, height=650, scrolling=False)
 act = data["active_trade"]
 if act["active"]:
     live_pts_q = (data["last_price"] - act["entry"]) if act["dir_code"] == 1 else (act["entry"] - data["last_price"])
-    live_net_inr = pts_to_inr((live_pts_q * TOTAL_QTY) - (BROK_PER_QTY * TOTAL_QTY))
+    live_net_inr = pts_to_inr((live_pts_q * selected_qty) - (BROK_PER_QTY * selected_qty))
     st.markdown(
         f"""<div style="background:#1e293b; border:1.5px solid #00e676; border-radius:10px; padding:10px 14px; margin-bottom:10px; font-size:13px;">
-        🔥 <b>चार्ट पर वर्तमान ओपन ट्रेड (v15 — Stage-1 Net ₹+100 Lock):</b>
+        🔥 <b>चार्ट पर वर्तमान ओपन ट्रेड ({selected_qty} Lots • 1p = ₹{pt_inr:.2f}):</b>
         <span style="color:#facc15;font-weight:bold;">{act['dir']} ({act['tag']} @ {act['time']})</span> |
         <b>Entry:</b> {act['entry']:,.1f} | <b>Live Net PnL:</b> <span style="color:#4ade80;font-weight:800;">₹{live_net_inr:+,.0f} ({live_pts_q:+,.1f}p/Q)</span> |
-        <b>Stage-1 (₹100 Net):</b> {act['tp1']:,.1f} | <b>Stage-2 (1.85B):</b> {act['tp2']:,.1f} | <b>Current SL:</b> <span style="color:#38bdf8;font-weight:bold;">{act['sl']:,.1f}</span>
+        <b>Stage-1:</b> {act['tp1']:,.1f} | <b>Stage-2:</b> {act['tp2']:,.1f} | <b>Current SL:</b> <span style="color:#38bdf8;font-weight:bold;">{act['sl']:,.1f}</span>
         </div>""",
         unsafe_allow_html=True
     )
 
-with st.expander("📜 v15 (Stage-1 Net ₹+100 Lock) सिग्नल्स और ट्रेड्स की पूरी लिस्ट देखें (Click to Expand)", expanded=True):
+with st.expander(f"📜 v16 Turbo ({selected_tf.upper()} • {selected_qty} Lots) के सभी सिग्नल्स और ट्रेड्स की लिस्ट देखें (Click to Expand)", expanded=True):
     rows_html = ""
     for lg in data["logs"]:
         c_hex = lg["color"]
@@ -996,7 +1013,7 @@ with st.expander("📜 v15 (Stage-1 Net ₹+100 Lock) सिग्नल्स �
         <table style="width:100%; border-collapse:collapse;">
         <thead><tr style="border-bottom:1px solid #475569; font-size:11.5px; color:#94a3b8; text-align:left;">
         <th style="padding:6px;">समय (IST)</th><th style="padding:6px;">सिग्नल</th><th style="padding:6px;">Entry → Exit</th>
-        <th style="padding:6px;">एग्जिट स्टेटस</th><th style="padding:6px; text-align:right;">10Q Net PnL (₹70 फीस काटकर)</th>
+        <th style="padding:6px;">एग्जिट स्टेटस</th><th style="padding:6px; text-align:right;">{selected_qty}Q Net PnL (₹{fee_per_tr_inr:.0f} फीस काटकर)</th>
         </tr></thead><tbody>{rows_html}</tbody></table></div>""",
         unsafe_allow_html=True
     )
