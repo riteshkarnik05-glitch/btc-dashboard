@@ -8,7 +8,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra AI-Renko Live BTC Chart", layout="wide")
+st.set_page_config(page_title="Dr Devendra AI-Renko Live BTC Chart (Fast ST Exit)", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -107,27 +107,26 @@ def place_delta_demo_order(side, qty, tag="Renko 10Q", is_exit=False, prod_id=27
         return False, str(e)
 
 # ============================================================================
-# PINE SCRIPT RENKO + SUPERTREND PARAMETERS (V13 LOGIC)
+# FAST RENKO SUPERTREND + PURE ST EXIT PARAMETERS (NO EARLY WICK CHOKE!)
 # ============================================================================
 TOTAL_QTY            = 10
 USD_INR_RATE         = 85.0
 BROK_PER_QTY         = 82.38   # Real Delta CSV Fee: ₹70.02 per 10Q trade (823.8 lot-pts)
 
-STAGE1_TRIG_BRICKS   = 1.15    # +1.15B जाने पर Stage-1 प्रॉफिट लॉक
-STAGE1_LOCK_BRICKS   = 0.75    # +0.75B पर पूरे 10 लॉट का SL लॉक (+₹132 Net)
-STAGE2_TRIG_BRICKS   = 2.00    # +2.00B पर बिग रनर ट्रेल चालू
-STAGE2_FLOOR_BRICKS  = 1.55    # +1.55B न्यूनतम फ्लोर लॉक (+₹347 Net)
-TRAIL_LOCK_BRICKS    = 0.75    # पीक/ब्रिक से 0.75B पीछे ट्रेल
+# 🛡️ सेफ्टी लॉक + प्योर सुपरट्रेंड राइडिंग:
+# 1. कोई भी ट्रेड कैंडल की सुई (High/Low Wick) से जल्दी बाहर नहीं होगा!
+# 2. +1.15 Brick जाने पर सिर्फ नो-लॉस सेफ्टी फ्लोर (+0.50 Brick = कॉस्ट + ₹70 फीस कवर) लगेगा।
+# 3. इसके बाद स्टॉप-लॉस सीधे आपकी हरी/लाल Fast Renko Supertrend Line (st_line) के साथ चलेगा और तभी एग्जिट करेगा जब कैंडल ST लाइन के पार क्लोज हो या ST पलटे!
+SAFE_TRIG_BRICKS     = 1.15    # +1.15B छूने पर ट्रेड नो-लॉस जोन में लॉक होगा
+SAFE_FLOOR_BRICKS    = 0.50    # +0.50B सेफ्टी फ्लोर (ताकि जीता हुआ ट्रेड कभी लॉस में न जाए)
 
 USE_STREAK_FILTER    = True
 MAX_BRICK_STREAK     = 3
 USE_STRETCH_FILTER   = True
 MAX_EMA_DIST_BRICKS  = 2.0
-ONE_SHOT_TREND_LOCK  = False
 
 ATR_PERIOD           = 5
 RANGE_DIVISOR        = 10.0
-ST_FACTOR            = 3.0
 USE_GAUSSIAN         = True
 GAUSS_PERIOD         = 20
 MIN_VOL_DOM          = 55.0
@@ -144,7 +143,7 @@ def pts_to_inr(lot_pts):
     return lot_pts * 0.001 * USD_INR_RATE
 
 # ============================================================================
-# FETCH HISTORICAL CANDLES & COMPUTE PINE-SCRIPT RENKO INDICATOR FOR CHART
+# FETCH HISTORICAL CANDLES & COMPUTE FAST RENKO SUPERTREND INDICATOR
 # ============================================================================
 def fetch_hl_klines_range(interval, start_ms, end_ms):
     for attempt in range(3):
@@ -207,7 +206,7 @@ def calc_daily_atr5():
             rma[i] = (rma[i - 1] * (ATR_PERIOD - 1) + v) / float(ATR_PERIOD)
     return rma[-2]
 
-def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
+def build_chart_and_renko_signals(signal_tf="15m", st_factor=2.0, range_divisor=10.0):
     macro_range = calc_daily_atr5()
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
@@ -246,7 +245,7 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
     sell_v1 = 0.0
     sell_v2 = 0.0
     buy_dom_pct = 50.0
-    sell_dom_pct = 100.0 - buy_dom_pct
+    sell_dom_pct = 50.0
 
     brick_top = 0.0
     brick_bot = 0.0
@@ -257,29 +256,25 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
     resistance_band = None
     st_trend = 1
     st_line = 0.0
-    trend_tp1_done = False
     pending_flip_buy = False
     pending_flip_sell = False
 
     trade_dir = 0
     entry_bar = -1
     entry_price = 0.0
-    tp1_price = 0.0
-    tp2_price = 0.0
+    safe_trig_price = 0.0
     stop_price = 0.0
     hard_stop_price = 0.0
     max_fav_price = 0.0
-    locked_tp1_pts = 0.0
-    locked_tp2_pts = 0.0
     locked_sl_pts = 0.0
-    tp1_reached = False
-    tp2_reached = False
+    safe_locked = False
+    st_trail_active = False
     entry_tag = ""
     entry_time_str = ""
 
     wins = 0
     losses = 0
-    tp2_hits = 0
+    big_st_rides = 0
     gross_profit = 0.0
     gross_loss = 0.0
     total_brok = 0.0
@@ -392,7 +387,8 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
 
         r_close = brick_top if brick_dir == 1 else brick_bot
 
-        band_distance = box_size * ST_FACTOR
+        # Special Renko Supertrend with User-Selected Fast Multiplier (st_factor)
+        band_distance = box_size * float(st_factor)
         raw_support = r_close - band_distance
         raw_resistance = r_close + band_distance
 
@@ -430,7 +426,6 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
 
         if st_flip_buy or st_flip_sell:
             brick_streak = 1
-            trend_tp1_done = False
 
         if st_flip_buy:
             pending_flip_buy = True
@@ -448,122 +443,100 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
         st_js.append({"time": t_sec_ist, "value": round(st_line, 1), "color": "#00e676" if st_trend == 1 else "#ff5252"})
         ema_js.append({"time": t_sec_ist, "value": round(ema21, 1)})
 
-        # केवल क्लोज हो चुकी कैंडल्स पर सिग्नल्स और एग्जिट मार्क करें
+        # Evaluate signals & exits on closed bars
         if idx < len(klines) - 1:
             if trade_dir != 0 and idx > entry_bar:
                 t_dir = trade_dir
                 t_label = "LONG" if t_dir == 1 else "SHORT"
                 max_fav_price = max(max_fav_price, h) if t_dir == 1 else min(max_fav_price, l)
 
-                hit_tp1_now = (not tp1_reached) and ((h >= tp1_price) if t_dir == 1 else (l <= tp1_price))
-                if hit_tp1_now:
-                    tp1_reached = True
-                    trend_tp1_done = True
+                # 1. Safety Fee-Cover Lock (+1.15B -> Locks +0.50B floor so trade cannot lose)
+                hit_safe_now = (not safe_locked) and ((h >= safe_trig_price) if t_dir == 1 else (l <= safe_trig_price))
+                if hit_safe_now:
+                    safe_locked = True
                     wins += 1
-                    s1_lock_pts = box_size * STAGE1_LOCK_BRICKS
-                    s1_sl = (entry_price + s1_lock_pts) if t_dir == 1 else (entry_price - s1_lock_pts)
-                    stop_price = max(stop_price, s1_sl) if t_dir == 1 else min(stop_price, s1_sl)
+                    floor_pts = box_size * SAFE_FLOOR_BRICKS
+                    floor_sl = (entry_price + floor_pts) if t_dir == 1 else (entry_price - floor_pts)
+                    stop_price = max(stop_price, floor_sl) if t_dir == 1 else min(stop_price, floor_sl)
 
-                hit_tp2_now = tp1_reached and (not tp2_reached) and ((h >= tp2_price) if t_dir == 1 else (l <= tp2_price))
-                if hit_tp2_now:
-                    tp2_reached = True
-                    tp2_hits += 1
-                    s2_floor_pts = box_size * STAGE2_FLOOR_BRICKS
-                    s2_sl = (entry_price + s2_floor_pts) if t_dir == 1 else (entry_price - s2_floor_pts)
-                    stop_price = max(stop_price, s2_sl) if t_dir == 1 else min(stop_price, s2_sl)
+                # 2. Pure Fast Renko Supertrend Line Ratchet (No Wick Trail Choke!)
+                if safe_locked:
+                    if t_dir == 1 and st_trend == 1 and st_line > stop_price:
+                        stop_price = st_line
+                        if (st_line - entry_price) >= box_size * 1.0 and not st_trail_active:
+                            st_trail_active = True
+                            big_st_rides += 1
+                    elif t_dir == -1 and st_trend == -1 and st_line < stop_price:
+                        stop_price = st_line
+                        if (entry_price - st_line) >= box_size * 1.0 and not st_trail_active:
+                            st_trail_active = True
+                            big_st_rides += 1
 
-                if trade_dir != 0 and tp2_reached:
-                    gap_dist = box_size * TRAIL_LOCK_BRICKS
-                    brick_trail = (r_close - gap_dist) if t_dir == 1 else (r_close + gap_dist)
-                    peak_trail = (max_fav_price - gap_dist) if t_dir == 1 else (max_fav_price + gap_dist)
-                    cand_trail = max(brick_trail, peak_trail) if t_dir == 1 else min(brick_trail, peak_trail)
-                    stop_price = max(stop_price, cand_trail) if t_dir == 1 else min(stop_price, cand_trail)
+                    # Exit ONLY when Fast Renko ST flips OR candle CLOSES beyond ST/stop_price (Never on intra-bar wicks!)
+                    st_flipped_against = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
+                    close_crossed_st   = (c <= stop_price) if t_dir == 1 else (c >= stop_price)
 
-                    hit_trail_sl = (l <= stop_price) if t_dir == 1 else (h >= stop_price)
-                    st_reversed = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
-
-                    if (hit_trail_sl or st_reversed) and not hit_tp2_now:
-                        exit_p = stop_price if hit_trail_sl else (max(c, stop_price) if t_dir == 1 else min(c, stop_price))
-                        run_pts_per_q = max(box_size * STAGE2_FLOOR_BRICKS, (exit_p - entry_price) if t_dir == 1 else (entry_price - exit_p))
+                    if (st_flipped_against or close_crossed_st) and not hit_safe_now:
+                        exit_p = max(c, stop_price) if t_dir == 1 else min(c, stop_price)
+                        run_pts_per_q = max(box_size * SAFE_FLOOR_BRICKS, (exit_p - entry_price) if t_dir == 1 else (entry_price - exit_p))
                         total_trade_pnl = run_pts_per_q * TOTAL_QTY
                         gross_profit += total_trade_pnl
                         total_brok += brok_10q
                         net_inr = pts_to_inr(total_trade_pnl - brok_10q)
 
+                        is_big_st = run_pts_per_q >= box_size * 1.0
+                        m_col = "#38bdf8" if is_big_st else "#4ade80"
+                        m_tag = f"🚀 ST EXIT (₹{net_inr:+,.0f})" if is_big_st else f"✅ SAFE EXIT (₹{net_inr:+,.0f})"
+
                         markers_js.append({
                             "time": t_sec_ist,
                             "position": "aboveBar" if t_dir == 1 else "belowBar",
-                            "color": "#38bdf8",
+                            "color": m_col,
                             "shape": "circle",
-                            "text": f"🚀 TRAIL (₹{net_inr:+,.0f})"
+                            "text": m_tag
                         })
                         trade_logs.insert(0, {
                             "time": bar_ist, "type": f"{t_label} ({entry_tag})", "entry": entry_price,
-                            "exit": exit_p, "status": "🚀 10Q BIG RUNNER TRAIL",
-                            "pnl": f"+{total_trade_pnl:,.0f}p (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"
+                            "exit": exit_p, "status": "🚀 FAST RENKO ST EXIT" if is_big_st else "✅ FEE-COVER SAFE EXIT",
+                            "pnl": f"+{total_trade_pnl:,.0f}p (Net ₹{net_inr:+,.0f})", "color": m_col
+                        })
+                        trade_dir = 0
+                else:
+                    # Pre-Safety Lock Stop-Loss Check
+                    adverse_close_pts = (entry_price - c) if t_dir == 1 else (c - entry_price)
+                    renko_sl_price = (entry_price - box_size * SL_BRICKS) if t_dir == 1 else (entry_price + box_size * SL_BRICKS)
+                    close_hit_renko_sl = (c <= renko_sl_price) if t_dir == 1 else (c >= renko_sl_price)
+                    brick_turned_bad = (
+                        (brick_dir == -1 and c < brick_bot and adverse_close_pts >= MAX_SL_PTS_PER_QTY * 0.50)
+                        if t_dir == 1
+                        else (brick_dir == 1 and c > brick_top and adverse_close_pts >= MAX_SL_PTS_PER_QTY * 0.50)
+                    )
+                    st_turned_bad = ((st_trend == -1) if t_dir == 1 else (st_trend == 1)) and (adverse_close_pts > 0)
+                    hard_crash = (l <= hard_stop_price) if t_dir == 1 else (h >= hard_stop_price)
+
+                    if close_hit_renko_sl or brick_turned_bad or st_turned_bad or hard_crash:
+                        losses += 1
+                        loss_per_qty = min(adverse_close_pts, locked_sl_pts) if (ANTI_WICK_SL and not hard_crash and adverse_close_pts > 0) else locked_sl_pts
+                        total_loss_10q = loss_per_qty * TOTAL_QTY
+                        gross_loss += total_loss_10q
+                        total_brok += brok_10q
+                        net_loss_inr = pts_to_inr(-(total_loss_10q + brok_10q))
+
+                        markers_js.append({
+                            "time": t_sec_ist,
+                            "position": "belowBar" if t_dir == 1 else "aboveBar",
+                            "color": "#f87171",
+                            "shape": "circle",
+                            "text": f"🛑 SL (₹{net_loss_inr:+,.0f})"
+                        })
+                        trade_logs.insert(0, {
+                            "time": bar_ist, "type": f"{t_label} ({entry_tag})", "entry": entry_price,
+                            "exit": c, "status": "🛑 SL HIT (10Q)",
+                            "pnl": f"-{total_loss_10q:,.0f}p (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"
                         })
                         trade_dir = 0
 
-                if trade_dir != 0 and not tp2_reached:
-                    if not tp1_reached:
-                        adverse_close_pts = (entry_price - c) if t_dir == 1 else (c - entry_price)
-                        renko_sl_price = (entry_price - box_size * SL_BRICKS) if t_dir == 1 else (entry_price + box_size * SL_BRICKS)
-                        close_hit_renko_sl = (c <= renko_sl_price) if t_dir == 1 else (c >= renko_sl_price)
-                        brick_turned_bad = (
-                            (brick_dir == -1 and c < brick_bot and adverse_close_pts >= MAX_SL_PTS_PER_QTY * 0.50)
-                            if t_dir == 1
-                            else (brick_dir == 1 and c > brick_top and adverse_close_pts >= MAX_SL_PTS_PER_QTY * 0.50)
-                        )
-                        st_turned_bad = ((st_trend == -1) if t_dir == 1 else (st_trend == 1)) and (adverse_close_pts > 0)
-                        hard_crash = (l <= hard_stop_price) if t_dir == 1 else (h >= hard_stop_price)
-
-                        if close_hit_renko_sl or brick_turned_bad or st_turned_bad or hard_crash:
-                            losses += 1
-                            loss_per_qty = min(adverse_close_pts, locked_sl_pts) if (ANTI_WICK_SL and not hard_crash and adverse_close_pts > 0) else locked_sl_pts
-                            total_loss_10q = loss_per_qty * TOTAL_QTY
-                            gross_loss += total_loss_10q
-                            total_brok += brok_10q
-                            net_loss_inr = pts_to_inr(-(total_loss_10q + brok_10q))
-
-                            markers_js.append({
-                                "time": t_sec_ist,
-                                "position": "belowBar" if t_dir == 1 else "aboveBar",
-                                "color": "#f87171",
-                                "shape": "circle",
-                                "text": f"🛑 SL (₹{net_loss_inr:+,.0f})"
-                            })
-                            trade_logs.insert(0, {
-                                "time": bar_ist, "type": f"{t_label} ({entry_tag})", "entry": entry_price,
-                                "exit": c, "status": "🛑 SL HIT (10Q)",
-                                "pnl": f"-{total_loss_10q:,.0f}p (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"
-                            })
-                            trade_dir = 0
-                    else:
-                        hit_s1_sl = (c <= stop_price) if t_dir == 1 else (c >= stop_price)
-                        st_turned_bad = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
-                        if (hit_s1_sl or st_turned_bad) and not hit_tp1_now:
-                            exit_p = max(c, stop_price) if t_dir == 1 else min(c, stop_price)
-                            locked_pts_q = max(box_size * STAGE1_LOCK_BRICKS, (exit_p - entry_price) if t_dir == 1 else (entry_price - exit_p))
-                            total_trade_pnl = locked_pts_q * TOTAL_QTY
-                            gross_profit += total_trade_pnl
-                            total_brok += brok_10q
-                            net_inr = pts_to_inr(total_trade_pnl - brok_10q)
-
-                            markers_js.append({
-                                "time": t_sec_ist,
-                                "position": "aboveBar" if t_dir == 1 else "belowBar",
-                                "color": "#4ade80",
-                                "shape": "circle",
-                                "text": f"✅ S1 (₹{net_inr:+,.0f})"
-                            })
-                            trade_logs.insert(0, {
-                                "time": bar_ist, "type": f"{t_label} ({entry_tag})", "entry": entry_price,
-                                "exit": exit_p, "status": "✅ STAGE-1 LOCK (+0.75B)",
-                                "pnl": f"+{total_trade_pnl:,.0f}p (Net ₹{net_inr:+,.0f})", "color": "#22c55e"
-                            })
-                            trade_dir = 0
-
-            # New Entry Signals (Exact Pine Script v13)
+            # New Entry Signals (Exact Pine Script)
             candle_not_giant = (h - l) <= box_size * 1.85
             bull_filter_ok   = candle_not_giant and buy_dom_pct >= 50.0 and rsi14 < 76.0
             bear_filter_ok   = candle_not_giant and sell_dom_pct >= 50.0 and rsi14 > 24.0
@@ -574,28 +547,27 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
             raw_cont_buy  = (not trigger_flip_buy) and st_trend == 1 and brick_step_up and buy_dom_pct >= MIN_VOL_DOM and c > ema21 and 50.0 < rsi14 < 72.0 and candle_not_giant
             raw_cont_sell = (not trigger_flip_sell) and st_trend == -1 and brick_step_dn and sell_dom_pct >= MIN_VOL_DOM and c < ema21 and 28.0 < rsi14 < 50.0 and candle_not_giant
 
-            streak_ok   = (not USE_STREAK_FILTER) or (brick_streak <= MAX_BRICK_STREAK)
-            stretch_ok  = (not USE_STRETCH_FILTER) or (abs(c - ema21) <= box_size * MAX_EMA_DIST_BRICKS)
-            one_shot_ok = (not ONE_SHOT_TREND_LOCK) or (not trend_tp1_done)
-            late_safe   = streak_ok and stretch_ok and one_shot_ok
+            streak_ok  = (not USE_STREAK_FILTER) or (brick_streak <= MAX_BRICK_STREAK)
+            stretch_ok = (not USE_STRETCH_FILTER) or (abs(c - ema21) <= box_size * MAX_EMA_DIST_BRICKS)
+            late_safe  = streak_ok and stretch_ok
 
             trigger_cont_buy  = raw_cont_buy and late_safe
             trigger_cont_sell = raw_cont_sell and late_safe
 
-            can_open_trade = (trade_dir == 0) or (tp1_reached and (st_flip_buy or st_flip_sell))
+            can_open_trade = (trade_dir == 0) or (safe_locked and (st_flip_buy or st_flip_sell))
 
             if can_open_trade and (trigger_flip_buy or trigger_cont_buy or trigger_flip_sell or trigger_cont_sell):
-                if trade_dir != 0 and tp1_reached:
+                if trade_dir != 0 and safe_locked:
                     old_label = "LONG" if trade_dir == 1 else "SHORT"
-                    runner_pts_q = max(box_size * STAGE1_LOCK_BRICKS, (c - entry_price) if trade_dir == 1 else (entry_price - c))
+                    runner_pts_q = max(box_size * SAFE_FLOOR_BRICKS, (c - entry_price) if trade_dir == 1 else (entry_price - c))
                     tot_flip_pnl = runner_pts_q * TOTAL_QTY
                     gross_profit += tot_flip_pnl
                     total_brok += brok_10q
                     net_flip_inr = pts_to_inr(tot_flip_pnl - brok_10q)
                     trade_logs.insert(0, {
                         "time": bar_ist, "type": f"{old_label} ({entry_tag})", "entry": entry_price,
-                        "exit": c, "status": "✅ ST FLIP WIN",
-                        "pnl": f"+{tot_flip_pnl:,.0f}p (Net ₹{net_flip_inr:+,.0f})", "color": "#22c55e"
+                        "exit": c, "status": "🚀 ST REVERSAL FLIP WIN",
+                        "pnl": f"+{tot_flip_pnl:,.0f}p (Net ₹{net_flip_inr:+,.0f})", "color": "#38bdf8"
                     })
 
                 is_long = trigger_flip_buy or trigger_cont_buy
@@ -608,17 +580,14 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
                 entry_bar = idx
                 entry_price = c
                 max_fav_price = c
-                tp1_reached = False
-                tp2_reached = False
+                safe_locked = False
+                st_trail_active = False
                 entry_tag = f"🧱 B#{brick_streak}" if (trigger_cont_buy or trigger_cont_sell) else "🔥 ST"
                 entry_time_str = bar_ist
 
-                locked_tp1_pts = box_size * STAGE1_TRIG_BRICKS
-                locked_tp2_pts = box_size * STAGE2_TRIG_BRICKS
-                locked_sl_pts  = MAX_SL_PTS_PER_QTY
-
-                tp1_price       = (c + locked_tp1_pts) if is_long else (c - locked_tp1_pts)
-                tp2_price       = (c + locked_tp2_pts) if is_long else (c - locked_tp2_pts)
+                locked_sl_pts   = MAX_SL_PTS_PER_QTY
+                safe_trig_pts   = box_size * SAFE_TRIG_BRICKS
+                safe_trig_price = (c + safe_trig_pts) if is_long else (c - safe_trig_pts)
                 stop_price      = (c - locked_sl_pts) if is_long else (c + locked_sl_pts)
                 hard_stop_price = (c - box_size * 1.6) if is_long else (c + box_size * 1.6)
 
@@ -632,6 +601,12 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
 
         prev_close = c
 
+    if trade_dir != 0 and safe_locked:
+        if trade_dir == 1 and st_trend == 1 and st_line > stop_price:
+            stop_price = st_line
+        elif trade_dir == -1 and st_trend == -1 and st_line < stop_price:
+            stop_price = st_line
+
     active_trade_info = {
         "active": trade_dir != 0,
         "dir": "LONG ▲" if trade_dir == 1 else ("SHORT ▼" if trade_dir == -1 else "NONE"),
@@ -639,11 +614,10 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
         "tag": entry_tag,
         "time": entry_time_str,
         "entry": round(entry_price, 1),
-        "tp1": round(tp1_price, 1),
-        "tp2": round(tp2_price, 1),
+        "safe_trig": round(safe_trig_price, 1),
+        "st_now": round(st_line, 1),
         "sl": round(stop_price, 1),
-        "tp1_reached": tp1_reached,
-        "tp2_reached": tp2_reached
+        "safe_locked": safe_locked
     }
 
     return {
@@ -663,39 +637,47 @@ def build_chart_and_renko_signals(signal_tf="15m", range_divisor=10.0):
         "brick_streak": brick_streak,
         "wins": wins,
         "losses": losses,
-        "tp2_hits": tp2_hits,
+        "big_st_rides": big_st_rides,
         "net_pnl": gross_profit - gross_loss - total_brok,
         "active_trade": active_trade_info
     }
 
 # ============================================================================
-# TOP CONTROL BAR (DELTA API STATUS + TIMEFRAME & CHART CONTROLS)
+# TOP CONTROL BAR (DELTA API + TIMEFRAME + FAST ST MULTIPLIER SELECTOR)
 # ============================================================================
 server_ip = get_server_public_ip()
 if "delta_msg" not in st.session_state:
-    st.session_state["delta_msg"] = "⏸️ Algo Execution: PAUSED (केवल लाइव चार्ट और सिग्नल टेस्टिंग चालू है)"
+    st.session_state["delta_msg"] = "⏸️ Algo Paused (Pure Fast Renko ST Exit Mode)"
 
-c1, c2, c3, c4 = st.columns([0.42, 0.18, 0.20, 0.20])
+c1, c2, c3, c4, c5 = st.columns([0.36, 0.14, 0.18, 0.16, 0.16])
 with c1:
     st.markdown(
-        f"**🌐 Server IP:** `{server_ip}` | <span style='color:#facc15;font-weight:700;'>{st.session_state['delta_msg']}</span>",
+        f"**🌐 IP:** `{server_ip}` | <span style='color:#facc15;font-weight:700;'>{st.session_state['delta_msg']}</span>",
         unsafe_allow_html=True
     )
 with c2:
-    selected_tf = st.selectbox("⏱️ चार्ट टाइमफ्रेम", ["15m", "5m", "1h"], index=0, label_visibility="collapsed")
+    selected_tf = st.selectbox("⏱️ टाइमफ्रेम", ["15m", "5m", "1h"], index=0, label_visibility="collapsed")
 with c3:
-    if st.button("🔌 Delta API कनेक्शन टेस्ट करें"):
+    st_mult_label = st.selectbox(
+        "⚡ Fast ST Multiplier",
+        ["ST 1.8 (Ultra Fast)", "ST 2.0 (Fast - Best)", "ST 2.2 (Medium Fast)", "ST 2.5 (Balanced)", "ST 3.0 (Original Wide)"],
+        index=1,
+        label_visibility="collapsed"
+    )
+    selected_st_mult = float(st_mult_label.split()[1])
+with c4:
+    if st.button("🔌 Delta API टेस्ट"):
         ok, resp = delta_request("GET", "/v2/wallet/balances")
         if ok:
-            st.session_state["delta_msg"] = f"✅ Delta API Connected! (Algo Paused | IP: {server_ip})"
+            st.session_state["delta_msg"] = "✅ Delta Connected! (Algo Paused)"
         else:
-            st.session_state["delta_msg"] = f"⚠️ Delta API Error: {resp}"
+            st.session_state["delta_msg"] = f"⚠️ API Error: {resp}"
         st.rerun()
-with c4:
-    if st.button("🔄 चार्ट व सिग्नल रिफ्रेश करें"):
+with c5:
+    if st.button("🔄 चार्ट रिफ्रेश करें"):
         st.rerun()
 
-data = build_chart_and_renko_signals(signal_tf=selected_tf, range_divisor=RANGE_DIVISOR)
+data = build_chart_and_renko_signals(signal_tf=selected_tf, st_factor=selected_st_mult, range_divisor=RANGE_DIVISOR)
 
 if not data:
     st.warning("⏳ Hyperliquid से BTC चार्ट डेटा लोड हो रहा है, कृपया 2 सेकंड बाद रिफ्रेश करें...")
@@ -704,11 +686,11 @@ if not data:
 tot_tr = data["wins"] + data["losses"]
 wr_pct = (data["wins"] / tot_tr * 100.0) if tot_tr > 0 else 0.0
 net_inr_val = pts_to_inr(data["net_pnl"])
-st_txt = f"{selected_tf.upper()} RENKO ST: BUY ▲" if data["st_trend"] == 1 else f"{selected_tf.upper()} RENKO ST: SELL ▼"
+st_txt = f"{selected_tf.upper()} FAST ST ({selected_st_mult}): BUY ▲" if data["st_trend"] == 1 else f"{selected_tf.upper()} FAST ST ({selected_st_mult}): SELL ▼"
 st_col = "#00e676" if data["st_trend"] == 1 else "#ff5252"
 
 # ============================================================================
-# INTERACTIVE TRADINGVIEW LIGHTWEIGHT CHART (WITH LIVE 2s TICK & PINE OVERLAYS)
+# INTERACTIVE TRADINGVIEW LIGHTWEIGHT CHART (PURE FAST RENKO ST EXIT)
 # ============================================================================
 candles_json = json.dumps(data["candles"])
 rclose_json  = json.dumps(data["rclose"])
@@ -760,11 +742,11 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div class="hud-left">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ BTCUSD ({selected_tf.upper()}) PINE-RENKO LIVE CHART</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ BTCUSD ({selected_tf.upper()}) PURE FAST RENKO ST ({selected_st_mult}) EXIT</span>
       <span id="live-price-txt" class="live-px">${data['last_price']:,.2f}</span>
       <span class="badge">{st_txt}</span>
       <span style="font-size:12px; color:#facc15; font-weight:700;">
-        🧱 1 Brick: {data['box_size']:,.1f}p | rClose: {data['r_close_now']:,.1f} | ST Line: {data['st_now']:,.1f}
+        🧱 1 Brick: {data['box_size']:,.1f}p | rClose: {data['r_close_now']:,.1f} | Fast ST ({selected_st_mult}): {data['st_now']:,.1f}
       </span>
     </div>
     <div class="btn-bar">
@@ -775,10 +757,10 @@ chart_html = f"""<!DOCTYPE html>
 
   <div class="legend-bar">
     <div class="leg-item"><span class="dot" style="background:#facc15;"></span> Renko Step (rClose)</div>
-    <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Special Renko Supertrend (ST 3.0)</div>
+    <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Fast Renko Supertrend (ST {selected_st_mult} = Trail Exit Line)</div>
     <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> EMA 21</div>
     <div id="hover-info" style="margin-left:auto; color:#94a3b8; font-size:12px;">
-      🖱️ ज़ूम/स्क्रॉल करें (Total: {tot_tr} Trades | {data['wins']}W / {data['losses']}L | WR: {wr_pct:.1f}% | 🚀 Runners: {data['tp2_hits']} | Net: ₹{net_inr_val:+,.0f})
+      📊 Total: {tot_tr} Trades ({data['wins']}W / {data['losses']}L) | WR: {wr_pct:.1f}% | 🚀 Big ST Waves: {data['big_st_rides']} | Net (After ₹70 Fee): <b style="color:#4ade80;">₹{net_inr_val:+,.0f}</b>
     </div>
   </div>
 
@@ -831,7 +813,7 @@ const candleSeries = chart.addCandlestickSeries({{
 candleSeries.setData(candlesData);
 candleSeries.setMarkers(markersData);
 
-// 1. Renko Step Line (rClose) - Step Line Mode
+// 1. Renko Step Line (rClose)
 const rcloseSeries = chart.addLineSeries({{
   color: '#facc15',
   lineWidth: 2,
@@ -840,11 +822,11 @@ const rcloseSeries = chart.addLineSeries({{
 }});
 rcloseSeries.setData(rcloseData);
 
-// 2. Special Renko Supertrend Line (Green/Red)
+// 2. Fast Renko Supertrend Line (Green/Red) - Directly controls trailing exit!
 const stSeries = chart.addLineSeries({{
   lineWidth: 3,
   lineType: LightweightCharts.LineType.WithSteps,
-  title: 'Renko ST'
+  title: 'Fast Renko ST (' + {selected_st_mult} + ')'
 }});
 stSeries.setData(stData);
 
@@ -867,29 +849,23 @@ if (activeTrade && activeTrade.active) {{
     axisLabelVisible: true,
     title: 'ENTRY (' + activeTrade.dir + ')'
   }});
-  candleSeries.createPriceLine({{
-    price: activeTrade.tp1,
-    color: '#4ade80',
-    lineWidth: 2,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    axisLabelVisible: true,
-    title: 'S1 Lock (1.15B)'
-  }});
-  candleSeries.createPriceLine({{
-    price: activeTrade.tp2,
-    color: '#38bdf8',
-    lineWidth: 2,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    axisLabelVisible: true,
-    title: 'S2 Trail (2.0B)'
-  }});
+  if (!activeTrade.safe_locked) {{
+    candleSeries.createPriceLine({{
+      price: activeTrade.safe_trig,
+      color: '#4ade80',
+      lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: 'No-Loss Trigger (1.15B)'
+    }});
+  }}
   candleSeries.createPriceLine({{
     price: activeTrade.sl,
-    color: '#ef4444',
+    color: activeTrade.safe_locked ? '#00e676' : '#ef4444',
     lineWidth: 2,
     lineStyle: LightweightCharts.LineStyle.Solid,
     axisLabelVisible: true,
-    title: 'ACTIVE SL'
+    title: activeTrade.safe_locked ? 'LOCKED ST TRAIL SL' : 'INITIAL SL (₹200)'
   }});
 }}
 
@@ -897,7 +873,7 @@ window.addEventListener('resize', () => {{
   chart.applyOptions({{ width: container.clientWidth }});
 }});
 
-// Live 2-Second BTC Tick Updater (Updates current candle without resetting zoom!)
+// Live 2-Second BTC Tick Updater
 let lastBar = candlesData[candlesData.length - 1];
 setInterval(async () => {{
   try {{
@@ -934,20 +910,26 @@ setInterval(async () => {{
 components.html(chart_html, height=650, scrolling=False)
 
 # ============================================================================
-# SIGNAL VERIFICATION TABLE BELOW THE CHART
+# ACTIVE SIGNAL BANNER & TRADE HISTORY LOG BELOW CHART
 # ============================================================================
 act = data["active_trade"]
 if act["active"]:
+    live_pts_q = (data["last_price"] - act["entry"]) if act["dir_code"] == 1 else (act["entry"] - data["last_price"])
+    live_net_inr = pts_to_inr((live_pts_q * TOTAL_QTY) - (BROK_PER_QTY * TOTAL_QTY))
+    locked_pts_q = (act["sl"] - act["entry"]) if act["dir_code"] == 1 else (act["entry"] - act["sl"])
+    locked_net_inr = pts_to_inr((locked_pts_q * TOTAL_QTY) - (BROK_PER_QTY * TOTAL_QTY))
+    st_status = f"🛡️ ST Line Locked (Net ₹{locked_net_inr:+,.0f} Guaranteed)" if act["safe_locked"] else f"⏳ Waiting 1.15B ({act['safe_trig']:,.1f}) for No-Loss Lock"
     st.markdown(
-        f"""<div style="background:#1e293b; border:1.5px solid #38bdf8; border-radius:10px; padding:10px 14px; margin-bottom:10px; font-size:13px;">
-        🔥 <b>चार्ट पर वर्तमान ओपन सिग्नल:</b> <span style="color:#facc15;font-weight:bold;">{act['dir']} ({act['tag']} @ {act['time']})</span> |
-        <b>Entry:</b> {act['entry']:,.1f} | <b>Stage-1 (1.15B):</b> <span style="color:#4ade80;">{act['tp1']:,.1f}</span> |
-        <b>Stage-2 (2.0B):</b> <span style="color:#38bdf8;">{act['tp2']:,.1f}</span> | <b>Current SL:</b> <span style="color:#ef4444;">{act['sl']:,.1f}</span>
+        f"""<div style="background:#1e293b; border:1.5px solid #00e676; border-radius:10px; padding:10px 14px; margin-bottom:10px; font-size:13px;">
+        🔥 <b>चार्ट पर वर्तमान ओपन ट्रेड (Riding Fast Renko ST {selected_st_mult}):</b>
+        <span style="color:#facc15;font-weight:bold;">{act['dir']} ({act['tag']} @ {act['time']})</span> |
+        <b>Entry:</b> {act['entry']:,.1f} | <b>Live Net PnL:</b> <span style="color:#4ade80;font-weight:800;">₹{live_net_inr:+,.0f} ({live_pts_q:+,.1f}p/Q)</span> |
+        <b>Active ST Trail SL:</b> <span style="color:#38bdf8;font-weight:bold;">{act['sl']:,.1f}</span> ({st_status})
         </div>""",
         unsafe_allow_html=True
     )
 
-with st.expander("📜 चार्ट पर आए सभी BUY / SELL सिग्नल्स और एग्जिट की पूरी लिस्ट देखें (Click to Expand)", expanded=True):
+with st.expander("📜 Fast Renko Supertrend Exit के सभी सिग्नल्स और ट्रेड्स की लिस्ट देखें (Click to Expand)", expanded=True):
     rows_html = ""
     for lg in data["logs"]:
         c_hex = lg["color"]
