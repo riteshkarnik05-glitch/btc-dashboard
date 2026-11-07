@@ -29,12 +29,37 @@ div.stButton > button:hover {
     background-color: #eab308 !important;
     color: #0f172a !important;
 }
+.locked-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 10px;
+}
+@media (max-width: 768px) {
+    .locked-bar { grid-template-columns: repeat(2, 1fr); }
+}
+.locked-pill {
+    background: #131c2e;
+    border: 1px solid #334155;
+    border-left: 3px solid #38bdf8;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12.5px;
+    color: #94a3b8;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.locked-pill b {
+    color: #facc15;
+    font-size: 13px;
+}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
 # DELTA EXCHANGE LIVE AUTO-EXECUTION API & CONNECTION HELPERS
 # ============================================================================
-ALGO_EXECUTION_ENABLED = True  # ✅ डेल्टा ऑटोमैटिक ट्रेड एंट्री और एग्जिट अब 100% चालू है!
+ALGO_EXECUTION_ENABLED = True  # ✅ डेल्टा ऑटोमैटिक ट्रेड एंट्री और एग्जिट 100% चालू है!
 
 DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
@@ -42,6 +67,42 @@ DELTA_URLS       = [
     "https://cdn-ind.testnet.deltaex.org",
     "https://testnet-api.delta.exchange"
 ]
+
+# ============================================================================
+# 🔒 HARD-LOCKED ENGINE SETTINGS (MULTI-DEVICE SAFE — NO DROPDOWN RESET!)
+# ============================================================================
+FIXED_TF             = "5m"    # 🔒 Locked: 5m Timeframe
+FIXED_QTY            = 10      # 🔒 Locked: 10 Lots (1p = ₹0.85)
+FIXED_DIVISOR        = 16.0    # 🔒 Locked: Mode 16 (Turbo Scalper)
+FIXED_ST_MULT        = 2.5     # 🔒 Locked: Core 2.5 (Wide Shield)
+
+USD_INR_RATE         = 85.0
+BROK_PER_QTY         = 82.38   # Real Delta CSV Fee: 82.38 pts/Qty ($0.08238 = ₹7.002 per Qty Round-Trip)
+
+STAGE1_TRIG_UNITS    = 1.00
+STAGE1_LOCK_UNITS    = 0.85
+STAGE1_MIN_PTS_Q     = 215.0   # कम से कम +215 pts/Q लॉक
+STAGE2_TRIG_UNITS    = 1.75
+STAGE2_FLOOR_UNITS   = 1.35
+CLOSE_TRAIL_UNITS    = 1.15
+
+MAX_WAVE_STREAK      = 5
+MAX_DLINE_DIST       = 2.6
+MIN_FLOW_DOM         = 50.0
+
+ATR_PERIOD           = 5
+USE_SMOOTHING        = True
+SMOOTH_PERIOD        = 14
+
+SL_UNITS             = 1.40
+MAX_SL_PTS_PER_QTY   = 235.3
+ANTI_WICK_SL         = True
+MINTICK              = 0.1
+
+HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+
+def pts_to_inr(lot_pts):
+    return lot_pts * 0.001 * USD_INR_RATE
 
 @st.cache_data(ttl=300)
 def get_server_public_ip():
@@ -118,7 +179,6 @@ def place_delta_demo_order(eng, side, qty, tag="AI-Quantum", is_exit=False):
 
         ok, resp = delta_request("POST", "/v2/orders", payload)
 
-        # यदि लाइव ट्रेड इस सेशन में खुला था और reduce_only अटका, तो काउंटर मार्केट ऑर्डर से तुरंत एग्जिट करें
         if (not ok) and is_exit and eng.get("live_order_active", False):
             payload_fallback = {
                 "product_id": prod_id,
@@ -136,37 +196,6 @@ def place_delta_demo_order(eng, side, qty, tag="AI-Quantum", is_exit=False):
     except Exception as e:
         eng["delta_status"] = f"⚠️ Delta Error: {str(e)}"
         return False
-
-# ============================================================================
-# CORE QUANTUM PARAMETERS (EXACT V16 TURBO LOGIC — STEALTH DESIGN)
-# ============================================================================
-USD_INR_RATE         = 85.0
-BROK_PER_QTY         = 82.38   # Real Delta CSV Fee: 82.38 pts/Qty ($0.08238 = ₹7.002 per Qty Round-Trip)
-
-STAGE1_TRIG_UNITS    = 1.00
-STAGE1_LOCK_UNITS    = 0.85
-STAGE1_MIN_PTS_Q     = 215.0   # कम से कम +215 pts/Q लॉक
-STAGE2_TRIG_UNITS    = 1.75
-STAGE2_FLOOR_UNITS   = 1.35
-CLOSE_TRAIL_UNITS    = 1.15
-
-MAX_WAVE_STREAK      = 5
-MAX_DLINE_DIST       = 2.6
-MIN_FLOW_DOM         = 50.0
-
-ATR_PERIOD           = 5
-USE_SMOOTHING        = True
-SMOOTH_PERIOD        = 14
-
-SL_UNITS             = 1.40
-MAX_SL_PTS_PER_QTY   = 235.3
-ANTI_WICK_SL         = True
-MINTICK              = 0.1
-
-HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
-
-def pts_to_inr(lot_pts):
-    return lot_pts * 0.001 * USD_INR_RATE
 
 # ============================================================================
 # MARKET DATA FETCHERS
@@ -258,7 +287,7 @@ def check_live_intrabar_ticks(eng, live_px):
     t_dir = eng["trade_dir"]
     t_label = "LONG" if t_dir == 1 else "SHORT"
     close_side = "sell" if t_dir == 1 else "buy"
-    total_qty = eng["total_qty"]
+    total_qty = FIXED_QTY
     unit_size = eng["unit_size"]
     brok_tot = BROK_PER_QTY * total_qty
     s1_lock_pts_q = max(unit_size * STAGE1_LOCK_UNITS, STAGE1_MIN_PTS_Q)
@@ -321,8 +350,8 @@ def process_closed_bar(eng, kline):
 
     idx = eng["bar_count"]
     unit_size = eng["unit_size"]
-    st_factor = eng["st_factor"]
-    total_qty = eng["total_qty"]
+    st_factor = FIXED_ST_MULT
+    total_qty = FIXED_QTY
     brok_tot = BROK_PER_QTY * total_qty
 
     s1_lock_pts_q = max(unit_size * STAGE1_LOCK_UNITS, STAGE1_MIN_PTS_Q)
@@ -714,88 +743,21 @@ def process_closed_bar(eng, kline):
     eng["bar_count"] += 1
 
 # ============================================================================
-# ENGINE INITIALIZER & 24x7 BACKGROUND AUTO-TRADING WORKER
+# ENGINE INITIALIZER & 24x7 BACKGROUND AUTO-TRADING WORKER (LOCKED CONFIG)
 # ============================================================================
-def reset_and_warmup_engine(eng, signal_tf, st_factor, range_divisor, total_qty):
-    eng["initialized"] = False
-    eng["signal_tf"] = signal_tf
-    eng["st_factor"] = float(st_factor)
-    eng["range_divisor"] = float(range_divisor)
-    eng["total_qty"] = int(total_qty)
-    eng["config_key"] = f"{signal_tf}_{st_factor}_{range_divisor}_{total_qty}"
-
+def init_locked_engine_once(eng):
     macro_range = calc_daily_atr5()
     eng["macro_range"] = macro_range
-    eng["unit_size"] = max(macro_range / float(range_divisor), MINTICK * 2.0)
+    eng["unit_size"] = max(macro_range / float(FIXED_DIVISOR), MINTICK * 2.0)
 
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
-    days_back = 45 if signal_tf == "1h" else (25 if signal_tf == "15m" else 10)
+    days_back = 10  # 5m Timeframe = 10 Days History
     eng["days_back"] = days_back
     anchor_start_ms = (today_00_utc_sec - (days_back * 86400)) * 1000
     now_ms = now_sec * 1000
 
-    eng["bar_count"] = 0
-    eng["last_bar_time"] = 0
-    eng["prev_close"] = 0.0
-    eng["tr_sum"] = 0.0
-    eng["atr14"] = 15.0
-    eng["ema21"] = 0.0
-    eng["up_sum"] = 0.0
-    eng["dn_sum"] = 0.0
-    eng["rma_up"] = 0.0
-    eng["rma_dn"] = 0.0
-    eng["rsi14"] = 50.0
-    eng["g1"] = 0.0
-    eng["g2"] = 0.0
-    eng["buy_v1"] = 0.0
-    eng["buy_v2"] = 0.0
-    eng["sell_v1"] = 0.0
-    eng["sell_v2"] = 0.0
-    eng["buy_dom_pct"] = 50.0
-    eng["sell_dom_pct"] = 50.0
-    eng["q_top"] = 0.0
-    eng["q_bot"] = 0.0
-    eng["q_dir"] = 1
-    eng["q_streak"] = 1
-    eng["q_core"] = 0.0
-    eng["support_band"] = None
-    eng["resistance_band"] = None
-    eng["n_trend"] = 1
-    eng["n_line"] = 0.0
-    eng["pending_flip_buy"] = False
-    eng["pending_flip_sell"] = False
-
-    eng["trade_dir"] = 0
-    eng["entry_bar"] = -1
-    eng["entry_price"] = 0.0
-    eng["tp1_price"] = 0.0
-    eng["tp2_price"] = 0.0
-    eng["stop_price"] = 0.0
-    eng["hard_stop_price"] = 0.0
-    eng["max_fav_close"] = 0.0
-    eng["locked_tp1_pts"] = 0.0
-    eng["locked_tp2_pts"] = 0.0
-    eng["locked_sl_pts"] = 0.0
-    eng["tp1_reached"] = False
-    eng["tp2_reached"] = False
-    eng["entry_tag"] = ""
-    eng["entry_time_str"] = ""
-    eng["wins"] = 0
-    eng["losses"] = 0
-    eng["tp2_hits"] = 0
-    eng["gross_profit"] = 0.0
-    eng["gross_loss"] = 0.0
-    eng["total_brok"] = 0.0
-
-    eng["candles_js"] = []
-    eng["qcore_js"] = []
-    eng["nline_js"] = []
-    eng["dline_js"] = []
-    eng["markers_js"] = []
-    eng["trade_logs"] = []
-
-    klines = fetch_hl_klines_range(signal_tf, anchor_start_ms, now_ms)
+    klines = fetch_hl_klines_range(FIXED_TF, anchor_start_ms, now_ms)
     if klines and len(klines) > 30:
         for b in klines[:-1]:
             process_closed_bar(eng, b)
@@ -818,6 +780,9 @@ def background_worker(eng, my_worker_id):
         if eng.get("active_worker_id") != my_worker_id:
             break
         try:
+            if not eng.get("initialized", False):
+                init_locked_engine_once(eng)
+
             if eng.get("initialized", False):
                 now_ts = time.time()
 
@@ -832,13 +797,12 @@ def background_worker(eng, my_worker_id):
                         lb["close"] = round(live_px, 1)
                     check_live_intrabar_ticks(eng, live_px)
 
-                # 2. हर 4 सेकंड में नई क्लोज हुई कैंडल चेक करें -> नया सिग्नल या एग्जिट आते ही तुरंत डेल्टा आर्डर फायर करें!
+                # 2. हर 4 सेकंड में नई क्लोज हुई 5m कैंडल चेक करें -> नया सिग्नल या एग्जिट आते ही तुरंत डेल्टा आर्डर फायर करें!
                 if now_ts - last_kline_poll >= 4.0:
-                    tf = eng["signal_tf"]
-                    tf_ms = 3600000 if tf == "1h" else (900000 if tf == "15m" else 300000)
+                    tf_ms = 300000  # 5m in ms
                     end_ms = int(now_ts * 1000)
                     start_ms = end_ms - (8 * tf_ms)
-                    recent_klines = fetch_hl_klines_range(tf, start_ms, end_ms)
+                    recent_klines = fetch_hl_klines_range(FIXED_TF, start_ms, end_ms)
                     if recent_klines and len(recent_klines) >= 2:
                         for b in recent_klines[:-1]:
                             process_closed_bar(eng, b)
@@ -857,33 +821,88 @@ def background_worker(eng, my_worker_id):
         time.sleep(2.0)
 
 @st.cache_resource
-def get_quantum_live_v17_engine():
+def get_quantum_live_v18_locked_engine():
     worker_id = int(time.time() * 1000)
     eng = {
         "active_worker_id": worker_id,
         "initialized": False,
         "live_order_active": False,
-        "config_key": "",
-        "signal_tf": "15m",
-        "st_factor": 2.0,
-        "range_divisor": 12.0,
-        "total_qty": 25,
         "delta_btc_product_id": 27,
         "delta_status": "🤖 Delta Live Algo: ACTIVE (Auto-Entry & Auto-Exit Ready)",
+        "macro_range": 2800.0,
+        "unit_size": 175.0,
+        "days_back": 10,
+        "bar_count": 0,
+        "last_bar_time": 0,
+        "prev_close": 0.0,
+        "tr_sum": 0.0,
+        "atr14": 15.0,
+        "ema21": 0.0,
+        "up_sum": 0.0,
+        "dn_sum": 0.0,
+        "rma_up": 0.0,
+        "rma_dn": 0.0,
+        "rsi14": 50.0,
+        "g1": 0.0,
+        "g2": 0.0,
+        "buy_v1": 0.0,
+        "buy_v2": 0.0,
+        "sell_v1": 0.0,
+        "sell_v2": 0.0,
+        "buy_dom_pct": 50.0,
+        "sell_dom_pct": 50.0,
+        "q_top": 0.0,
+        "q_bot": 0.0,
+        "q_dir": 1,
+        "q_streak": 1,
+        "q_core": 0.0,
+        "support_band": None,
+        "resistance_band": None,
+        "n_trend": 1,
+        "n_line": 0.0,
+        "pending_flip_buy": False,
+        "pending_flip_sell": False,
+        "trade_dir": 0,
+        "entry_bar": -1,
+        "entry_price": 0.0,
+        "tp1_price": 0.0,
+        "tp2_price": 0.0,
+        "stop_price": 0.0,
+        "hard_stop_price": 0.0,
+        "max_fav_close": 0.0,
+        "locked_tp1_pts": 0.0,
+        "locked_tp2_pts": 0.0,
+        "locked_sl_pts": 0.0,
+        "tp1_reached": False,
+        "tp2_reached": False,
+        "entry_tag": "",
+        "entry_time_str": "",
+        "wins": 0,
+        "losses": 0,
+        "tp2_hits": 0,
+        "gross_profit": 0.0,
+        "gross_loss": 0.0,
+        "total_brok": 0.0,
+        "candles_js": [],
+        "qcore_js": [],
+        "nline_js": [],
+        "dline_js": [],
+        "markers_js": [],
+        "trade_logs": [],
         "last_price": 0.0,
         "live_bar": None,
         "last_error": None
     }
-    reset_and_warmup_engine(eng, "15m", 2.0, 12.0, 25)
+    init_locked_engine_once(eng)
     t = threading.Thread(target=background_worker, args=(eng, worker_id), daemon=True)
     t.start()
     return eng
 
-eng = get_quantum_live_v17_engine()
+eng = get_quantum_live_v18_locked_engine()
 server_ip = get_server_public_ip()
 
 # ============================================================================
-# TOP CONTROL BAR (STEALTH LABELS + DELTA CONNECTION TEST BUTTON + FORCE EXIT)
+# TOP CONTROL BAR + READ-ONLY LOCKED CONFIGURATION DISPLAY (MULTI-DEVICE SAFE)
 # ============================================================================
 r1_c1, r1_c2, r1_c3, r1_c4 = st.columns([0.46, 0.18, 0.18, 0.18])
 with r1_c1:
@@ -904,7 +923,7 @@ with r1_c3:
         if eng.get("trade_dir", 0) != 0:
             close_side = "sell" if eng["trade_dir"] == 1 else "buy"
             eng["live_order_active"] = True
-            place_delta_demo_order(eng, close_side, eng["total_qty"], tag="Manual Force Exit", is_exit=True)
+            place_delta_demo_order(eng, close_side, FIXED_QTY, tag="Manual Force Exit", is_exit=True)
             eng["trade_dir"] = 0
             eng["live_order_active"] = False
         else:
@@ -914,56 +933,16 @@ with r1_c4:
     if st.button("🔄 चार्ट व डेटा सिंक करें"):
         st.rerun()
 
-r2_c1, r2_c2, r2_c3, r2_c4 = st.columns([0.22, 0.26, 0.26, 0.26])
-with r2_c1:
-    selected_tf = st.selectbox("⏱️ Timeframe", ["15m", "5m", "1h"], index=0, label_visibility="collapsed")
-with r2_c2:
-    qty_label = st.selectbox(
-        "📦 Position Size",
-        [
-            "25 Lots (1p = ₹2.12)",
-            "50 Lots (1p = ₹4.25)",
-            "30 Lots (1p = ₹2.55)",
-            "20 Lots (1p = ₹1.70)",
-            "10 Lots (1p = ₹0.85)"
-        ],
-        index=0,
-        label_visibility="collapsed"
-    )
-    selected_qty = int(qty_label.split()[0])
-with r2_c3:
-    div_label = st.selectbox(
-        "🧬 Matrix Grid Mode",
-        [
-            "Mode 12 (Balanced Pro)",
-            "Mode 14 (High Frequency)",
-            "Mode 10 (Macro Wave)",
-            "Mode 16 (Turbo Scalper)"
-        ],
-        index=0,
-        label_visibility="collapsed"
-    )
-    selected_divisor = float(div_label.split()[1])
-with r2_c4:
-    st_mult_label = st.selectbox(
-        "🛡️ Neural Shield Sensitivity",
-        [
-            "Core 2.0 (Fast Shield - Best)",
-            "Core 2.2 (Balanced Shield)",
-            "Core 1.8 (Ultra Shield)",
-            "Core 2.5 (Wide Shield)"
-        ],
-        index=0,
-        label_visibility="collapsed"
-    )
-    selected_st_mult = float(st_mult_label.split()[1])
-
-desired_cfg = f"{selected_tf}_{selected_st_mult}_{selected_divisor}_{selected_qty}"
-if eng.get("config_key") != desired_cfg:
-    reset_and_warmup_engine(eng, selected_tf, selected_st_mult, selected_divisor, selected_qty)
+# 🔒 Read-Only Locked Configuration Pills (No Dropdowns -> Zero Multi-Device Reset!)
+st.markdown("""<div class="locked-bar">
+  <div class="locked-pill"><span>🔒 Timeframe</span><b>5m (Locked)</b></div>
+  <div class="locked-pill"><span>🔒 Position Size</span><b>10 Lots (1p = ₹0.85)</b></div>
+  <div class="locked-pill"><span>🔒 Matrix Grid</span><b>Mode 16 (Turbo Scalper)</b></div>
+  <div class="locked-pill"><span>🔒 Neural Shield</span><b>Core 2.5 (Wide Shield)</b></div>
+</div>""", unsafe_allow_html=True)
 
 if not eng.get("initialized", False) or not eng.get("candles_js"):
-    st.warning("⏳ AI-Quantum Pro: लाइव चार्ट और न्यूरल सिग्नल्स सिंक हो रहे हैं...")
+    st.warning("⏳ Dr Devendra AI-Quantum Pro: लाइव चार्ट और न्यूरल सिग्नल्स सिंक हो रहे हैं...")
     st.stop()
 
 # Build combined chart series including the currently forming live bar
@@ -983,10 +962,10 @@ tot_tr = eng["wins"] + eng["losses"]
 wr_pct = (eng["wins"] / tot_tr * 100.0) if tot_tr > 0 else 0.0
 net_pnl_pts = eng["gross_profit"] - eng["gross_loss"] - eng["total_brok"]
 net_inr_val = pts_to_inr(net_pnl_pts)
-pt_inr = selected_qty * 0.001 * USD_INR_RATE
-fee_per_tr_inr = pts_to_inr(BROK_PER_QTY * selected_qty)
+pt_inr = FIXED_QTY * 0.001 * USD_INR_RATE
+fee_per_tr_inr = pts_to_inr(BROK_PER_QTY * FIXED_QTY)
 
-matrix_txt = f"{selected_tf.upper()} AI MATRIX: BULLISH ▲" if eng["n_trend"] == 1 else f"{selected_tf.upper()} AI MATRIX: BEARISH ▼"
+matrix_txt = f"{FIXED_TF.upper()} AI MATRIX: BULLISH ▲" if eng["n_trend"] == 1 else f"{FIXED_TF.upper()} AI MATRIX: BEARISH ▼"
 matrix_col = "#00e676" if eng["n_trend"] == 1 else "#ff5252"
 
 active_trade_info = {
@@ -1004,7 +983,7 @@ active_trade_info = {
 }
 
 # ============================================================================
-# INTERACTIVE STEALTH AI-QUANTUM CHART (ZERO MENTION OF UNDERLYING INDICATORS)
+# INTERACTIVE STEALTH AI-QUANTUM CHART (LOCKED 5M • 10 LOTS • MODE 16 • CORE 2.5)
 # ============================================================================
 candles_json = json.dumps(candles_full)
 qcore_json   = json.dumps(qcore_full)
@@ -1056,7 +1035,7 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div class="hud-left">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ AI-QUANTUM PRO ({selected_tf.upper()} • {selected_qty} LOTS • AUTO-ALGO ON)</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ AI-QUANTUM PRO ({FIXED_TF.upper()} • {FIXED_QTY} LOTS • MODE 16 • CORE 2.5 • AUTO-ALGO ON)</span>
       <span id="live-price-txt" class="live-px">${eng['last_price']:,.2f}</span>
       <span class="badge">{matrix_txt}</span>
       <span style="font-size:12px; color:#facc15; font-weight:700;">
@@ -1074,7 +1053,7 @@ chart_html = f"""<!DOCTYPE html>
     <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Neural Shield (N-Line)</div>
     <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> Dynamic Pulse (D-Line)</div>
     <div id="hover-info" style="margin-left:auto; color:#e2e8f0; font-size:12.5px; font-weight:700;">
-      🗓️ {eng['days_back']} Days: <span style="color:#facc15;">{tot_tr} Trades</span> ({eng['wins']}W / {eng['losses']}L) | 🏆 Accuracy: <span style="color:#00e676;">{wr_pct:.1f}%</span> | 🚀 Quantum Waves: {eng['tp2_hits']} | 💰 Net Profit ({selected_qty}L After Fee): <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
+      🗓️ {eng['days_back']} Days: <span style="color:#facc15;">{tot_tr} Trades</span> ({eng['wins']}W / {eng['losses']}L) | 🏆 Accuracy: <span style="color:#00e676;">{wr_pct:.1f}%</span> | 🚀 Quantum Waves: {eng['tp2_hits']} | 💰 Net Profit ({FIXED_QTY}L After Fee): <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
     </div>
   </div>
 
@@ -1230,10 +1209,10 @@ components.html(chart_html, height=640, scrolling=False)
 act = active_trade_info
 if act["active"]:
     live_pts_q = (eng["last_price"] - act["entry"]) if act["dir_code"] == 1 else (act["entry"] - eng["last_price"])
-    live_net_inr = pts_to_inr((live_pts_q * selected_qty) - (BROK_PER_QTY * selected_qty))
+    live_net_inr = pts_to_inr((live_pts_q * FIXED_QTY) - (BROK_PER_QTY * FIXED_QTY))
     st.markdown(
         f"""<div style="background:#1e293b; border:1.5px solid #00e676; border-radius:10px; padding:10px 14px; margin-bottom:10px; font-size:13px;">
-        🔥 <b>लाइव ओपन पोज़ीशन ({selected_qty} Lots • Auto-Exit Active):</b>
+        🔥 <b>लाइव ओपन पोज़ीशन ({FIXED_QTY} Lots • Auto-Exit Active):</b>
         <span style="color:#facc15;font-weight:bold;">{act['dir']} ({act['tag']} @ {act['time']})</span> |
         <b>Entry:</b> {act['entry']:,.1f} | <b>Live Net PnL:</b> <span style="color:#4ade80;font-weight:800;">₹{live_net_inr:+,.0f} ({live_pts_q:+,.1f}p/L)</span> |
         <b>Stage-1 Lock:</b> {act['tp1']:,.1f} | <b>Quantum Wave:</b> {act['tp2']:,.1f} | <b>Shield SL:</b> <span style="color:#38bdf8;font-weight:bold;">{act['sl']:,.1f}</span>
@@ -1241,7 +1220,7 @@ if act["active"]:
         unsafe_allow_html=True
     )
 
-with st.expander(f"📜 Dr Devendra AI-Quantum Pro ({selected_tf.upper()} • {selected_qty} Lots) सिग्नल व एग्जिट लॉग (Click to Expand)", expanded=True):
+with st.expander(f"📜 Dr Devendra AI-Quantum Pro ({FIXED_TF.upper()} • {FIXED_QTY} Lots • Mode 16 • Core 2.5) सिग्नल व एग्जिट लॉग (Click to Expand)", expanded=True):
     rows_html = ""
     for lg in eng["trade_logs"]:
         c_hex = lg["color"]
@@ -1257,7 +1236,7 @@ with st.expander(f"📜 Dr Devendra AI-Quantum Pro ({selected_tf.upper()} • {s
         <table style="width:100%; border-collapse:collapse;">
         <thead><tr style="border-bottom:1px solid #475569; font-size:11.5px; color:#94a3b8; text-align:left;">
         <th style="padding:6px;">समय (IST)</th><th style="padding:6px;">AI सिग्नल</th><th style="padding:6px;">Entry → Exit</th>
-        <th style="padding:6px;">एग्जिट स्टेटस</th><th style="padding:6px; text-align:right;">{selected_qty}L Net PnL (₹{fee_per_tr_inr:.0f} फीस काटकर)</th>
+        <th style="padding:6px;">एग्जिट स्टेटस</th><th style="padding:6px; text-align:right;">{FIXED_QTY}L Net PnL (₹{fee_per_tr_inr:.0f} फीस काटकर)</th>
         </tr></thead><tbody>{rows_html}</tbody></table></div>""",
         unsafe_allow_html=True
     )
