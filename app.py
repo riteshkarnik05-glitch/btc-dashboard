@@ -963,7 +963,7 @@ if eng.get("config_key") != desired_cfg:
     reset_and_warmup_engine(eng, selected_tf, selected_st_mult, selected_divisor, selected_qty)
 
 if not eng.get("initialized", False) or not eng.get("candles_js"):
-    st.warning("⏳ Dr Devendra AI-Quantum Pro: लाइव चार्ट और न्यूरल सिग्नल्स सिंक हो रहे हैं...")
+    st.warning("⏳ AI-Quantum Pro: लाइव चार्ट और न्यूरल सिग्नल्स सिंक हो रहे हैं...")
     st.stop()
 
 # Build combined chart series including the currently forming live bar
