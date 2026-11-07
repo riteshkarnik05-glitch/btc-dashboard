@@ -1056,7 +1056,7 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div class="hud-left">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ DR DEVENDRA AI-QUANTUM PRO ({selected_tf.upper()} • {selected_qty} LOTS • AUTO-ALGO ON)</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ AI-QUANTUM PRO ({selected_tf.upper()} • {selected_qty} LOTS • AUTO-ALGO ON)</span>
       <span id="live-price-txt" class="live-px">${eng['last_price']:,.2f}</span>
       <span class="badge">{matrix_txt}</span>
       <span style="font-size:12px; color:#facc15; font-weight:700;">
