@@ -8,7 +8,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra AI-Renko Live BTC Chart (Pure ST Exit)", layout="wide")
+st.set_page_config(page_title="Dr Devendra AI-Renko Live BTC Chart (Smaller Bricks + Pure ST)", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -106,21 +106,18 @@ def place_delta_demo_order(side, qty, tag="Renko 10Q", is_exit=False, prod_id=27
         return False, str(e)
 
 # ============================================================================
-# 100% PURE FAST RENKO SUPERTREND EXIT PARAMETERS (NO ₹5 SAFE-FLOOR CHOKE!)
+# SMALLER BRICKS + 100% PURE RENKO SUPERTREND EXIT (NO ₹51 FEE-COVER CHOKE!)
 # ============================================================================
 TOTAL_QTY            = 10
 USD_INR_RATE         = 85.0
 BROK_PER_QTY         = 82.38   # Real Delta CSV Fee: ₹70.02 per 10Q trade (823.8 lot-pts)
 
-# 🚀 अब कोई बीच का ₹5 वाला कॉस्ट-लॉक नहीं!
-# जब तक Fast Renko Supertrend (st_line) खुद पलट न जाए, ट्रेड पूरे ट्रेंड में बना रहेगा।
 USE_STREAK_FILTER    = True
 MAX_BRICK_STREAK     = 3
 USE_STRETCH_FILTER   = True
-MAX_EMA_DIST_BRICKS  = 2.0
+MAX_EMA_DIST_BRICKS  = 2.2
 
 ATR_PERIOD           = 5
-RANGE_DIVISOR        = 10.0
 USE_GAUSSIAN         = True
 GAUSS_PERIOD         = 20
 MIN_VOL_DOM          = 55.0
@@ -137,7 +134,7 @@ def pts_to_inr(lot_pts):
     return lot_pts * 0.001 * USD_INR_RATE
 
 # ============================================================================
-# FETCH HISTORICAL CANDLES & COMPUTE PURE FAST RENKO SUPERTREND INDICATOR
+# FETCH HISTORICAL CANDLES & COMPUTE SMALL-BRICK RENKO SUPERTREND
 # ============================================================================
 def fetch_hl_klines_range(interval, start_ms, end_ms):
     for attempt in range(3):
@@ -200,7 +197,7 @@ def calc_daily_atr5():
             rma[i] = (rma[i - 1] * (ATR_PERIOD - 1) + v) / float(ATR_PERIOD)
     return rma[-2]
 
-def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=10.0):
+def build_chart_and_renko_signals(signal_tf="15m", st_factor=2.0, range_divisor=16.0):
     macro_range = calc_daily_atr5()
     now_sec = int(time.time())
     today_00_utc_sec = (now_sec // 86400) * 86400
@@ -212,6 +209,7 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
     if not klines or len(klines) < 30:
         return None
 
+    # छोटी ब्रिक का साइज (जैसे Divisor 16 पर ~178 pts या Divisor 18 पर ~158 pts)
     box_size = max(macro_range / float(range_divisor), MINTICK * 2.0)
     brok_10q = BROK_PER_QTY * TOTAL_QTY
     ist_offset_sec = 19800  # +5:30 IST offset
@@ -269,6 +267,9 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
     gross_profit = 0.0
     gross_loss = 0.0
     total_brok = 0.0
+
+    # कम से कम +180 pts/Q (+1,800p Gross = Net ₹+83 से ऊपर) होने पर ही ST लाइन SL बनेगी (कोई ₹5 या ₹51 का चोक नहीं!)
+    min_profit_lock_pts = max(box_size * 1.0, 180.0)
 
     for idx, kline in enumerate(klines):
         bar_time_ms = int(kline[0])
@@ -434,15 +435,14 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
         ema_js.append({"time": t_sec_ist, "value": round(ema21, 1)})
 
         # ====================================================================
-        # PURE SUPERTREND EXIT ENGINE (NO ₹5 SAFE-FLOOR CHOKE!)
+        # SMALL-BRICK PURE SUPERTREND EXIT ENGINE (NO ₹51 FEE-COVER SAFE EXIT!)
         # ====================================================================
         if idx < len(klines) - 1:
             if trade_dir != 0 and idx > entry_bar:
                 t_dir = trade_dir
                 t_label = "LONG" if t_dir == 1 else "SHORT"
 
-                # 1. यदि Fast Renko Supertrend Line (st_line) एंट्री से कम से कम +0.85 Brick प्रॉफिट में आ गई है, तभी SL को ST Line पर लाएं!
-                min_profit_lock_pts = box_size * 0.85
+                # 1. छोटी ब्रिक्स तेजी से बनेंगी और जैसे ही हरी/लाल ST लाइन एंट्री से +1 ब्रिक ऊपर आएगी, स्टॉप-लॉस सीधे ST लाइन के साथ चलेगा!
                 if t_dir == 1 and st_trend == 1 and st_line >= (entry_price + min_profit_lock_pts):
                     if st_line > stop_price:
                         stop_price = st_line
@@ -458,7 +458,7 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
                         wins += 1
                         big_st_rides += 1
 
-                # 2. यदि ST प्रॉफिट में लॉक हो चुका है -> केवल तभी एग्जिट करें जब ST पलट जाए या कैंडल ST लाइन के नीचे क्लोज हो!
+                # 2. जब ST प्रॉफिट में लॉक हो चुका हो -> केवल तभी एग्जिट करें जब ST पलट जाए या कैंडल ST लाइन के पार क्लोज हो!
                 if st_in_profit:
                     st_flipped_against = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
                     close_crossed_st   = (c <= stop_price) if t_dir == 1 else (c >= stop_price)
@@ -485,11 +485,11 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
                         })
                         trade_dir = 0
                 else:
-                    # 3. जब तक ST प्रॉफिट में नहीं आया है: यदि ST प्रॉफिट में ही पलट जाए तो प्रॉफिट बुक करें, वरना ₹200 SL चेक करें
+                    # 3. जब तक ST लाइन एंट्री से ऊपर नहीं आई है: केवल असली ST रिवर्सल या ₹200 SL पर ही बाहर निकलें
                     st_flipped_against = (st_trend == -1) if t_dir == 1 else (st_trend == 1)
                     signed_move_pts = (c - entry_price) if t_dir == 1 else (entry_price - c)
 
-                    if st_flipped_against and signed_move_pts >= (BROK_PER_QTY + 40.0):
+                    if st_flipped_against and signed_move_pts >= min_profit_lock_pts:
                         wins += 1
                         total_trade_pnl = signed_move_pts * TOTAL_QTY
                         gross_profit += total_trade_pnl
@@ -511,7 +511,7 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
                         trade_dir = 0
                     else:
                         adverse_close_pts = -signed_move_pts
-                        renko_sl_price = (entry_price - box_size * SL_BRICKS) if t_dir == 1 else (entry_price + box_size * SL_BRICKS)
+                        renko_sl_price = (entry_price - max(box_size * SL_BRICKS, locked_sl_pts)) if t_dir == 1 else (entry_price + max(box_size * SL_BRICKS, locked_sl_pts))
                         close_hit_renko_sl = (c <= renko_sl_price) if t_dir == 1 else (c >= renko_sl_price)
                         st_turned_bad = st_flipped_against and (adverse_close_pts > 0)
                         hard_crash = (l <= hard_stop_price) if t_dir == 1 else (h >= hard_stop_price)
@@ -539,7 +539,7 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
                             trade_dir = 0
 
             # New Entry Signals (Exact Pine Script)
-            candle_not_giant = (h - l) <= box_size * 1.85
+            candle_not_giant = (h - l) <= max(box_size * 2.2, 420.0)
             bull_filter_ok   = candle_not_giant and buy_dom_pct >= 50.0 and rsi14 < 76.0
             bear_filter_ok   = candle_not_giant and sell_dom_pct >= 50.0 and rsi14 > 24.0
 
@@ -572,7 +572,7 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
 
                 locked_sl_pts   = MAX_SL_PTS_PER_QTY
                 stop_price      = (c - locked_sl_pts) if is_long else (c + locked_sl_pts)
-                hard_stop_price = (c - box_size * 1.6) if is_long else (c + box_size * 1.6)
+                hard_stop_price = (c - max(box_size * 1.8, 380.0)) if is_long else (c + max(box_size * 1.8, 380.0))
 
                 markers_js.append({
                     "time": t_sec_ist,
@@ -584,8 +584,6 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
 
         prev_close = c
 
-    # Update active trade's stop_price with current live bar's st_line if ST is in profit
-    min_profit_lock_pts = box_size * 0.85
     if trade_dir == 1 and st_trend == 1 and st_line >= (entry_price + min_profit_lock_pts):
         stop_price = max(stop_price, st_line)
         st_in_profit = True
@@ -628,13 +626,13 @@ def build_chart_and_renko_signals(signal_tf="15m", st_factor=1.8, range_divisor=
     }
 
 # ============================================================================
-# TOP CONTROL BAR (DELTA API + TIMEFRAME + FAST ST MULTIPLIER SELECTOR)
+# TOP CONTROL BAR (BRICK SIZE SELECTOR + FAST ST MULTIPLIER + TIMEFRAME)
 # ============================================================================
 server_ip = get_server_public_ip()
 if "delta_msg" not in st.session_state:
-    st.session_state["delta_msg"] = "⏸️ Algo Paused (100% Pure Fast Renko ST Exit — No ₹5 Choke)"
+    st.session_state["delta_msg"] = "⏸️ Algo Paused (Small Bricks + Pure ST Exit)"
 
-c1, c2, c3, c4, c5 = st.columns([0.36, 0.14, 0.18, 0.16, 0.16])
+c1, c2, c3, c4, c5, c6 = st.columns([0.28, 0.12, 0.18, 0.16, 0.13, 0.13])
 with c1:
     st.markdown(
         f"**🌐 IP:** `{server_ip}` | <span style='color:#facc15;font-weight:700;'>{st.session_state['delta_msg']}</span>",
@@ -643,26 +641,40 @@ with c1:
 with c2:
     selected_tf = st.selectbox("⏱️ टाइमफ्रेम", ["15m", "5m", "1h"], index=0, label_visibility="collapsed")
 with c3:
+    div_label = st.selectbox(
+        "🧱 Brick Size (Divisor)",
+        [
+            "Div 16 (~175p Small - Best)",
+            "Div 18 (~155p Smaller)",
+            "Div 20 (~140p Ultra Small)",
+            "Div 14 (~200p Medium)",
+            "Div 10 (~285p Original Big)"
+        ],
+        index=0,
+        label_visibility="collapsed"
+    )
+    selected_divisor = float(div_label.split()[1])
+with c4:
     st_mult_label = st.selectbox(
-        "⚡ Fast ST Multiplier",
-        ["ST 1.5 (Super Fast)", "ST 1.8 (Fast - Best)", "ST 2.0 (Medium Fast)", "ST 2.2 (Balanced)", "ST 3.0 (Original Wide)"],
-        index=1,
+        "⚡ ST Multiplier",
+        ["ST 2.0 (Fast - Best)", "ST 1.8 (Super Fast)", "ST 2.2 (Balanced)", "ST 2.5 (Medium)", "ST 3.0 (Wide)"],
+        index=0,
         label_visibility="collapsed"
     )
     selected_st_mult = float(st_mult_label.split()[1])
-with c4:
+with c5:
     if st.button("🔌 Delta API टेस्ट"):
         ok, resp = delta_request("GET", "/v2/wallet/balances")
         if ok:
-            st.session_state["delta_msg"] = "✅ Delta Connected! (Algo Paused)"
+            st.session_state["delta_msg"] = "✅ Delta Connected!"
         else:
-            st.session_state["delta_msg"] = f"⚠️ API Error: {resp}"
+            st.session_state["delta_msg"] = f"⚠️ Error: {resp}"
         st.rerun()
-with c5:
-    if st.button("🔄 चार्ट रिफ्रेश करें"):
+with c6:
+    if st.button("🔄 चार्ट रिफ्रेश"):
         st.rerun()
 
-data = build_chart_and_renko_signals(signal_tf=selected_tf, st_factor=selected_st_mult, range_divisor=RANGE_DIVISOR)
+data = build_chart_and_renko_signals(signal_tf=selected_tf, st_factor=selected_st_mult, range_divisor=selected_divisor)
 
 if not data:
     st.warning("⏳ Hyperliquid से BTC चार्ट डेटा लोड हो रहा है, कृपया 2 सेकंड बाद रिफ्रेश करें...")
@@ -671,11 +683,11 @@ if not data:
 tot_tr = data["wins"] + data["losses"]
 wr_pct = (data["wins"] / tot_tr * 100.0) if tot_tr > 0 else 0.0
 net_inr_val = pts_to_inr(data["net_pnl"])
-st_txt = f"{selected_tf.upper()} FAST ST ({selected_st_mult}): BUY ▲" if data["st_trend"] == 1 else f"{selected_tf.upper()} FAST ST ({selected_st_mult}): SELL ▼"
+st_txt = f"{selected_tf.upper()} RENKO ST ({selected_st_mult}): BUY ▲" if data["st_trend"] == 1 else f"{selected_tf.upper()} RENKO ST ({selected_st_mult}): SELL ▼"
 st_col = "#00e676" if data["st_trend"] == 1 else "#ff5252"
 
 # ============================================================================
-# INTERACTIVE TRADINGVIEW LIGHTWEIGHT CHART (100% PURE RENKO ST EXIT)
+# INTERACTIVE TRADINGVIEW LIGHTWEIGHT CHART (SMALLER BRICKS + PURE ST EXIT)
 # ============================================================================
 candles_json = json.dumps(data["candles"])
 rclose_json  = json.dumps(data["rclose"])
@@ -727,11 +739,11 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div class="hud-left">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ BTCUSD ({selected_tf.upper()}) 100% PURE FAST ST ({selected_st_mult}) EXIT</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ BTCUSD ({selected_tf.upper()}) SMALL BRICKS (Div {selected_divisor:.0f}) + PURE ST ({selected_st_mult})</span>
       <span id="live-price-txt" class="live-px">${data['last_price']:,.2f}</span>
       <span class="badge">{st_txt}</span>
       <span style="font-size:12px; color:#facc15; font-weight:700;">
-        🧱 1 Brick: {data['box_size']:,.1f}p | rClose: {data['r_close_now']:,.1f} | Fast ST ({selected_st_mult}): {data['st_now']:,.1f}
+        🧱 1 Brick: {data['box_size']:,.1f}p (₹{pts_to_inr(data['box_size']*10):,.0f}) | rClose: {data['r_close_now']:,.1f} | ST Line: {data['st_now']:,.1f}
       </span>
     </div>
     <div class="btn-bar">
@@ -741,8 +753,8 @@ chart_html = f"""<!DOCTYPE html>
   </div>
 
   <div class="legend-bar">
-    <div class="leg-item"><span class="dot" style="background:#facc15;"></span> Renko Step (rClose)</div>
-    <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Fast Renko Supertrend (ST {selected_st_mult} = Pure Exit Line)</div>
+    <div class="leg-item"><span class="dot" style="background:#facc15;"></span> Small Renko Step (rClose)</div>
+    <div class="leg-item"><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Renko Supertrend (ST {selected_st_mult} = Pure Exit Line)</div>
     <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> EMA 21</div>
     <div id="hover-info" style="margin-left:auto; color:#94a3b8; font-size:12px;">
       📊 Total: {tot_tr} Trades ({data['wins']}W / {data['losses']}L) | WR: {wr_pct:.1f}% | 🚀 Pure ST Waves: {data['big_st_rides']} | Net (After ₹70 Fee): <b style="color:#4ade80;">₹{net_inr_val:+,.0f}</b>
@@ -809,7 +821,7 @@ rcloseSeries.setData(rcloseData);
 const stSeries = chart.addLineSeries({{
   lineWidth: 3,
   lineType: LightweightCharts.LineType.WithSteps,
-  title: 'Fast Renko ST (' + {selected_st_mult} + ')'
+  title: 'Renko ST (' + {selected_st_mult} + ')'
 }});
 stSeries.setData(stData);
 
@@ -888,10 +900,10 @@ if act["active"]:
     live_net_inr = pts_to_inr((live_pts_q * TOTAL_QTY) - (BROK_PER_QTY * TOTAL_QTY))
     locked_pts_q = (act["sl"] - act["entry"]) if act["dir_code"] == 1 else (act["entry"] - act["sl"])
     locked_net_inr = pts_to_inr((locked_pts_q * TOTAL_QTY) - (BROK_PER_QTY * TOTAL_QTY))
-    st_status = f"🚀 Riding ST Line (Net ₹{locked_net_inr:+,.0f} Locked on ST)" if act["st_in_profit"] else "🛡️ Protected by Initial ₹200 SL (Waiting for ST Line to rise above Entry)"
+    st_status = f"🚀 Riding Small-Brick ST Line (Net ₹{locked_net_inr:+,.0f} Locked)" if act["st_in_profit"] else "🛡️ Protected by Initial ₹200 SL (Waiting for ST Line to step into profit)"
     st.markdown(
         f"""<div style="background:#1e293b; border:1.5px solid #00e676; border-radius:10px; padding:10px 14px; margin-bottom:10px; font-size:13px;">
-        🔥 <b>चार्ट पर वर्तमान ओपन ट्रेड (Pure Fast Renko ST {selected_st_mult}):</b>
+        🔥 <b>चार्ट पर वर्तमान ओपन ट्रेड (Brick: {data['box_size']:,.1f}p | ST {selected_st_mult}):</b>
         <span style="color:#facc15;font-weight:bold;">{act['dir']} ({act['tag']} @ {act['time']})</span> |
         <b>Entry:</b> {act['entry']:,.1f} | <b>Live Net PnL:</b> <span style="color:#4ade80;font-weight:800;">₹{live_net_inr:+,.0f} ({live_pts_q:+,.1f}p/Q)</span> |
         <b>Current SL:</b> <span style="color:#38bdf8;font-weight:bold;">{act['sl']:,.1f}</span> ({st_status})
@@ -899,7 +911,7 @@ if act["active"]:
         unsafe_allow_html=True
     )
 
-with st.expander("📜 100% Pure Fast Renko Supertrend Exit के सभी सिग्नल्स और ट्रेड्स की लिस्ट देखें (Click to Expand)", expanded=True):
+with st.expander("📜 Small-Brick + Pure Renko Supertrend Exit के सभी सिग्नल्स और ट्रेड्स की लिस्ट देखें (Click to Expand)", expanded=True):
     rows_html = ""
     for lg in data["logs"]:
         c_hex = lg["color"]
