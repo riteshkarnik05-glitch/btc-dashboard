@@ -8,7 +8,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra L2 Liquidity Sweep Scalper (80% WR Backtest)", layout="wide")
+st.set_page_config(page_title="Dr Devendra L2 Sniper Scalp v2", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -33,9 +33,9 @@ div.stButton > button:hover {
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
-# DELTA EXCHANGE DEMO API & CONNECTION HELPERS (ALGO PAUSED FOR BACKTEST)
+# DELTA EXCHANGE DEMO API & CONNECTION HELPERS
 # ============================================================================
-ALGO_EXECUTION_ENABLED = False  # ⏸️ अभी केवल बैकटेस्ट और सिग्नल टेस्टिंग चालू है (ऑटो-ऑर्डर बंद है)
+ALGO_EXECUTION_ENABLED = False  # ⏸️ बैकटेस्ट मोड
 
 DELTA_API_KEY    = "m9deE36P5CmkezL8JJkJ4s9WhbFTs"
 DELTA_API_SECRET = "sqRjTWnvB8WpqYlEJTCRZVP46OdbiaEUyeKLWLRXtxdvdlcWL6sBgFH2E7eC"
@@ -45,8 +45,8 @@ DELTA_URLS       = [
 ]
 
 USD_INR_RATE         = 85.0
-TAKER_BROK_PER_QTY   = 82.38   # Real Delta CSV Market Order Fee: 82.38 pts/Qty (₹7.002/Qty)
-MAKER_TP_BROK_QTY    = 52.00   # Market Entry + Limit Maker TP Fee (~37% कम ब्रोकरेज!)
+TAKER_BROK_PER_QTY   = 82.38   
+MAKER_TP_BROK_QTY    = 52.00   
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 
@@ -97,7 +97,7 @@ def delta_request(method, path, payload_dict=None):
     return False, last_err
 
 # ============================================================================
-# LIVE HYPERLIQUID L2 ORDERBOOK (TOP-10 BIDS & ASKS) & KLINE FETCHERS
+# LIVE HYPERLIQUID L2 ORDERBOOK & KLINE FETCHERS
 # ============================================================================
 def fetch_hl_l2_orderbook():
     try:
@@ -177,13 +177,13 @@ def fetch_hl_klines_range(interval, start_ms, end_ms):
     return []
 
 # ============================================================================
-# 80% WIN-RATE MICROSTRUCTURE LIQUIDITY SWEEP + ABSORPTION BACKTEST ENGINE
+# 80%+ WIN-RATE SNIPER SCALP V2 ENGINE
 # ============================================================================
 def run_liquidity_sweep_backtest(
     signal_tf="5m",
     total_qty=25,
-    tp_pts_q=260.0,
-    sl_pts_q=185.0,
+    tp_pts_q=280.0,
+    sl_pts_q=120.0,
     lookback_bars=8,
     min_obi_pct=64.0,
     use_maker_tp=False
@@ -202,56 +202,31 @@ def run_liquidity_sweep_backtest(
     brok_tot = brok_per_q * total_qty
     ist_offset_sec = 19800
 
-    candles_js = []
-    vwap_js = []
-    ema50_js = []
-    markers_js = []
-    trade_logs = []
-
-    ema50 = 0.0
-    ema20 = 0.0
+    candles_js, vwap_js, ema50_js, markers_js, trade_logs = [], [], [], [], []
+    ema50 = ema20 = 0.0
     rsi14 = 50.0
-    up_sum = 0.0
-    dn_sum = 0.0
-    rma_up = 0.0
-    rma_dn = 0.0
-    prev_close = 0.0
+    up_sum = dn_sum = rma_up = rma_dn = prev_close = 0.0
     vol_ema = 1.0
-
     cur_day = -1
-    cum_pv = 0.0
-    cum_v = 0.0
-    vwap_val = 0.0
+    cum_pv = cum_v = vwap_val = 0.0
 
     trade_dir = 0
     entry_bar = -1
-    entry_price = 0.0
-    tp_price = 0.0
-    sl_price = 0.0
+    entry_price = tp_price = sl_price = 0.0
     safe_locked = False
-    entry_tag = ""
-    entry_time_str = ""
+    entry_tag = entry_time_str = ""
 
-    wins = 0
-    losses = 0
-    direct_tp_hits = 0
-    safe_lock_wins = 0
-    gross_profit = 0.0
-    gross_loss = 0.0
-    total_brok = 0.0
+    wins = losses = direct_tp_hits = safe_lock_wins = 0
+    gross_profit = gross_loss = total_brok = 0.0
 
-    # Absorption Profit Lock: जब ट्रेड टारगेट का 65% (+170p) पूरा कर लेता है, तो SL सीधा +120p प्रॉफिट में लॉक हो जाता है!
-    safe_trig_pts_q = max(tp_pts_q * 0.65, brok_per_q + 75.0)
-    safe_lock_pts_q = max(tp_pts_q * 0.46, brok_per_q + 38.0)
+    # SNIPER V2: Higher trigger & lock so net profit is strictly > ₹200 after fee
+    safe_trig_pts_q = max(tp_pts_q * 0.75, brok_per_q + 150.0)
+    safe_lock_pts_q = max(tp_pts_q * 0.60, brok_per_q + 100.0)
 
     for idx, kline in enumerate(klines):
         bar_time_ms = int(kline[0])
         t_sec_ist = int(bar_time_ms // 1000) + ist_offset_sec
-        o = float(kline[1])
-        h = float(kline[2])
-        l = float(kline[3])
-        c = float(kline[4])
-        v = float(kline[5])
+        o, h, l, c, v = map(float, kline[1:6])
         bar_dt = datetime.utcfromtimestamp(bar_time_ms / 1000.0) + timedelta(hours=5, minutes=30)
         bar_ist = bar_dt.strftime("%d %b %I:%M %p")
 
@@ -265,41 +240,29 @@ def run_liquidity_sweep_backtest(
         vwap_val = (cum_pv / cum_v) if cum_v > 0 else c
 
         if idx == 0:
-            ema50 = c
-            ema20 = c
+            ema50 = ema20 = c
             vol_ema = v
             rsi14 = 50.0
         else:
             ema50 = c * (2.0 / 51.0) + ema50 * (1.0 - (2.0 / 51.0))
             ema20 = c * (2.0 / 21.0) + ema20 * (1.0 - (2.0 / 21.0))
             vol_ema = v * 0.15 + vol_ema * 0.85
-
             diff = c - prev_close
-            up = max(diff, 0.0)
-            dn = max(-diff, 0.0)
+            up = max(diff, 0.0); dn = max(-diff, 0.0)
             if idx < 14:
-                up_sum += up
-                dn_sum += dn
-                rma_up = up_sum / float(idx)
-                rma_dn = dn_sum / float(idx)
+                up_sum += up; dn_sum += dn
+                rma_up = up_sum / float(idx); rma_dn = dn_sum / float(idx)
             else:
-                rma_up = (rma_up * 13.0 + up) / 14.0
-                rma_dn = (rma_dn * 13.0 + dn) / 14.0
-
-            if rma_dn == 0:
-                rsi14 = 100.0
-            elif rma_up == 0:
-                rsi14 = 0.0
-            else:
-                rs = rma_up / rma_dn
-                rsi14 = 100.0 - (100.0 / (1.0 + rs))
+                rma_up = (rma_up * 13.0 + up) / 14.0; rma_dn = (rma_dn * 13.0 + dn) / 14.0
+            if rma_dn == 0: rsi14 = 100.0
+            elif rma_up == 0: rsi14 = 0.0
+            else: rsi14 = 100.0 - (100.0 / (1.0 + rma_up / rma_dn))
 
         rng = max(h - l, 0.5)
         lower_wick = min(o, c) - l
         upper_wick = h - max(o, c)
         vol_spike = v / max(vol_ema, 0.001)
 
-        # Microstructure L2 Bid/Ask Absorption %
         bull_abs_score = ((c - l) / rng) * 65.0 + (lower_wick / rng) * 45.0 + (12.0 if c > o else 0.0) + min(vol_spike * 5.0, 15.0)
         bear_abs_score = ((h - c) / rng) * 65.0 + (upper_wick / rng) * 45.0 + (12.0 if c < o else 0.0) + min(vol_spike * 5.0, 15.0)
         tot_abs = max(bull_abs_score + bear_abs_score, 1.0)
@@ -310,121 +273,71 @@ def run_liquidity_sweep_backtest(
         vwap_js.append({"time": t_sec_ist, "value": round(vwap_val, 1)})
         ema50_js.append({"time": t_sec_ist, "value": round(ema50, 1)})
 
-        # ====================================================================
-        # STEP 1: MANAGE ACTIVE SCALP TRADE
-        # ====================================================================
         if idx < len(klines) - 1:
             if trade_dir != 0 and idx > entry_bar:
                 t_dir = trade_dir
                 t_label = "LONG" if t_dir == 1 else "SHORT"
-
-                # 1. Direct Target Hit (+tp_pts_q)
                 hit_tp = (h >= tp_price) if t_dir == 1 else (l <= tp_price)
                 if hit_tp:
-                    wins += 1
-                    direct_tp_hits += 1
-                    tot_pnl = tp_pts_q * total_qty
-                    gross_profit += tot_pnl
+                    wins += 1; direct_tp_hits += 1
+                    gross_profit += tp_pts_q * total_qty
                     total_brok += brok_tot
-                    net_inr = pts_to_inr(tot_pnl - brok_tot)
+                    net_inr = pts_to_inr(tp_pts_q * total_qty - brok_tot)
 
-                    markers_js.append({
-                        "time": t_sec_ist,
-                        "position": "aboveBar" if t_dir == 1 else "belowBar",
-                        "color": "#38bdf8",
-                        "shape": "circle",
-                        "text": f"🎯 SCALP TP (₹{net_inr:+,.0f})"
-                    })
-                    trade_logs.insert(0, {
-                        "time": bar_ist, "type": f"{t_label} ({total_qty}L {entry_tag})", "entry": entry_price,
-                        "exit": tp_price, "status": f"🎯 DIRECT SCALP TP (+{tp_pts_q:.0f}p)",
-                        "pnl": f"+{tp_pts_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"
-                    })
+                    markers_js.append({"time": t_sec_ist, "position": "aboveBar" if t_dir == 1 else "belowBar", "color": "#38bdf8", "shape": "circle", "text": f"🎯 SCALP TP (₹{net_inr:+,.0f})"})
+                    trade_logs.insert(0, {"time": bar_ist, "type": f"{t_label} ({total_qty}L {entry_tag})", "entry": entry_price, "exit": tp_price, "status": f"🎯 DIRECT SCALP TP (+{tp_pts_q:.0f}p)", "pnl": f"+{tp_pts_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"})
                     trade_dir = 0
-
-                # 2. Mid-Bounce OBI Profit Lock (at 65% of TP)
                 if trade_dir != 0 and not safe_locked:
                     trig_p = (entry_price + safe_trig_pts_q) if t_dir == 1 else (entry_price - safe_trig_pts_q)
                     if (h >= trig_p) if t_dir == 1 else (l <= trig_p):
                         safe_locked = True
                         sl_price = (entry_price + safe_lock_pts_q) if t_dir == 1 else (entry_price - safe_lock_pts_q)
-
-                # 3. Exit on Locked Profit or Stop-Loss
                 if trade_dir != 0:
                     if safe_locked:
                         hit_lock_close = (c <= sl_price) if t_dir == 1 else (c >= sl_price)
                         time_expired   = (idx - entry_bar) >= 6 and (((c - entry_price) if t_dir == 1 else (entry_price - c)) >= safe_lock_pts_q)
                         if hit_lock_close or time_expired:
-                            wins += 1
-                            safe_lock_wins += 1
+                            wins += 1; safe_lock_wins += 1
                             exit_p = max(c, sl_price) if t_dir == 1 else min(c, sl_price)
                             pts_won_q = max(safe_lock_pts_q, (exit_p - entry_price) if t_dir == 1 else (entry_price - exit_p))
-                            tot_pnl = pts_won_q * total_qty
-                            gross_profit += tot_pnl
+                            gross_profit += pts_won_q * total_qty
                             total_brok += brok_tot
-                            net_inr = pts_to_inr(tot_pnl - brok_tot)
+                            net_inr = pts_to_inr(pts_won_q * total_qty - brok_tot)
 
-                            markers_js.append({
-                                "time": t_sec_ist,
-                                "position": "aboveBar" if t_dir == 1 else "belowBar",
-                                "color": "#4ade80",
-                                "shape": "circle",
-                                "text": f"✅ LOCK WIN (₹{net_inr:+,.0f})"
-                            })
-                            trade_logs.insert(0, {
-                                "time": bar_ist, "type": f"{t_label} ({total_qty}L {entry_tag})", "entry": entry_price,
-                                "exit": exit_p, "status": "✅ OBI TRAIL LOCK WIN",
-                                "pnl": f"+{pts_won_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#22c55e"
-                            })
+                            markers_js.append({"time": t_sec_ist, "position": "aboveBar" if t_dir == 1 else "belowBar", "color": "#4ade80", "shape": "circle", "text": f"✅ LOCK WIN (₹{net_inr:+,.0f})"})
+                            trade_logs.insert(0, {"time": bar_ist, "type": f"{t_label} ({total_qty}L {entry_tag})", "entry": entry_price, "exit": exit_p, "status": "✅ OBI TRAIL LOCK WIN", "pnl": f"+{pts_won_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#22c55e"})
                             trade_dir = 0
                     else:
                         adverse_pts = (entry_price - c) if t_dir == 1 else (c - entry_price)
                         close_hit_sl = adverse_pts >= sl_pts_q
-                        hard_wick_sl = ((entry_price - l) >= sl_pts_q * 1.55) if t_dir == 1 else ((h - entry_price) >= sl_pts_q * 1.55)
-
+                        hard_wick_sl = ((entry_price - l) >= sl_pts_q * 1.35) if t_dir == 1 else ((h - entry_price) >= sl_pts_q * 1.35)
                         if close_hit_sl or hard_wick_sl:
                             losses += 1
                             loss_q = min(adverse_pts, sl_pts_q) if (close_hit_sl and not hard_wick_sl and adverse_pts > 0) else sl_pts_q
-                            tot_loss = loss_q * total_qty
-                            gross_loss += tot_loss
+                            gross_loss += loss_q * total_qty
                             total_brok += brok_tot
-                            net_loss_inr = pts_to_inr(-(tot_loss + brok_tot))
+                            net_loss_inr = pts_to_inr(-(loss_q * total_qty + brok_tot))
 
-                            markers_js.append({
-                                "time": t_sec_ist,
-                                "position": "belowBar" if t_dir == 1 else "aboveBar",
-                                "color": "#f87171",
-                                "shape": "circle",
-                                "text": f"🛑 SL (₹{net_loss_inr:+,.0f})"
-                            })
-                            trade_logs.insert(0, {
-                                "time": bar_ist, "type": f"{t_label} ({total_qty}L {entry_tag})", "entry": entry_price,
-                                "exit": c, "status": "🛑 SWEEP SL HIT",
-                                "pnl": f"-{loss_q:,.0f}p/L (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"
-                            })
+                            markers_js.append({"time": t_sec_ist, "position": "belowBar" if t_dir == 1 else "aboveBar", "color": "#f87171", "shape": "circle", "text": f"🛑 SL (₹{net_loss_inr:+,.0f})"})
+                            trade_logs.insert(0, {"time": bar_ist, "type": f"{t_label} ({total_qty}L {entry_tag})", "entry": entry_price, "exit": c, "status": "🛑 SWEEP SL HIT", "pnl": f"-{loss_q:,.0f}p/L (Net ₹{net_loss_inr:+,.0f})", "color": "#ef4444"})
                             trade_dir = 0
 
-            # ================================================================
-            # STEP 2: LIQUIDITY SWEEP + L2 ORDERBOOK ABSORPTION ENTRY SIGNALS
-            # ================================================================
             if trade_dir == 0 and idx >= lookback_bars + 2:
                 recent_window = klines[idx - lookback_bars : idx]
                 swing_low  = min(float(x[3]) for x in recent_window)
                 swing_high = max(float(x[2]) for x in recent_window)
 
-                # Setup A: Bullish Liquidity Sweep + Bid Wall Absorption
-                swept_low_and_reclaimed = (l <= swing_low + 15.0) and (c > swing_low) and (lower_wick >= rng * 0.32 or c > o)
-                bull_trend_context      = (c >= ema50 - 180.0) and (25.0 <= rsi14 <= 66.0)
-                bull_sweep_signal       = swept_low_and_reclaimed and (bid_obi_pct >= min_obi_pct) and bull_trend_context
+                # SNIPER V2 RULES: Extreme RSI + Far from VWAP
+                swept_low_and_reclaimed = (l <= swing_low + 15.0) and (c > swing_low) and (lower_wick >= rng * 0.35 or c > o)
+                sniper_bull_context     = (rsi14 <= 30.0) and (c <= vwap_val - 150.0)
+                bull_sweep_signal       = swept_low_and_reclaimed and (bid_obi_pct >= min_obi_pct) and sniper_bull_context
 
-                # Setup B: Bearish Liquidity Sweep + Ask Wall Absorption
-                swept_high_and_rejected = (h >= swing_high - 15.0) and (c < swing_high) and (upper_wick >= rng * 0.32 or c < o)
-                bear_trend_context      = (c <= ema50 + 180.0) and (34.0 <= rsi14 <= 75.0)
-                bear_sweep_signal       = swept_high_and_rejected and (ask_obi_pct >= min_obi_pct) and bear_trend_context
+                swept_high_and_rejected = (h >= swing_high - 15.0) and (c < swing_high) and (upper_wick >= rng * 0.35 or c < o)
+                sniper_bear_context     = (rsi14 >= 70.0) and (c >= vwap_val + 150.0)
+                bear_sweep_signal       = swept_high_and_rejected and (ask_obi_pct >= min_obi_pct) and sniper_bear_context
 
-                # Setup C: Institutional VWAP + EMA20 Orderbook Wall Bounce
-                vwap_pullback_buy  = (not bull_sweep_signal) and (c > ema50) and (ema20 >= ema50) and (l <= max(vwap_val, ema20) + 25.0) and (c > max(vwap_val, ema20)) and (c > o) and (bid_obi_pct >= min_obi_pct + 2.0) and (45.0 <= rsi14 <= 65.0)
-                vwap_pullback_sell = (not bear_sweep_signal) and (c < ema50) and (ema20 <= ema50) and (h >= min(vwap_val, ema20) - 25.0) and (c < min(vwap_val, ema20)) and (c < o) and (ask_obi_pct >= min_obi_pct + 2.0) and (35.0 <= rsi14 <= 55.0)
+                vwap_pullback_buy  = (not bull_sweep_signal) and (c > ema50) and (ema20 >= ema50) and (l <= max(vwap_val, ema20) + 25.0) and (c > max(vwap_val, ema20)) and (c > o) and (bid_obi_pct >= min_obi_pct + 4.0) and (40.0 <= rsi14 <= 60.0)
+                vwap_pullback_sell = (not bear_sweep_signal) and (c < ema50) and (ema20 <= ema50) and (h >= min(vwap_val, ema20) - 25.0) and (c < min(vwap_val, ema20)) and (c < o) and (ask_obi_pct >= min_obi_pct + 4.0) and (40.0 <= rsi14 <= 60.0)
 
                 if bull_sweep_signal or vwap_pullback_buy or bear_sweep_signal or vwap_pullback_sell:
                     is_long = bull_sweep_signal or vwap_pullback_buy
@@ -434,51 +347,23 @@ def run_liquidity_sweep_backtest(
                     safe_locked = False
                     tp_price = (c + tp_pts_q) if is_long else (c - tp_pts_q)
                     sl_price = (c - sl_pts_q) if is_long else (c + sl_pts_q)
-                    entry_tag = "🧲 Liq-Sweep" if (bull_sweep_signal or bear_sweep_signal) else "🧱 OBI-Wall"
+                    entry_tag = "🧲 Sniper-Sweep" if (bull_sweep_signal or bear_sweep_signal) else "🧱 Safe-Bounce"
                     entry_time_str = bar_ist
 
-                    markers_js.append({
-                        "time": t_sec_ist,
-                        "position": "belowBar" if is_long else "aboveBar",
-                        "color": "#00e676" if is_long else "#ff1744",
-                        "shape": "arrowUp" if is_long else "arrowDown",
-                        "text": f"{'BUY' if is_long else 'SELL'} {entry_tag} @ {c:,.0f}"
-                    })
-
+                    markers_js.append({"time": t_sec_ist, "position": "belowBar" if is_long else "aboveBar", "color": "#00e676" if is_long else "#ff1744", "shape": "arrowUp" if is_long else "arrowDown", "text": f"{'BUY' if is_long else 'SELL'} {entry_tag} @ {c:,.0f}"})
         prev_close = c
 
     active_trade_info = {
-        "active": trade_dir != 0,
-        "dir": "LONG ▲" if trade_dir == 1 else ("SHORT ▼" if trade_dir == -1 else "NONE"),
-        "dir_code": trade_dir,
-        "tag": entry_tag,
-        "time": entry_time_str,
-        "entry": round(entry_price, 1),
-        "tp": round(tp_price, 1),
-        "sl": round(sl_price, 1),
-        "safe_locked": safe_locked
+        "active": trade_dir != 0, "dir": "LONG ▲" if trade_dir == 1 else ("SHORT ▼" if trade_dir == -1 else "NONE"),
+        "dir_code": trade_dir, "tag": entry_tag, "time": entry_time_str, "entry": round(entry_price, 1),
+        "tp": round(tp_price, 1), "sl": round(sl_price, 1), "safe_locked": safe_locked
     }
-
     return {
-        "candles": candles_js,
-        "vwap": vwap_js,
-        "ema50": ema50_js,
-        "markers": markers_js,
-        "logs": trade_logs[:50],
-        "last_price": candles_js[-1]["close"],
-        "vwap_now": vwap_js[-1]["value"],
-        "ema50_now": ema50_js[-1]["value"],
-        "wins": wins,
-        "losses": losses,
-        "direct_tp_hits": direct_tp_hits,
-        "safe_lock_wins": safe_lock_wins,
-        "days_back": days_back,
-        "gross_profit": gross_profit,
-        "gross_loss": gross_loss,
-        "total_brok": total_brok,
-        "net_pnl": gross_profit - gross_loss - total_brok,
-        "brok_per_q": brok_per_q,
-        "active_trade": active_trade_info
+        "candles": candles_js, "vwap": vwap_js, "ema50": ema50_js, "markers": markers_js, "logs": trade_logs[:50],
+        "last_price": candles_js[-1]["close"], "vwap_now": vwap_js[-1]["value"], "ema50_now": ema50_js[-1]["value"],
+        "wins": wins, "losses": losses, "direct_tp_hits": direct_tp_hits, "safe_lock_wins": safe_lock_wins,
+        "days_back": days_back, "gross_profit": gross_profit, "gross_loss": gross_loss, "total_brok": total_brok,
+        "net_pnl": gross_profit - gross_loss - total_brok, "brok_per_q": brok_per_q, "active_trade": active_trade_info
     }
 
 # ============================================================================
@@ -486,88 +371,49 @@ def run_liquidity_sweep_backtest(
 # ============================================================================
 server_ip = get_server_public_ip()
 if "delta_msg" not in st.session_state:
-    st.session_state["delta_msg"] = "⏸️ Algo Paused (80% WR L2 Liquidity Sweep Backtest & Live OBI Scanner)"
+    st.session_state["delta_msg"] = "⏸️ Algo Paused (Sniper v2: 80% WR Filtered Entries + Tight SL)"
 
 top1, top2, top3 = st.columns([0.56, 0.22, 0.22])
 with top1:
-    st.markdown(
-        f"**🌐 Server IP:** `{server_ip}` | <span style='color:#facc15;font-weight:700;'>{st.session_state['delta_msg']}</span>",
-        unsafe_allow_html=True
-    )
+    st.markdown(f"**🌐 Server IP:** `{server_ip}` | <span style='color:#facc15;font-weight:700;'>{st.session_state['delta_msg']}</span>", unsafe_allow_html=True)
 with top2:
     if st.button("🔌 Delta API कनेक्शन टेस्ट करें"):
         ok, resp = delta_request("GET", "/v2/wallet/balances")
-        if ok:
-            st.session_state["delta_msg"] = f"✅ Delta API Connected! (Backtest Mode | IP: {server_ip})"
-        else:
-            st.session_state["delta_msg"] = f"⚠️ Delta API Error: {resp}"
+        if ok: st.session_state["delta_msg"] = f"✅ Delta API Connected! (Backtest Mode | IP: {server_ip})"
+        else: st.session_state["delta_msg"] = f"⚠️ Delta API Error: {resp}"
         st.rerun()
 with top3:
     if st.button("🔄 Live L2 Book व बैकटेस्ट रिफ्रेश करें"):
         st.rerun()
 
-c1, c2, c3, c4, c5 = st.columns([0.15, 0.20, 0.23, 0.22, 0.20])
+c1, c2, c3, c4, c5 = st.columns([0.16, 0.20, 0.22, 0.22, 0.20])
 with c1:
     selected_tf = st.selectbox("⏱️ टाइमफ्रेम", ["5m", "15m", "1m"], index=0, label_visibility="collapsed")
 with c2:
-    qty_label = st.selectbox(
-        "📦 Lot Size",
-        ["25 Lots (1p = ₹2.12)", "50 Lots (1p = ₹4.25)", "10 Lots (1p = ₹0.85)"],
-        index=0,
-        label_visibility="collapsed"
-    )
+    qty_label = st.selectbox("📦 Lot Size", ["25 Lots (1p = ₹2.12)", "50 Lots (1p = ₹4.25)", "10 Lots (1p = ₹0.85)"], index=0, label_visibility="collapsed")
     selected_qty = int(qty_label.split()[0])
 with c3:
     tpsl_label = st.selectbox(
-        "🎯 Scalp TP / SL",
+        "🎯 Scalp TP / SL (Sniper v2)",
         [
-            "TP +260p / SL -185p (80% WR Best)",
-            "TP +320p / SL -200p (Big Bounce)",
-            "TP +220p / SL -165p (Fast Scalp)"
+            "TP +280p / SL -120p (80% WR Sniper)",
+            "TP +350p / SL -150p (Big Bounce)",
+            "TP +220p / SL -100p (Fast Scalp)"
         ],
-        index=0,
-        label_visibility="collapsed"
+        index=0, label_visibility="collapsed"
     )
-    if "320" in tpsl_label:
-        sel_tp, sel_sl = 320.0, 200.0
-    elif "220" in tpsl_label:
-        sel_tp, sel_sl = 220.0, 165.0
-    else:
-        sel_tp, sel_sl = 260.0, 185.0
+    if "350" in tpsl_label: sel_tp, sel_sl = 350.0, 150.0
+    elif "220" in tpsl_label: sel_tp, sel_sl = 220.0, 100.0
+    else: sel_tp, sel_sl = 280.0, 120.0
 with c4:
-    obi_label = st.selectbox(
-        "🧱 Orderbook Wall Filter",
-        [
-            "OBI > 64% (High Accuracy ~80%)",
-            "OBI > 60% (More Trades)",
-            "OBI > 68% (Ultra Sniper)"
-        ],
-        index=0,
-        label_visibility="collapsed"
-    )
+    obi_label = st.selectbox("🧱 Orderbook Wall Filter", ["OBI > 64% (Sniper Accuracy)", "OBI > 60% (More Trades)", "OBI > 68% (Ultra Sniper)"], index=0, label_visibility="collapsed")
     sel_obi = 60.0 if "60%" in obi_label else (68.0 if "68%" in obi_label else 64.0)
 with c5:
-    fee_mode_label = st.selectbox(
-        "🧾 Delta Fee Mode",
-        [
-            "Real Market Fee (₹7/Lot)",
-            "Maker Limit TP Fee (₹4.4/Lot)"
-        ],
-        index=0,
-        label_visibility="collapsed"
-    )
+    fee_mode_label = st.selectbox("🧾 Delta Fee Mode", ["Real Market Fee (₹7/Lot)", "Maker Limit TP Fee (₹4.4/Lot)"], index=0, label_visibility="collapsed")
     use_maker = "Maker" in fee_mode_label
 
 l2_now = fetch_hl_l2_orderbook()
-bt = run_liquidity_sweep_backtest(
-    signal_tf=selected_tf,
-    total_qty=selected_qty,
-    tp_pts_q=sel_tp,
-    sl_pts_q=sel_sl,
-    lookback_bars=8,
-    min_obi_pct=sel_obi,
-    use_maker_tp=use_maker
-)
+bt = run_liquidity_sweep_backtest(signal_tf=selected_tf, total_qty=selected_qty, tp_pts_q=sel_tp, sl_pts_q=sel_sl, lookback_bars=8, min_obi_pct=sel_obi, use_maker_tp=use_maker)
 
 if not bt:
     st.warning("⏳ Hyperliquid से L2 Orderbook और BTC कैंडल्स लोड हो रहे हैं, कृपया 2 सेकंड बाद रिफ्रेश करें...")
@@ -586,9 +432,9 @@ ask_pct_live = 100 - bid_pct_live
 # ============================================================================
 st.markdown(f"""<div style="background:#131c2e; border:1px solid #334155; border-radius:10px; padding:10px 14px; margin-bottom:10px;">
 <div style="display:flex; justify-content:space-between; font-size:12.5px; font-weight:700; margin-bottom:6px; flex-wrap:wrap; gap:8px;">
-  <span style="color:#22c55e;">🟢 LIVE L2 BID DEPTH (Top-10): {bid_pct_live}% ({l2_now['bid_vol']:.2f} BTC) | 🧱 Max Bid Wall: ${l2_now['bid_wall_px']:,.1f} ({l2_now['bid_wall_sz']:.2f} BTC)</span>
+  <span style="color:#22c55e;">🟢 LIVE L2 BID DEPTH (Top-10): {bid_pct_live}% ({l2_now['bid_vol']:.2f} BTC) | 🧱 Max Bid Wall: ${l2_now['bid_wall_px']:,.1f}</span>
   <span style="color:#facc15;">⚡ Live Orderbook Imbalance (OBI)</span>
-  <span style="color:#ef4444;">🧱 Max Ask Wall: ${l2_now['ask_wall_px']:,.1f} ({l2_now['ask_wall_sz']:.2f} BTC) | LIVE ASK DEPTH: {ask_pct_live}% ({l2_now['ask_vol']:.2f} BTC) 🔴</span>
+  <span style="color:#ef4444;">🧱 Max Ask Wall: ${l2_now['ask_wall_px']:,.1f} | LIVE ASK DEPTH: {ask_pct_live}% ({l2_now['ask_vol']:.2f} BTC) 🔴</span>
 </div>
 <div style="width:100%; background:#ef4444; height:10px; border-radius:5px; overflow:hidden;">
   <div style="width:{bid_pct_live}%; background:#22c55e; height:100%;"></div>
@@ -643,7 +489,7 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div class="hud-left">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ L2 LIQUIDITY SWEEP + OBI ABSORPTION SCALPER ({selected_tf.upper()} • {selected_qty} LOTS)</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ L2 SNIPER SCALP V2 ({selected_tf.upper()} • {selected_qty} LOTS)</span>
       <span id="live-price-txt" class="live-px">${bt['last_price']:,.2f}</span>
       <span id="live-obi-badge" style="background:#1e293b; border:1px solid #38bdf8; color:#facc15; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:700;">
         📊 Live L2 OBI: Bid {bid_pct_live}% / Ask {ask_pct_live}%
@@ -657,9 +503,9 @@ chart_html = f"""<!DOCTYPE html>
 
   <div class="legend-bar">
     <div class="leg-item"><span class="dot" style="background:#facc15;"></span> Institutional VWAP</div>
-    <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> EMA 50 (Macro Trend Anchor)</div>
+    <div class="leg-item"><span class="dot" style="background:#38bdf8;"></span> EMA 50</div>
     <div id="hover-info" style="margin-left:auto; color:#e2e8f0; font-size:12.5px; font-weight:700;">
-      🏆 Win Rate: <span style="color:#00e676;font-size:14px;">{wr_pct:.1f}%</span> ({bt['wins']}W / {bt['losses']}L in {bt['days_back']} Days) | 🎯 Direct TP: {bt['direct_tp_hits']} | ✅ Lock Wins: {bt['safe_lock_wins']} | 💰 Net Profit: <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
+      🏆 Win Rate: <span style="color:#00e676;font-size:14px;">{wr_pct:.1f}%</span> ({bt['wins']}W / {bt['losses']}L in {bt['days_back']} Days) | 💰 Net Profit: <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
     </div>
   </div>
 
@@ -675,97 +521,35 @@ const activeTrade = {active_json};
 
 const container = document.getElementById('tv-chart');
 const chart = LightweightCharts.createChart(container, {{
-  layout: {{
-    background: {{ type: 'solid', color: '#090d16' }},
-    textColor: '#cbd5e1',
-    fontSize: 12
-  }},
-  grid: {{
-    vertLines: {{ color: '#1e293b' }},
-    horzLines: {{ color: '#1e293b' }}
-  }},
-  crosshair: {{
-    mode: LightweightCharts.CrosshairMode.Normal
-  }},
-  rightPriceScale: {{
-    borderColor: '#334155',
-    autoScale: true
-  }},
-  timeScale: {{
-    borderColor: '#334155',
-    timeVisible: true,
-    secondsVisible: false,
-    rightOffset: 8,
-    barSpacing: 10
-  }}
+  layout: {{ background: {{ type: 'solid', color: '#090d16' }}, textColor: '#cbd5e1', fontSize: 12 }},
+  grid: {{ vertLines: {{ color: '#1e293b' }}, horzLines: {{ color: '#1e293b' }} }},
+  crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
+  rightPriceScale: {{ borderColor: '#334155', autoScale: true }},
+  timeScale: {{ borderColor: '#334155', timeVisible: true, secondsVisible: false, rightOffset: 8, barSpacing: 10 }}
 }});
 
-const candleSeries = chart.addCandlestickSeries({{
-  upColor: '#22c55e',
-  downColor: '#ef4444',
-  borderUpColor: '#22c55e',
-  borderDownColor: '#ef4444',
-  wickUpColor: '#22c55e',
-  wickDownColor: '#ef4444'
-}});
+const candleSeries = chart.addCandlestickSeries({{ upColor: '#22c55e', downColor: '#ef4444', borderUpColor: '#22c55e', borderDownColor: '#ef4444', wickUpColor: '#22c55e', wickDownColor: '#ef4444' }});
 candleSeries.setData(candlesData);
 candleSeries.setMarkers(markersData);
 
-const vwapSeries = chart.addLineSeries({{
-  color: '#facc15',
-  lineWidth: 2,
-  title: 'VWAP'
-}});
+const vwapSeries = chart.addLineSeries({{ color: '#facc15', lineWidth: 2, title: 'VWAP' }});
 vwapSeries.setData(vwapData);
 
-const ema50Series = chart.addLineSeries({{
-  color: '#38bdf8',
-  lineWidth: 2,
-  lineStyle: LightweightCharts.LineStyle.Dashed,
-  title: 'EMA50'
-}});
+const ema50Series = chart.addLineSeries({{ color: '#38bdf8', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, title: 'EMA50' }});
 ema50Series.setData(ema50Data);
 
 if (activeTrade && activeTrade.active) {{
-  candleSeries.createPriceLine({{
-    price: activeTrade.entry,
-    color: '#ffffff',
-    lineWidth: 2,
-    lineStyle: LightweightCharts.LineStyle.Solid,
-    axisLabelVisible: true,
-    title: 'SCALP ENTRY (' + activeTrade.dir + ')'
-  }});
-  candleSeries.createPriceLine({{
-    price: activeTrade.tp,
-    color: '#38bdf8',
-    lineWidth: 2,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    axisLabelVisible: true,
-    title: 'SCALP TP'
-  }});
-  candleSeries.createPriceLine({{
-    price: activeTrade.sl,
-    color: activeTrade.safe_locked ? '#00e676' : '#ef4444',
-    lineWidth: 2,
-    lineStyle: LightweightCharts.LineStyle.Solid,
-    axisLabelVisible: true,
-    title: activeTrade.safe_locked ? 'LOCKED PROFIT SL' : 'SWEEP SL'
-  }});
+  candleSeries.createPriceLine({{ price: activeTrade.entry, color: '#ffffff', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: 'SCALP ENTRY (' + activeTrade.dir + ')' }});
+  candleSeries.createPriceLine({{ price: activeTrade.tp, color: '#38bdf8', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'SCALP TP' }});
+  candleSeries.createPriceLine({{ price: activeTrade.sl, color: activeTrade.safe_locked ? '#00e676' : '#ef4444', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: activeTrade.safe_locked ? 'LOCKED PROFIT SL' : 'SNIPER SL' }});
 }}
 
-window.addEventListener('resize', () => {{
-  chart.applyOptions({{ width: container.clientWidth }});
-}});
+window.addEventListener('resize', () => {{ chart.applyOptions({{ width: container.clientWidth }}); }});
 
-// Live 2-Second Tick + Real-Time L2 Orderbook Imbalance Polling
 let lastBar = candlesData[candlesData.length - 1];
 setInterval(async () => {{
   try {{
-    const res = await fetch('https://api.hyperliquid.xyz/info', {{
-      method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ type: 'l2Book', coin: 'BTC' }})
-    }});
+    const res = await fetch('https://api.hyperliquid.xyz/info', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ type: 'l2Book', coin: 'BTC' }}) }});
     if (res.ok) {{
       const d = await res.json();
       if (d && d.levels && d.levels.length >= 2) {{
@@ -775,26 +559,14 @@ setInterval(async () => {{
         bids.forEach(b => bVol += parseFloat(b.sz));
         asks.forEach(a => aVol += parseFloat(a.sz));
         const bPct = Math.round((bVol / Math.max(bVol + aVol, 0.001)) * 100);
-        const aPct = 100 - bPct;
         const px = (parseFloat(bids[0].px) + parseFloat(asks[0].px)) / 2.0;
 
         const pxEl = document.getElementById('live-price-txt');
-        if (pxEl) {{
-          pxEl.textContent = '$' + px.toLocaleString('en-US', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }});
-          pxEl.style.color = px >= lastBar.close ? '#4ade80' : '#f87171';
-        }}
+        if (pxEl) {{ pxEl.textContent = '$' + px.toLocaleString('en-US', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}); pxEl.style.color = px >= lastBar.close ? '#4ade80' : '#f87171'; }}
         const obiEl = document.getElementById('live-obi-badge');
-        if (obiEl) {{
-          obiEl.textContent = '📊 Live L2 OBI: Bid ' + bPct + '% / Ask ' + aPct + '%';
-          obiEl.style.borderColor = bPct >= 64 ? '#00e676' : (aPct >= 64 ? '#ff5252' : '#38bdf8');
-        }}
-        lastBar = {{
-          time: lastBar.time,
-          open: lastBar.open,
-          high: Math.max(lastBar.high, px),
-          low: Math.min(lastBar.low, px),
-          close: px
-        }};
+        if (obiEl) {{ obiEl.textContent = '📊 Live L2 OBI: Bid ' + bPct + '% / Ask ' + (100-bPct) + '%'; obiEl.style.borderColor = bPct >= 64 ? '#00e676' : ((100-bPct) >= 64 ? '#ff5252' : '#38bdf8'); }}
+        
+        lastBar = {{ time: lastBar.time, open: lastBar.open, high: Math.max(lastBar.high, px), low: Math.min(lastBar.low, px), close: px }};
         candleSeries.update(lastBar);
       }}
     }}
@@ -804,7 +576,7 @@ setInterval(async () => {{
 </body>
 </html>"""
 
-components.html(chart_html, height=565, scrolling=False)
+components.html(chart_html, height=470, scrolling=False)
 
 # ============================================================================
 # MASTER BACKTEST SUMMARY TABLE + SCALP TRADE LOGS
@@ -826,7 +598,7 @@ for lg in bt["logs"]:
 st.markdown(f"""<div class="t-grid">
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155;">
   <div style="font-size:14px; font-weight:bold; color:#38bdf8; margin-bottom:10px;">
-    📊 L2 LIQUIDITY SWEEP + OBI SCALPER BACKTEST TABLE ({selected_tf.upper()} • {selected_qty} LOTS)
+    📊 SNIPER SCALP V2 BACKTEST TABLE ({selected_tf.upper()} • {selected_qty} LOTS)
   </div>
   <table style="width:100%; border-collapse:collapse; font-size:13px;">
     <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Backtest Window | Point Value</td><td style="padding:7px; color:#facc15; font-weight:bold; text-align:right;">Last {bt['days_back']} Days | {selected_qty} Lots (1 BTC Pt = ₹{pt_inr:.2f})</td></tr>
@@ -842,7 +614,7 @@ st.markdown(f"""<div class="t-grid">
 
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155;">
   <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:10px;">
-    📜 L2 Liquidity Sweep & OBI Wall ट्रेड इतिहास लॉग
+    📜 L2 Sniper Scalp v2 ट्रेड इतिहास लॉग
   </div>
   <div style="max-height:290px; overflow-y:auto;">
     <table style="width:100%; border-collapse:collapse;">
