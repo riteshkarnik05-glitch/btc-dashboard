@@ -9,7 +9,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra AI-Quantum Pro Terminal (V22)", layout="wide")
+st.set_page_config(page_title="Dr Devendra AI-Quantum Pro Terminal (V23)", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -57,24 +57,21 @@ USD_INR_RATE         = 85.0
 BROK_PER_QTY         = 82.38
 
 # ============================================================================
-# 🔒 V22 ENGINE SETTINGS: "FEARLESS SWING" (Weekly VWAP + Large Bricks)
+# 🔒 V23 ENGINE SETTINGS: "DAILY INCOME PRO" (15m Daily VWAP + Pro Sizing)
 # ============================================================================
-FIXED_TF             = "1h"    # 1h Timeframe for massive trends
-FIXED_BASE_QTY       = 25      # 25 Lots Initial
-FIXED_PYRAMID_QTY    = 25      # 25 Lots Pyramid
-FIXED_DIVISOR        = 10.0    # Mode 10 (Large Bricks ~285p) -> Eliminates tiny profits & chop!
+FIXED_TF             = "15m"   
+FIXED_DIVISOR        = 14.0    # Mode 14 (Medium Bricks ~200p) - Gives 2-3 solid trades daily!
 FIXED_ST_MULT        = 2.2     
 
-# "No Small Profits" Rule:
-STAGE1_TRIG_UNITS    = 1.50    # Trigger at +1.50 Bricks (Massive move required)
-STAGE1_LOCK_UNITS    = 1.20    # Lock +1.20 Bricks (Guaranteed Huge Net Profit before pyramiding!)
-STAGE1_MIN_PTS_Q     = 340.0   
-STAGE2_TRIG_UNITS    = 2.25    
-STAGE2_FLOOR_UNITS   = 1.65    
+STAGE1_TRIG_UNITS    = 1.05    
+STAGE1_LOCK_UNITS    = 0.85    
+STAGE1_MIN_PTS_Q     = 180.0   
+STAGE2_TRIG_UNITS    = 1.85    
+STAGE2_FLOOR_UNITS   = 1.35    
 CLOSE_TRAIL_UNITS    = 1.15    
 
-MAX_WAVE_STREAK      = 3       # Re-entries limited to avoid late trend exhaustion
-MAX_DLINE_DIST       = 2.0
+MAX_WAVE_STREAK      = 4
+MAX_DLINE_DIST       = 2.2
 MIN_FLOW_DOM         = 50.0
 
 ATR_PERIOD           = 5
@@ -139,9 +136,6 @@ def place_delta_demo_order(eng, side, qty, tag="AI-Quantum", is_exit=False):
         return ok
     except Exception: return False
 
-# ============================================================================
-# MARKET DATA & KLINE FETCHERS
-# ============================================================================
 def fetch_hl_live_mid_price():
     try:
         r = requests.post(HYPERLIQUID_INFO_URL, json={"type": "allMids"}, headers={"Content-Type": "application/json"}, timeout=3)
@@ -175,11 +169,8 @@ def calc_daily_atr5():
     return rma[-2]
 
 # ============================================================================
-# STATEFUL BAR PROCESSOR (V22 FEARLESS WEEKLY VWAP ENGINE)
+# STATEFUL BAR PROCESSOR (V23 DAILY VWAP + DYNAMIC QTY)
 # ============================================================================
-def get_iso_week(dt):
-    return dt.isocalendar()[1]
-
 def process_closed_bar(eng, kline):
     bar_time_ms = int(kline[0])
     if bar_time_ms <= eng["last_bar_time"]: return
@@ -192,19 +183,19 @@ def process_closed_bar(eng, kline):
 
     idx = eng["bar_count"]
     unit_size = eng["unit_size"]
-    base_qty = FIXED_BASE_QTY
-    add_qty = FIXED_PYRAMID_QTY
     
+    # 📌 Dynamic Professional Sizing
+    base_qty = eng.get("user_base_qty", 25)
+    add_qty = base_qty
     cur_qty = eng.get("active_qty", base_qty)
     brok_tot = BROK_PER_QTY * cur_qty
 
     s1_lock_pts_q = max(unit_size * STAGE1_LOCK_UNITS, STAGE1_MIN_PTS_Q)
     s1_trig_pts_q = max(unit_size * STAGE1_TRIG_UNITS, s1_lock_pts_q + 25.0)
 
-    # 📌 Calculate WEEKLY VWAP (Resets every Monday)
-    current_week = get_iso_week(bar_dt)
-    if current_week != eng["cur_week"]:
-        eng["cur_week"] = current_week
+    # 📌 DAILY VWAP (Resets every 24 hours for intraday precision)
+    if bar_dt.day != eng["cur_day"]:
+        eng["cur_day"] = bar_dt.day
         eng["cum_pv"] = ((h + l + c) / 3.0) * v
         eng["cum_v"] = v
     else:
@@ -320,13 +311,12 @@ def process_closed_bar(eng, kline):
     eng["vwap_js"].append({"time": t_sec_ist, "value": round(eng["vwap"], 1)})
 
     # ========================================================================
-    # V22 AUTO-EXIT WITH PYRAMIDING (MASSIVE S1 LOCKS ONLY)
+    # V23 AUTO-EXIT WITH DYNAMIC PYRAMIDING
     # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]; t_label = "LONG" if t_dir == 1 else "SHORT"; close_side = "sell" if t_dir == 1 else "buy"
         eng["max_fav_close"] = max(eng["max_fav_close"], c) if t_dir == 1 else min(eng["max_fav_close"], c)
 
-        # Stage-1 Massive Lock Hit -> Scale In (Pyramid)
         if not eng["tp1_reached"] and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"])):
             eng["tp1_reached"] = True; eng["wins"] += 1
             s1_sl = (eng["entry_price"] + s1_lock_pts_q) if t_dir == 1 else (eng["entry_price"] - s1_lock_pts_q)
@@ -367,7 +357,7 @@ def process_closed_bar(eng, kline):
                 eng["gross_profit"] += tot_pnl; eng["total_brok"] += brok_tot
                 net_inr = pts_to_inr(tot_pnl - brok_tot)
                 eng["markers_js"].append({"time": t_sec_ist, "position": "aboveBar" if t_dir == 1 else "belowBar", "color": "#38bdf8", "shape": "circle", "text": f"🚀 WAVE EXIT (₹{net_inr:+,.0f})"})
-                eng["trade_logs"].insert(0, {"time": bar_ist, "type": f"{t_label} ({cur_qty}L Pyramid)", "entry": eng["entry_price"], "exit": exit_p, "status": "🚀 QUANTUM WAVE EXIT", "pnl": f"Avg +{run_pts:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"})
+                eng["trade_logs"].insert(0, {"time": bar_ist, "type": f"{t_label} ({cur_qty}L Pyramid)", "entry": eng["entry_price"], "exit": exit_p, "status": "🚀 QUANTUM WAVE EXIT", "pnl": f"+{run_pts:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#38bdf8"})
                 eng["trade_logs"] = eng["trade_logs"][:50]; place_delta_demo_order(eng, close_side, cur_qty, tag="Wave Exit", is_exit=True); eng["trade_dir"] = 0
 
         if eng["trade_dir"] != 0 and not eng["tp2_reached"]:
@@ -397,12 +387,12 @@ def process_closed_bar(eng, kline):
 
                     eng["gross_profit"] += tot_pnl; eng["total_brok"] += brok_tot
                     net_inr = pts_to_inr(tot_pnl - brok_tot)
-                    eng["markers_js"].append({"time": t_sec_ist, "position": "aboveBar" if t_dir == 1 else "belowBar", "color": "#4ade80", "shape": "circle", "text": f"✅ MASSIVE LOCK (₹{net_inr:+,.0f})"})
-                    eng["trade_logs"].insert(0, {"time": bar_ist, "type": f"{t_label} ({cur_qty}L Pyramid)", "entry": eng["entry_price"], "exit": exit_p, "status": "✅ MASSIVE STAGE-1 LOCK", "pnl": f"Avg +{s1_lock_pts_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#22c55e"})
+                    eng["markers_js"].append({"time": t_sec_ist, "position": "aboveBar" if t_dir == 1 else "belowBar", "color": "#4ade80", "shape": "circle", "text": f"✅ S1 LOCK (₹{net_inr:+,.0f})"})
+                    eng["trade_logs"].insert(0, {"time": bar_ist, "type": f"{t_label} ({cur_qty}L Pyramid)", "entry": eng["entry_price"], "exit": exit_p, "status": "✅ STAGE-1 PYRAMID LOCK", "pnl": f"+{s1_lock_pts_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#22c55e"})
                     eng["trade_logs"] = eng["trade_logs"][:50]; place_delta_demo_order(eng, close_side, cur_qty, tag="Lock Exit", is_exit=True); eng["trade_dir"] = 0
 
     # ========================================================================
-    # ENTRY SIGNALS WITH MACRO TREND FILTER (WEEKLY VWAP)
+    # ENTRY SIGNALS WITH MACRO TREND FILTER (DAILY VWAP)
     # ========================================================================
     ema21 = eng["ema21"]; vwap_live = eng["vwap"]; rsi14 = eng["rsi14"]
     q_dir = eng["q_dir"]; q_streak = eng["q_streak"]
@@ -429,7 +419,7 @@ def process_closed_bar(eng, kline):
         eng["active_qty"] = base_qty 
         eng["entry_bar"] = idx; eng["entry_price"] = c; eng["max_fav_close"] = c
         eng["tp1_reached"] = False; eng["tp2_reached"] = False
-        eng["entry_tag"] = "🔥 Q-Alpha (Weekly Sync)" if (trigger_flip_buy or trigger_flip_sell) else f"⚡ W#{q_streak} (Weekly Sync)"
+        eng["entry_tag"] = "🔥 Q-Alpha (VWAP Sync)" if (trigger_flip_buy or trigger_flip_sell) else f"⚡ W#{q_streak} (VWAP Sync)"
         eng["entry_time_str"] = bar_ist
 
         eng["locked_tp1_pts"] = s1_trig_pts_q
@@ -456,7 +446,7 @@ def init_locked_engine_once(eng):
     macro_range = calc_daily_atr5()
     eng["macro_range"] = macro_range; eng["unit_size"] = max(macro_range / float(FIXED_DIVISOR), MINTICK * 2.0)
     now_sec = int(time.time())
-    days_back = 45 # 1h Timeframe
+    days_back = 25
     eng["days_back"] = days_back
     anchor_start_ms = ((now_sec // 86400) * 86400 - (days_back * 86400)) * 1000
     klines = fetch_hl_klines_range(FIXED_TF, anchor_start_ms, now_sec * 1000)
@@ -478,7 +468,7 @@ def background_worker(eng, my_worker_id):
                 if live_px and live_px > 0: eng["last_price"] = live_px
                 
                 if now_ts - last_poll >= 4.0:
-                    klines = fetch_hl_klines_range(FIXED_TF, int(now_ts * 1000) - 8 * 3600000, int(now_ts * 1000))
+                    klines = fetch_hl_klines_range(FIXED_TF, int(now_ts * 1000) - 8 * 900000, int(now_ts * 1000))
                     if klines and len(klines) >= 2:
                         for b in klines[:-1]: process_closed_bar(eng, b)
                         eng["last_price"] = float(klines[-1][4])
@@ -491,8 +481,8 @@ def get_quantum_live_engine():
     worker_id = int(time.time() * 1000)
     eng = {
         "active_worker_id": worker_id, "initialized": False, "live_order_active": False, "delta_btc_product_id": 27, "delta_status": "🤖 Delta Live Algo: ACTIVE",
-        "macro_range": 2800.0, "unit_size": 250.0, "days_back": 45, "active_qty": FIXED_BASE_QTY, "bar_count": 0, "last_bar_time": 0, "prev_close": 0.0, "tr_sum": 0.0, "atr14": 15.0,
-        "ema21": 0.0, "vwap": 0.0, "cur_week": -1, "cum_pv": 0.0, "cum_v": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
+        "macro_range": 2800.0, "unit_size": 250.0, "days_back": 25, "user_base_qty": 100, "active_qty": 100, "bar_count": 0, "last_bar_time": 0, "prev_close": 0.0, "tr_sum": 0.0, "atr14": 15.0,
+        "ema21": 0.0, "vwap": 0.0, "cur_day": -1, "cum_pv": 0.0, "cum_v": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
         "g1": 0.0, "g2": 0.0, "buy_v1": 0.0, "buy_v2": 0.0, "sell_v1": 0.0, "sell_v2": 0.0, "buy_dom_pct": 50.0, "sell_dom_pct": 50.0,
         "q_top": 0.0, "q_bot": 0.0, "q_dir": 1, "q_streak": 1, "q_core": 0.0, "support_band": None, "resistance_band": None, "n_trend": 1, "n_line": 0.0,
         "pending_flip_buy": False, "pending_flip_sell": False, "trade_dir": 0, "entry_bar": -1, "entry_price": 0.0, "tp1_price": 0.0, "tp2_price": 0.0,
@@ -508,7 +498,7 @@ eng = get_quantum_live_engine()
 server_ip = get_server_public_ip()
 
 # ============================================================================
-# TOP CONTROL BAR (STEALTH VWAP DESIGN)
+# TOP CONTROL BAR (V23 PRO SIZING)
 # ============================================================================
 r1_c1, r1_c2, r1_c3, r1_c4 = st.columns([0.46, 0.18, 0.18, 0.18])
 with r1_c1: st.markdown(f"**🌐 Server IP:** `{server_ip}` | <span style='color:#4ade80;font-weight:700;'>{eng.get('delta_status')}</span>", unsafe_allow_html=True)
@@ -527,14 +517,31 @@ with r1_c4:
     if st.button("🔄 चार्ट रिफ्रेश करें"): st.rerun()
 
 st.markdown(f"""<div class="locked-bar">
-  <div class="locked-pill"><span>🔒 Fearless Setup</span><b>{FIXED_TF.upper()} + Weekly VWAP Anchor</b></div>
-  <div class="locked-pill"><span>🔒 Pyramiding Strategy</span><b>Base 25L -> Adds 25L at S1</b></div>
-  <div class="locked-pill"><span>🔒 Matrix Grid</span><b>Mode {FIXED_DIVISOR:.0f} (Large Bricks)</b></div>
-  <div class="locked-pill"><span>🔒 No Small Profits</span><b>S1 Lock > ₹500 Net Guaranteed!</b></div>
+  <div class="locked-pill"><span>🔒 Daily Engine</span><b>{FIXED_TF.upper()} + Daily VWAP Anchor</b></div>
+  <div class="locked-pill"><span>🔒 Dynamic Matrix</span><b>Mode {FIXED_DIVISOR:.0f} (Intraday Focus)</b></div>
+  <div class="locked-pill"><span>🔒 Risk Protection</span><b>Shield {FIXED_ST_MULT}</b></div>
 </div>""", unsafe_allow_html=True)
 
+# 💰 Pro Position Sizer
+qty_label = st.selectbox(
+    "💼 Professional Sizing (Base Lots)",
+    ["100 Lots (1p = ₹8.50) -> Best for ₹1 Lakh Margin",
+     "250 Lots (1p = ₹21.25) -> Best for ₹2.5 Lakh Margin",
+     "500 Lots (1p = ₹42.50) -> Best for ₹5 Lakh Margin",
+     "1000 Lots (1p = ₹85.00) -> Best for ₹10 Lakh Margin",
+     "25 Lots (1p = ₹2.12) -> Micro Testing"],
+    index=0
+)
+new_qty = int(qty_label.split()[0])
+if new_qty != eng.get("user_base_qty", 100):
+    eng["user_base_qty"] = new_qty
+    if eng["trade_dir"] == 0: eng["active_qty"] = new_qty
+    # We must recalculate historical PnL based on this new quantity if user changes it
+    eng["initialized"] = False
+    st.rerun()
+
 if not eng.get("initialized", False):
-    st.warning("⏳ Dr Devendra AI-Quantum Pro V22 (Fearless Swing): लाइव चार्ट सिंक हो रहा है..."); st.stop()
+    st.warning("⏳ Dr Devendra AI-Quantum Pro V23 (Daily Income Pro): डेटा सिंक हो रहा है..."); st.stop()
 
 tot_tr = eng["wins"] + eng["losses"]
 wr_pct = (eng["wins"] / tot_tr * 100.0) if tot_tr > 0 else 0.0
@@ -566,19 +573,19 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div style="display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ V22 FEARLESS SWING (Max {FIXED_BASE_QTY + FIXED_PYRAMID_QTY}L)</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ V23 DAILY INCOME PRO (Max {eng['user_base_qty'] * 2}L)</span>
       <span class="live-px">${eng['last_price']:,.2f}</span>
       <span class="badge">{'BULLISH ▲' if eng['n_trend']==1 else 'BEARISH ▼'}</span>
-      <span style="font-size:12px; color:#facc15; font-weight:700;">🧬 Q-Grid: {eng['unit_size']:,.1f}p | Weekly VWAP Anchor: {eng['vwap_js'][-1]['value']:,.1f}</span>
+      <span style="font-size:12px; color:#facc15; font-weight:700;">🧬 Q-Grid: {eng['unit_size']:,.1f}p | Daily VWAP: {eng['vwap_js'][-1]['value']:,.1f}</span>
     </div>
     <div><button class="c-btn" onclick="chart.timeScale().scrollToRealTime()">⏩ Latest Candle</button> <button class="c-btn" onclick="chart.timeScale().fitContent()">🔍 Fit All Signals</button></div>
   </div>
 
   <div class="legend-bar">
-    <div><span class="dot" style="background:#facc15;"></span> Q-Core (Large Bricks)</div>
+    <div><span class="dot" style="background:#facc15;"></span> Q-Core</div>
     <div><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Neural Shield</div>
     <div><span class="dot" style="background:#38bdf8;"></span> D-Line</div>
-    <div><span class="dot" style="background:#d946ef; width:20px; height:2px;"></span> Weekly VWAP</div>
+    <div><span class="dot" style="background:#d946ef; width:20px; height:2px;"></span> Daily VWAP Anchor</div>
     <div style="margin-left:auto; color:#e2e8f0; font-weight:700;">
       🏆 Win Rate: <span style="color:#00e676;font-size:14px;">{wr_pct:.1f}%</span> ({eng['wins']}W/{eng['losses']}L) | 💰 Net Profit (After Fee): <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
     </div>
@@ -600,7 +607,7 @@ cSeries.setMarkers({json.dumps(eng['markers_js'])});
 chart.addLineSeries({{ color: '#facc15', lineWidth: 2, lineType: LightweightCharts.LineType.WithSteps }}).setData({json.dumps(eng['qcore_js'])});
 chart.addLineSeries({{ lineWidth: 3, lineType: LightweightCharts.LineType.WithSteps }}).setData({json.dumps(eng['nline_js'])});
 chart.addLineSeries({{ color: '#38bdf8', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed }}).setData({json.dumps(eng['dline_js'])});
-chart.addLineSeries({{ color: '#d946ef', lineWidth: 2, title: 'Weekly VWAP' }}).setData({json.dumps(eng['vwap_js'])});
+chart.addLineSeries({{ color: '#d946ef', lineWidth: 2, title: 'Daily VWAP' }}).setData({json.dumps(eng['vwap_js'])});
 
 window.addEventListener('resize', () => chart.applyOptions({{ width: document.getElementById('tv-chart').clientWidth }}));
 </script>
@@ -618,19 +625,19 @@ rows_html = "".join([f"""<tr style="border-bottom:1px solid #334155; font-size:1
 
 st.markdown(f"""<div class="t-grid">
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155;">
-  <div style="font-size:14px; font-weight:bold; color:#38bdf8; margin-bottom:10px;">📊 V22 "FEARLESS SWING" BACKTEST (1H • UP TO 50 LOTS • {eng['days_back']} DAYS)</div>
+  <div style="font-size:14px; font-weight:bold; color:#38bdf8; margin-bottom:10px;">📊 V23 DAILY INCOME PRO (15M • UP TO {eng['user_base_qty'] * 2} LOTS • {eng['days_back']} DAYS)</div>
   <table style="width:100%; border-collapse:collapse; font-size:13px;">
-    <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Pyramiding Strategy</td><td style="padding:7px; color:#38bdf8; font-weight:bold; text-align:right;">Base {FIXED_BASE_QTY}L -> Adds {FIXED_PYRAMID_QTY}L at S1!</td></tr>
+    <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Pyramiding Strategy</td><td style="padding:7px; color:#38bdf8; font-weight:bold; text-align:right;">Base {eng['user_base_qty']}L -> Adds {eng['user_base_qty']}L at S1 Lock!</td></tr>
     <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:7px; color:#ffffff; font-weight:bold; text-align:right;">{tot_tr} Trades ({eng['wins']}W / {eng['losses']}L)</td></tr>
     <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Win Rate %</td><td style="padding:7px; color:#00e676; font-weight:800; font-size:15px; text-align:right;">🏆 {wr_pct:.1f}%</td></tr>
     <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Gross Profit (Dynamic Lots)</td><td style="padding:7px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.0f} pts (₹{pts_to_inr(eng['gross_profit']):+,.0f})</td></tr>
-    <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Gross Loss (25 Lots Base)</td><td style="padding:7px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.0f} pts (-₹{pts_to_inr(eng['gross_loss']):,.0f})</td></tr>
+    <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Gross Loss (Base Lots)</td><td style="padding:7px; color:#f87171; font-weight:bold; text-align:right;">-{eng['gross_loss']:,.0f} pts (-₹{pts_to_inr(eng['gross_loss']):,.0f})</td></tr>
     <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Delta Brokerage</td><td style="padding:7px; color:#fca5a5; font-weight:bold; text-align:right;">-{eng['total_brok']:,.0f} pts (-₹{pts_to_inr(eng['total_brok']):,.0f})</td></tr>
     <tr style="background:#0f172a;"><td style="padding:9px 7px; color:#ffffff; font-weight:bold;">NET PROFIT (After Real Fee)</td><td style="padding:9px 7px; color:#00e676; font-weight:800; font-size:16px; text-align:right;">{net_pnl_pts:+,.0f} pts (₹{net_inr_val:+,.0f})</td></tr>
   </table>
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155;">
-  <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:10px;">📜 V22 Fearless Swing (No Small Profits) ट्रेड इतिहास लॉग</div>
+  <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:10px;">📜 V23 Pro Income ट्रेड इतिहास लॉग</div>
   <div style="max-height:260px; overflow-y:auto;">
     <table style="width:100%; border-collapse:collapse;">
       <thead><tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;"><th style="padding:6px;">समय (IST)</th><th style="padding:6px;">सिग्नल</th><th style="padding:6px;">Entry → Exit</th><th style="padding:6px;">स्टेटस</th><th style="padding:6px; text-align:right;">Net PnL (₹)</th></tr></thead>
