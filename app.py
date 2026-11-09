@@ -3,7 +3,7 @@ import requests
 import time
 from datetime import datetime
 
-st.set_page_config(page_title="Pro Manual Trader - L2 Engine v1.1", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - L2 Engine v1.2", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -28,8 +28,8 @@ def fetch_l2_orderbook():
         if r.status_code == 200:
             data = r.json()
             if data and "levels" in data and len(data["levels"]) >= 2:
-                bids = data["levels"][0][:15] # Top 15 Bids
-                asks = data["levels"][1][:15] # Top 15 Asks
+                bids = data["levels"][0][:15] 
+                asks = data["levels"][1][:15] 
                 
                 bid_vol = sum(float(b["sz"]) for b in bids)
                 ask_vol = sum(float(a["sz"]) for a in asks)
@@ -46,16 +46,17 @@ def fetch_l2_orderbook():
     return None
 
 # ============================================================================
-# STATE & MEMORY (THE EMA & SPREAD ENGINE)
+# ROBUST STATE & MEMORY (THE EMA & SPREAD ENGINE)
 # ============================================================================
-if "engine_state" not in st.session_state:
+# अगर मेमोरी नहीं है, या पुरानी मेमोरी में नए फीचर्स (max_spread) नहीं हैं, तो पूरी मेमोरी को रिफ्रेश करें
+if "engine_state" not in st.session_state or "max_spread" not in st.session_state.engine_state:
     st.session_state.engine_state = {
         "fast_ema": 50.0,  
         "slow_ema": 50.0,  
         "last_px": 0.0,
         "spike_active": 0, 
-        "max_spread": 0.0,     # New: Max Spread Memory
-        "max_spread_time": "", # New: Max Spread Time
+        "max_spread": 0.0,     
+        "max_spread_time": "", 
         "history": []
     }
 
