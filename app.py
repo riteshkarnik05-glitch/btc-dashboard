@@ -4,7 +4,7 @@ import time
 import math
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - Smart Tracker v1.10", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - Smart Tracker v1.11", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -72,7 +72,7 @@ def get_ist_time_str():
     return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
 # ============================================================================
-# PERSISTENT MEMORY ENGINE (V1.10 SMART TRACKER)
+# PERSISTENT MEMORY ENGINE (V1.11 FIXED PNL)
 # ============================================================================
 @st.cache_resource
 def get_persistent_engine():
@@ -87,8 +87,7 @@ def get_persistent_engine():
         "sweep_status": 0, "abs_status": 0,
         "sweep_history": [], "obi_history": [],
         
-        # Smart Tracker Memory
-        "master_history_objs": [], # Will store dicts instead of just strings
+        "master_history_objs": [], 
         "track_signal": None, 
         "track_entry_px": 0.0, 
         "track_max_fav": 0.0, 
@@ -198,10 +197,11 @@ if l2_data:
     # --- SMART POST-SIGNAL TRAILING TRACKER ---
     # 1. Close existing tracker if a NEW opposite signal comes
     if new_master_sig and eng["track_signal"] and eng["track_signal"] != new_master_sig and eng["track_status"] == "Tracking":
-        eng["track_status"] = f"Closed (Opposite Signal)"
         if len(eng["master_history_objs"]) > 0:
+            final_pnl = eng["master_history_objs"][0]["live_pnl"]
+            eng["track_status"] = f"Closed (Opposite Signal)"
             eng["master_history_objs"][0]["status"] = eng["track_status"]
-            eng["master_history_objs"][0]["final_pnl"] = eng["master_history_objs"][0]["live_pnl"]
+            eng["master_history_objs"][0]["final_pnl"] = final_pnl
 
     # 2. Start new tracker
     if new_master_sig:
@@ -210,7 +210,6 @@ if l2_data:
         eng["track_max_fav"] = px
         eng["track_status"] = "Tracking"
         
-        # Add to history object
         trade_obj = {
             "time": now_ist_str, "type": new_master_sig, "entry": px,
             "status": "Tracking", "max_pnl": 0.0, "live_pnl": 0.0, "final_pnl": 0.0
@@ -226,14 +225,13 @@ if l2_data:
             live_pnl = px - t_entry
             eng["track_max_fav"] = max(eng["track_max_fav"], px)
             max_pnl = eng["track_max_fav"] - t_entry
-            trail_sl_px = eng["track_max_fav"] - 300.0 # 300 points behind the peak!
+            trail_sl_px = eng["track_max_fav"] - 300.0 
             
             if px <= trail_sl_px:
-                # Trailing SL Hit!
                 eng["track_status"] = "Closed"
                 final_pnl = live_pnl
                 if max_pnl < 10.0: sts_text = "🛑 Hard SL Hit (-300p)"
-                else: sts_text = f"✅ Trailing Locked (+{final_pnl:,.0f}p) [Peak: +{max_pnl:,.0f}p]"
+                else: sts_text = f"✅ Trailing Locked [Peak: +{max_pnl:,.0f}p]"
                 
                 eng["master_history_objs"][0]["status"] = sts_text
                 eng["master_history_objs"][0]["final_pnl"] = final_pnl
@@ -242,19 +240,17 @@ if l2_data:
             live_pnl = t_entry - px
             eng["track_max_fav"] = min(eng["track_max_fav"], px)
             max_pnl = t_entry - eng["track_max_fav"]
-            trail_sl_px = eng["track_max_fav"] + 300.0 # 300 points behind the peak!
+            trail_sl_px = eng["track_max_fav"] + 300.0 
             
             if px >= trail_sl_px:
-                # Trailing SL Hit!
                 eng["track_status"] = "Closed"
                 final_pnl = live_pnl
                 if max_pnl < 10.0: sts_text = "🛑 Hard SL Hit (-300p)"
-                else: sts_text = f"✅ Trailing Locked (+{final_pnl:,.0f}p) [Peak: +{max_pnl:,.0f}p]"
+                else: sts_text = f"✅ Trailing Locked [Peak: +{max_pnl:,.0f}p]"
                 
                 eng["master_history_objs"][0]["status"] = sts_text
                 eng["master_history_objs"][0]["final_pnl"] = final_pnl
 
-        # Update Live Stats for the History UI
         if eng["track_status"] == "Tracking":
             eng["master_history_objs"][0]["live_pnl"] = live_pnl
             eng["master_history_objs"][0]["max_pnl"] = max_pnl
@@ -267,7 +263,7 @@ if l2_data:
     # RENDER DASHBOARD
     # ============================================================================
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ 3X SNIPER MANUAL TRADER (V1.10 SMART TRACKER) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ 3X SNIPER MANUAL TRADER (V1.11) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
     
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -325,8 +321,6 @@ if l2_data:
     with r2_c2:
         if eng["track_status"] == "Tracking" and eng["track_signal"]:
             trk_col = "#22c55e" if eng["track_signal"] == "BUY" else "#ef4444"
-            
-            # Fetch stats directly from the active history object
             act_obj = eng["master_history_objs"][0]
             live_p = act_obj["live_pnl"]
             max_p = act_obj["max_pnl"]
@@ -358,8 +352,9 @@ if l2_data:
                 live_col = "#4ade80" if h["live_pnl"] >= 0 else "#f87171"
                 h_html += f"<div class='hist-item hist-tracking'><b>{h['time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#facc15;'>Tracking...</span> Live: <span style='color:{live_col};'>{h['live_pnl']:+.1f}p</span> | Max: +{h['max_pnl']:,.1f}p</div>"
             else:
+                pnl_col = "#22c55e" if h["final_pnl"] >= 0 else "#ef4444"
                 border_cls = "hist-closed-win" if h["final_pnl"] > 0 else "hist-closed-loss"
-                h_html += f"<div class='hist-item {border_cls}'><b>{h['time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#94a3b8;'>{h['status']}</span></div>"
+                h_html += f"<div class='hist-item {border_cls}'><b>{h['time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#94a3b8;'>{h['status']}</span> <b style='color:{pnl_col};'>({h['final_pnl']:+.1f}p)</b></div>"
         
         st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Signals Yet</div>'}</div>", unsafe_allow_html=True)
 
