@@ -4,7 +4,7 @@ import time
 import math
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - Sniper Engine v1.9", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - Smart Tracker v1.10", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -16,8 +16,11 @@ st.markdown("""<style>
 .bar-fill { background: #22c55e; height: 100%; transition: width 0.3s ease; }
 div.stButton > button { background-color: #334155 !important; color: #f8fafc !important; border: 1px solid #475569 !important; border-radius: 6px !important; padding: 2px 10px !important; }
 div.stButton > button:hover { background-color: #ef4444 !important; }
-.history-box { background:#1e293b; padding:10px; border-radius:8px; border:1px solid #334155; height: 200px; overflow-y: auto;}
-.hist-item { font-size: 12px; padding: 5px 8px; border-bottom: 1px solid #334155; color: #cbd5e1; }
+.history-box { background:#1e293b; padding:10px; border-radius:8px; border:1px solid #334155; height: 260px; overflow-y: auto;}
+.hist-item { font-size: 12px; padding: 6px 8px; border-bottom: 1px solid #334155; color: #cbd5e1; }
+.hist-tracking { border-left: 3px solid #38bdf8; background: #0f172a; }
+.hist-closed-win { border-left: 3px solid #22c55e; }
+.hist-closed-loss { border-left: 3px solid #ef4444; }
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
@@ -31,10 +34,8 @@ def fetch_l2_orderbook():
         if r.status_code == 200:
             data = r.json()
             if data and "levels" in data and len(data["levels"]) >= 2:
-                bids = data["levels"][0][:15] 
-                asks = data["levels"][1][:15] 
-                bid_vol = sum(float(b["sz"]) for b in bids)
-                ask_vol = sum(float(a["sz"]) for a in asks)
+                bids = data["levels"][0][:15]; asks = data["levels"][1][:15] 
+                bid_vol = sum(float(b["sz"]) for b in bids); ask_vol = sum(float(a["sz"]) for a in asks)
                 tot_vol = bid_vol + ask_vol
                 best_bid, best_ask = float(bids[0]["px"]), float(asks[0]["px"])
                 mid_px = (best_bid + best_ask) / 2.0
@@ -55,20 +56,14 @@ def fetch_recent_swings_and_cvd():
                 closed_candles = data[:-1]
                 highs = [float(k["h"]) for k in closed_candles]
                 lows = [float(k["l"]) for k in closed_candles]
-                
-                # Approximate CVD (Cumulative Volume Delta) for last 30 mins
                 cvd = 0.0
                 for k in closed_candles:
                     o, h, l, c, v = float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k.get("v", 0.0))
-                    rng = max(h - l, 0.1)
-                    bull_score = (c - l) + (c - o if c > o else 0)
-                    bear_score = (h - c) + (o - c if c < o else 0)
+                    bull_score = max(0, (c - l) + (c - o if c > o else 0))
+                    bear_score = max(0, (h - c) + (o - c if c < o else 0))
                     tot_score = bull_score + bear_score
                     if tot_score > 0:
-                        buy_v = v * (bull_score / tot_score)
-                        sell_v = v * (bear_score / tot_score)
-                        cvd += (buy_v - sell_v)
-                
+                        cvd += (v * (bull_score / tot_score)) - (v * (bear_score / tot_score))
                 return max(highs), min(lows), cvd
     except: pass
     return None, None, 0.0
@@ -77,7 +72,7 @@ def get_ist_time_str():
     return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
 # ============================================================================
-# PERSISTENT MEMORY ENGINE (V1.9 SNIPER)
+# PERSISTENT MEMORY ENGINE (V1.10 SMART TRACKER)
 # ============================================================================
 @st.cache_resource
 def get_persistent_engine():
@@ -87,11 +82,17 @@ def get_persistent_engine():
         "last_px": 0.0, "spike_active": 0, 
         "max_spread": 0.0, "max_spread_time": "--", 
         "swing_high": 0.0, "swing_low": 0.0, 
-        "last_cvd": 0.0, "cvd_trend": 0, # +1 Rising, -1 Falling
+        "last_cvd": 0.0, "cvd_trend": 0, 
         "last_kline_fetch": 0.0,
-        "sweep_status": 0, "abs_status": 0, # Absorption Status
-        "master_history": [], "sweep_history": [], "obi_history": [],
-        "track_signal": None, "track_entry_px": 0.0, "track_max_fav": 0.0, "track_status": "Idle",
+        "sweep_status": 0, "abs_status": 0,
+        "sweep_history": [], "obi_history": [],
+        
+        # Smart Tracker Memory
+        "master_history_objs": [], # Will store dicts instead of just strings
+        "track_signal": None, 
+        "track_entry_px": 0.0, 
+        "track_max_fav": 0.0, 
+        "track_status": "Idle",
         "last_obi_state": "NONE"
     }
 
@@ -109,18 +110,13 @@ with col_top2:
 now_ts = time.time()
 l2_data = fetch_l2_orderbook()
 
-# Engine 2 & 3: Swing & CVD Fetcher (Every 30s)
 if now_ts - eng["last_kline_fetch"] > 30:
     sh, sl, cvd = fetch_recent_swings_and_cvd()
     if sh and sl:
-        eng["swing_high"] = sh
-        eng["swing_low"] = sl
-        
-        # Determine CVD Trend (Aggressive market orders)
+        eng["swing_high"] = sh; eng["swing_low"] = sl
         if cvd > eng["last_cvd"]: eng["cvd_trend"] = 1
         elif cvd < eng["last_cvd"]: eng["cvd_trend"] = -1
         eng["last_cvd"] = cvd
-        
     eng["last_kline_fetch"] = now_ts
 
 if l2_data:
@@ -132,7 +128,7 @@ if l2_data:
     if current_spread > eng["max_spread"]:
         eng["max_spread"] = current_spread; eng["max_spread_time"] = now_ist_str
 
-    # --- ENGINE 1: SPOOF-PROOF OBI MACD ---
+    # --- ENGINE 1: OBI MACD ---
     if eng["fast_ema"] == 50.0:
         eng["fast_ema"] = eng["slow_ema"] = buy_pressure
         eng["signal_line"] = eng["last_px"] = px
@@ -152,97 +148,134 @@ if l2_data:
         eng["bull_confirm_ticks"] = eng["bear_confirm_ticks"] = 0
 
     if eng["bull_confirm_ticks"] >= 3 and eng["last_obi_state"] != "BULL":
-        eng["obi_history"].insert(0, f"🟢 {now_ist_str} - Solid Buy Flow (Spoof-Free)")
+        eng["obi_history"].insert(0, f"🟢 {now_ist_str} - Solid Buy Flow")
         eng["last_obi_state"] = "BULL"; eng["bull_confirm_ticks"] = 0
     elif eng["bear_confirm_ticks"] >= 3 and eng["last_obi_state"] != "BEAR":
-        eng["obi_history"].insert(0, f"🔴 {now_ist_str} - Solid Sell Flow (Spoof-Free)")
+        eng["obi_history"].insert(0, f"🔴 {now_ist_str} - Solid Sell Flow")
         eng["last_obi_state"] = "BEAR"; eng["bear_confirm_ticks"] = 0
 
-    px_diff = px - eng["last_px"]
-    eng["last_px"] = px
+    px_diff = px - eng["last_px"]; eng["last_px"] = px
     if px_diff <= -15.0: eng["spike_active"] = 1  
     elif px_diff >= 15.0: eng["spike_active"] = -1 
     else: eng["spike_active"] = 0
 
-    # --- ENGINE 2 & 3: SWEEP & ABSORPTION ZONES ---
+    # --- ENGINE 2 & 3: SWEEP & ABSORPTION ---
     sh, sl = eng["swing_high"], eng["swing_low"]
-    danger_zone = 30.0 # 30 Points Buffer
-    
-    eng["abs_status"] = 0 # Reset absorption display
+    danger_zone = 30.0 
+    eng["abs_status"] = 0 
     
     if sh > 0 and sl > 0:
-        # Sweeps
         if px < sl: eng["sweep_status"] = -2
         elif eng["sweep_status"] == -2 and px > sl + 5.0: 
-            eng["sweep_status"] = 1
-            eng["sweep_history"].insert(0, f"🟢 {now_ist_str} - Bullish Sweep @ ${px:,.1f}")
+            eng["sweep_status"] = 1; eng["sweep_history"].insert(0, f"🟢 {now_ist_str} - Bull Sweep @ ${px:,.1f}")
         elif px > sh: eng["sweep_status"] = 2
         elif eng["sweep_status"] == 2 and px < sh - 5.0: 
-            eng["sweep_status"] = -1
-            eng["sweep_history"].insert(0, f"🔴 {now_ist_str} - Bearish Sweep @ ${px:,.1f}")
+            eng["sweep_status"] = -1; eng["sweep_history"].insert(0, f"🔴 {now_ist_str} - Bear Sweep @ ${px:,.1f}")
             
         if eng["sweep_status"] == 1 and px > sl + 150.0: eng["sweep_status"] = 0
         if eng["sweep_status"] == -1 and px < sh - 150.0: eng["sweep_status"] = 0
 
-        # CVD Absorption (Only triggers IN the danger zones)
         near_support = (px - sl) <= danger_zone and (px >= sl)
         near_resistance = (sh - px) <= danger_zone and (px <= sh)
 
-        if near_support and eng["cvd_trend"] == -1:
-            eng["abs_status"] = 1 # CVD falls, but price is near support (Bullish Absorption)
-        elif near_resistance and eng["cvd_trend"] == 1:
-            eng["abs_status"] = -1 # CVD rises, but price is near resistance (Bearish Absorption)
+        if near_support and eng["cvd_trend"] == -1: eng["abs_status"] = 1 
+        elif near_resistance and eng["cvd_trend"] == 1: eng["abs_status"] = -1 
 
     # --- ULTIMATE 3X MASTER SIGNAL ---
     signal_txt = "⏳ Waiting for 3X Sniper Confluence"
     sig_class = ""
     new_master_sig = None
     
-    # 3X Confluence: Sweep + Absorption + OBI Confirm
     if eng["sweep_status"] == 1 and eng["abs_status"] == 1 and eng["last_obi_state"] == "BULL":
-        signal_txt = f"🔥 3X SNIPER BUY!<br><span style='font-size:16px;'>Sweep + Absorbed + OBI Push @ ${px:,.1f}</span>"
+        signal_txt = f"🔥 3X SNIPER BUY! @ ${px:,.1f}"
         sig_class = "buy-sig"
-        eng["master_history"].insert(0, f"🟢 {now_ist_str} - 3X BUY @ ${px:,.1f}")
         eng["sweep_status"] = 0; new_master_sig = "BUY"
-        
     elif eng["sweep_status"] == -1 and eng["abs_status"] == -1 and eng["last_obi_state"] == "BEAR":
-        signal_txt = f"🔥 3X SNIPER SELL!<br><span style='font-size:16px;'>Sweep + Absorbed + OBI Push @ ${px:,.1f}</span>"
+        signal_txt = f"🔥 3X SNIPER SELL! @ ${px:,.1f}"
         sig_class = "sell-sig"
-        eng["master_history"].insert(0, f"🔴 {now_ist_str} - 3X SELL @ ${px:,.1f}")
         eng["sweep_status"] = 0; new_master_sig = "SELL"
 
-    # --- POST-SIGNAL TRACKER (300 Point Limit) ---
+    # --- SMART POST-SIGNAL TRAILING TRACKER ---
+    # 1. Close existing tracker if a NEW opposite signal comes
+    if new_master_sig and eng["track_signal"] and eng["track_signal"] != new_master_sig and eng["track_status"] == "Tracking":
+        eng["track_status"] = f"Closed (Opposite Signal)"
+        if len(eng["master_history_objs"]) > 0:
+            eng["master_history_objs"][0]["status"] = eng["track_status"]
+            eng["master_history_objs"][0]["final_pnl"] = eng["master_history_objs"][0]["live_pnl"]
+
+    # 2. Start new tracker
     if new_master_sig:
         eng["track_signal"] = new_master_sig
         eng["track_entry_px"] = px
         eng["track_max_fav"] = px
         eng["track_status"] = "Tracking"
+        
+        # Add to history object
+        trade_obj = {
+            "time": now_ist_str, "type": new_master_sig, "entry": px,
+            "status": "Tracking", "max_pnl": 0.0, "live_pnl": 0.0, "final_pnl": 0.0
+        }
+        eng["master_history_objs"].insert(0, trade_obj)
 
-    if eng["track_status"] == "Tracking" and eng["track_signal"]:
-        if eng["track_signal"] == "BUY":
+    # 3. Process Live Tracking & Trailing SL logic (300 points)
+    if eng["track_status"] == "Tracking" and eng["track_signal"] and len(eng["master_history_objs"]) > 0:
+        t_type = eng["track_signal"]
+        t_entry = eng["track_entry_px"]
+        
+        if t_type == "BUY":
+            live_pnl = px - t_entry
             eng["track_max_fav"] = max(eng["track_max_fav"], px)
-            if (eng["track_max_fav"] - eng["track_entry_px"]) >= 300.0: eng["track_status"] = "🎯 Target 300p Hit!"
-        elif eng["track_signal"] == "SELL":
+            max_pnl = eng["track_max_fav"] - t_entry
+            trail_sl_px = eng["track_max_fav"] - 300.0 # 300 points behind the peak!
+            
+            if px <= trail_sl_px:
+                # Trailing SL Hit!
+                eng["track_status"] = "Closed"
+                final_pnl = live_pnl
+                if max_pnl < 10.0: sts_text = "🛑 Hard SL Hit (-300p)"
+                else: sts_text = f"✅ Trailing Locked (+{final_pnl:,.0f}p) [Peak: +{max_pnl:,.0f}p]"
+                
+                eng["master_history_objs"][0]["status"] = sts_text
+                eng["master_history_objs"][0]["final_pnl"] = final_pnl
+                
+        elif t_type == "SELL":
+            live_pnl = t_entry - px
             eng["track_max_fav"] = min(eng["track_max_fav"], px)
-            if (eng["track_entry_px"] - eng["track_max_fav"]) >= 300.0: eng["track_status"] = "🎯 Target 300p Hit!"
+            max_pnl = t_entry - eng["track_max_fav"]
+            trail_sl_px = eng["track_max_fav"] + 300.0 # 300 points behind the peak!
+            
+            if px >= trail_sl_px:
+                # Trailing SL Hit!
+                eng["track_status"] = "Closed"
+                final_pnl = live_pnl
+                if max_pnl < 10.0: sts_text = "🛑 Hard SL Hit (-300p)"
+                else: sts_text = f"✅ Trailing Locked (+{final_pnl:,.0f}p) [Peak: +{max_pnl:,.0f}p]"
+                
+                eng["master_history_objs"][0]["status"] = sts_text
+                eng["master_history_objs"][0]["final_pnl"] = final_pnl
 
-    eng["master_history"] = eng["master_history"][:10]; eng["sweep_history"] = eng["sweep_history"][:10]; eng["obi_history"] = eng["obi_history"][:10]
+        # Update Live Stats for the History UI
+        if eng["track_status"] == "Tracking":
+            eng["master_history_objs"][0]["live_pnl"] = live_pnl
+            eng["master_history_objs"][0]["max_pnl"] = max_pnl
+
+    eng["master_history_objs"] = eng["master_history_objs"][:10]
+    eng["sweep_history"] = eng["sweep_history"][:15]
+    eng["obi_history"] = eng["obi_history"][:15]
 
     # ============================================================================
     # RENDER DASHBOARD
     # ============================================================================
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ 3X SNIPER MANUAL TRADER (V1.9) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ 3X SNIPER MANUAL TRADER (V1.10 SMART TRACKER) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
     
     c1, c2, c3, c4 = st.columns(4)
-    
     with c1:
         st.markdown(f"""<div class='metric-box'>
         <div style='color:#94a3b8; font-size:13px; font-weight:bold;'>🔴 LIVE OBI (RAW) 🟢</div>
         <div style='font-size:18px; font-weight:900; margin-top:5px;'><span style='color:#22c55e;'>{buy_pressure:.1f}%</span> / <span style='color:#ef4444;'>{l2_data['ask_pct']:.1f}%</span></div>
         <div class='bar-container'><div class='bar-fill' style='width:{buy_pressure}%;'></div></div>
         </div>""", unsafe_allow_html=True)
-        
     with c2:
         diff_col = "#22c55e" if macd_diff > 0 else "#ef4444"
         ticks_str = "🟢" * eng["bull_confirm_ticks"] if eng["bull_confirm_ticks"] > 0 else ("🔴" * eng["bear_confirm_ticks"])
@@ -252,7 +285,6 @@ if l2_data:
         <div style='font-size:12px; color:#cbd5e1; margin-top:5px;'>Hold Ticks: {ticks_str}</div>
         <div style='font-size:20px; font-weight:900; color:{diff_col}; margin-top:5px;'>Diff: {macd_diff:+.2f}%</div>
         </div>""", unsafe_allow_html=True)
-        
     with c3:
         spk_col = "#22c55e" if eng["spike_active"] == 1 else ("#ef4444" if eng["spike_active"] == -1 else "#94a3b8")
         spk_txt = "📉 Down Spike!" if eng["spike_active"] == 1 else ("📈 Up Spike!" if eng["spike_active"] == -1 else "No Px Spike")
@@ -261,7 +293,6 @@ if l2_data:
         <div style='font-size:12px; color:#cbd5e1; margin-top:5px;'>Jump (2s): <b style='color:#facc15;'>${px_diff:+.1f}</b></div>
         <div style='font-size:18px; font-weight:900; color:{spk_col}; margin-top:5px;'>{spk_txt}</div>
         </div>""", unsafe_allow_html=True)
-        
     with c4:
         st.markdown(f"""<div class='metric-box'>
         <div style='color:#94a3b8; font-size:13px; font-weight:bold;'>🧱 SPREAD SPIKE</div>
@@ -269,9 +300,7 @@ if l2_data:
         <div style='font-size:16px; font-weight:900; color:#facc15; margin-top:5px;'>Max: ${eng['max_spread']:.2f} <span style='font-size:11px; color:#94a3b8;'>({eng['max_spread_time']})</span></div>
         </div>""", unsafe_allow_html=True)
 
-    # 🎯 ROW 2: LIQUIDITY ZONES + ABSORPTION
     r2_c1, r2_c2 = st.columns([0.4, 0.6])
-    
     with r2_c1:
         swp_txt = "⏳ Safe (No Man's Land)"
         swp_col = "#94a3b8"
@@ -279,7 +308,6 @@ if l2_data:
         elif eng["sweep_status"] == 1: swp_txt = "🟢 Bullish Sweep Trap!"; swp_col = "#22c55e"
         elif eng["sweep_status"] == 2: swp_txt = "⚠️ Breaking Resistance!"; swp_col = "#facc15"
         elif eng["sweep_status"] == -1: swp_txt = "🔴 Bearish Sweep Trap!"; swp_col = "#ef4444"
-        
         abs_txt = "⚪ Normal Flow"
         if eng["abs_status"] == 1: abs_txt = "🔥 Bullish Absorption (Whale Limits)"
         elif eng["abs_status"] == -1: abs_txt = "🔥 Bearish Absorption (Whale Limits)"
@@ -295,25 +323,44 @@ if l2_data:
         </div>""", unsafe_allow_html=True)
         
     with r2_c2:
-        if eng["track_signal"]:
+        if eng["track_status"] == "Tracking" and eng["track_signal"]:
             trk_col = "#22c55e" if eng["track_signal"] == "BUY" else "#ef4444"
-            pts_moved = (eng["track_max_fav"] - eng["track_entry_px"]) if eng["track_signal"] == "BUY" else (eng["track_entry_px"] - eng["track_max_fav"])
-            pts_moved = max(0.0, pts_moved)
-            sts_col = "#4ade80" if eng["track_status"] != "Tracking" else "#facc15"
-            st.markdown(f"""<div class='signal-box' style='border-color:{trk_col}; background:#0f172a;'>
-            <div style='font-size:15px; color:#cbd5e1; margin-bottom:5px;'>🎯 3X Sniper Track ({eng['track_signal']} @ ${eng['track_entry_px']:,.1f})</div>
-            <div style='font-size:26px; color:{trk_col}; font-weight:900;'>Max Favorable Move: +{pts_moved:,.1f} pts</div>
-            <div style='font-size:14px; color:{sts_col}; margin-top:5px; padding:4px 10px; background:#1e293b; border-radius:6px;'>{eng['track_status']}</div>
+            
+            # Fetch stats directly from the active history object
+            act_obj = eng["master_history_objs"][0]
+            live_p = act_obj["live_pnl"]
+            max_p = act_obj["max_pnl"]
+            live_col = "#4ade80" if live_p >= 0 else "#f87171"
+            
+            st.markdown(f"""<div class='signal-box' style='border-color:{trk_col}; background:#0f172a; flex-direction:row; justify-content:space-around;'>
+            <div style='text-align:left;'>
+                <div style='font-size:14px; color:#94a3b8; margin-bottom:5px;'>Active Post-Signal Tracker</div>
+                <div style='font-size:18px; color:#ffffff; font-weight:bold;'>{eng['track_signal']} @ ${eng['track_entry_px']:,.1f}</div>
+                <div style='font-size:13px; color:#facc15; margin-top:5px;'>300pt Trailing SL Active</div>
+            </div>
+            <div style='text-align:right; border-left:1px solid #334155; padding-left:20px;'>
+                <div style='font-size:14px; color:#94a3b8;'>Live PnL: <b style='color:{live_col}; font-size:24px;'>{live_p:+.1f}p</b></div>
+                <div style='font-size:14px; color:#cbd5e1; margin-top:8px;'>Max Favorable: <b style='color:#38bdf8;'>+{max_p:,.1f}p</b></div>
+            </div>
             </div>""", unsafe_allow_html=True)
         else:
             st.markdown(f"<div class='signal-box {sig_class}'>{signal_txt}</div>", unsafe_allow_html=True)
 
-    st.markdown("<div style='margin-top:20px; margin-bottom:8px; font-weight:bold; color:#f8fafc; font-size:15px;'>📜 Individual Trackers History</div>", unsafe_allow_html=True)
-    h_col1, h_col2, h_col3 = st.columns(3)
+    st.markdown("<div style='margin-top:20px; margin-bottom:8px; font-weight:bold; color:#f8fafc; font-size:15px;'>📜 Smart Trackers History</div>", unsafe_allow_html=True)
+    h_col1, h_col2, h_col3 = st.columns([0.4, 0.3, 0.3])
     
     with h_col1:
-        st.markdown("<div style='color:#38bdf8; font-size:13px; font-weight:bold; margin-bottom:5px;'>🔥 3X Master Signals</div>", unsafe_allow_html=True)
-        h_html = "".join([f"<div class='hist-item'>{h}</div>" for h in eng["master_history"]])
+        st.markdown("<div style='color:#38bdf8; font-size:13px; font-weight:bold; margin-bottom:5px;'>🔥 3X Master Signals (Smart History)</div>", unsafe_allow_html=True)
+        h_html = ""
+        for h in eng["master_history_objs"]:
+            h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"
+            if h["status"] == "Tracking":
+                live_col = "#4ade80" if h["live_pnl"] >= 0 else "#f87171"
+                h_html += f"<div class='hist-item hist-tracking'><b>{h['time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#facc15;'>Tracking...</span> Live: <span style='color:{live_col};'>{h['live_pnl']:+.1f}p</span> | Max: +{h['max_pnl']:,.1f}p</div>"
+            else:
+                border_cls = "hist-closed-win" if h["final_pnl"] > 0 else "hist-closed-loss"
+                h_html += f"<div class='hist-item {border_cls}'><b>{h['time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#94a3b8;'>{h['status']}</span></div>"
+        
         st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Signals Yet</div>'}</div>", unsafe_allow_html=True)
 
     with h_col2:
