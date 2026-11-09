@@ -3,7 +3,7 @@ import requests
 import time
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - Noise-Free Engine v1.7", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - Spoof-Proof Engine v1.8", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -66,14 +66,20 @@ def get_ist_time_str():
     return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
 # ============================================================================
-# PERSISTENT MEMORY ENGINE (V1.7 NOISE-FREE)
+# PERSISTENT MEMORY ENGINE (V1.8 SPOOF-PROOF)
 # ============================================================================
 @st.cache_resource
 def get_persistent_engine():
     return {
+        # Slower, smoother EMAs
         "fast_ema": 50.0,  
         "slow_ema": 50.0,
-        "signal_line": 0.0,    # New: Signal Line Memory
+        "signal_line": 0.0,
+        
+        # Sustained Confirmation Counters
+        "bull_confirm_ticks": 0,
+        "bear_confirm_ticks": 0,
+        
         "last_px": 0.0,
         "spike_active": 0, 
         "max_spread": 0.0,     
@@ -124,7 +130,7 @@ if l2_data:
         eng["max_spread"] = current_spread
         eng["max_spread_time"] = now_ist_str
 
-    # --- ENGINE 1: NOISE-FREE OBI MACD ---
+    # --- ENGINE 1: SPOOF-PROOF OBI MACD ---
     if eng["fast_ema"] == 50.0:
         eng["fast_ema"] = buy_pressure
         eng["slow_ema"] = buy_pressure
@@ -133,23 +139,33 @@ if l2_data:
         obi_histogram = 0.0
         macd_diff = 0.0
     else:
-        eng["fast_ema"] = buy_pressure * 0.30 + eng["fast_ema"] * 0.70
+        # Slightly slower alphas to ignore 1-second ticks
+        eng["fast_ema"] = buy_pressure * 0.15 + eng["fast_ema"] * 0.85
         eng["slow_ema"] = buy_pressure * 0.05 + eng["slow_ema"] * 0.95
         obi_histogram = eng["fast_ema"] - eng["slow_ema"]
-        
-        # New: Smooth the Histogram to create a Signal Line
         eng["signal_line"] = obi_histogram * 0.20 + eng["signal_line"] * 0.80
-        
-        # MACD Difference (The actual noise-free signal trigger)
         macd_diff = obi_histogram - eng["signal_line"]
     
-    # Noise Threshold logic (Must cross Signal Line by at least 1.5% to trigger alert)
-    if macd_diff > 1.5 and eng["last_obi_state"] != "BULL":
-        eng["obi_history"].insert(0, f"🟢 {now_ist_str} - Solid Whale Buy Flow")
+    # SPOOF FILTER: Require momentum to hold > 2.0 for 3 consecutive fetches (~6 seconds)
+    if macd_diff > 2.0:
+        eng["bull_confirm_ticks"] += 1
+        eng["bear_confirm_ticks"] = 0
+    elif macd_diff < -2.0:
+        eng["bear_confirm_ticks"] += 1
+        eng["bull_confirm_ticks"] = 0
+    else:
+        eng["bull_confirm_ticks"] = 0
+        eng["bear_confirm_ticks"] = 0
+
+    # Only fire alert if the real whales stay in the book for > 6 seconds!
+    if eng["bull_confirm_ticks"] >= 3 and eng["last_obi_state"] != "BULL":
+        eng["obi_history"].insert(0, f"🟢 {now_ist_str} - Solid Whale Buy Flow (Spoof-Free)")
         eng["last_obi_state"] = "BULL"
-    elif macd_diff < -1.5 and eng["last_obi_state"] != "BEAR":
-        eng["obi_history"].insert(0, f"🔴 {now_ist_str} - Solid Whale Sell Flow")
+        eng["bull_confirm_ticks"] = 0 # Reset counter after firing
+    elif eng["bear_confirm_ticks"] >= 3 and eng["last_obi_state"] != "BEAR":
+        eng["obi_history"].insert(0, f"🔴 {now_ist_str} - Solid Whale Sell Flow (Spoof-Free)")
         eng["last_obi_state"] = "BEAR"
+        eng["bear_confirm_ticks"] = 0 # Reset counter after firing
 
     px_diff = px - eng["last_px"]
     eng["last_px"] = px
@@ -180,15 +196,15 @@ if l2_data:
     sig_class = ""
     new_master_sig = None
     
-    # Master Signal triggers when Sweep happens AND the Noise-Free OBI momentum confirms it
-    if eng["sweep_status"] == 1 and macd_diff > 0.5:
+    # Master Signal triggers when Sweep happens AND the OBI state is Solid
+    if eng["sweep_status"] == 1 and eng["last_obi_state"] == "BULL":
         signal_txt = f"🔥 MASTER BUY SIGNAL!<br><span style='font-size:16px;'>Liquidity Swept + OBI Confirmed @ ${px:,.1f}</span>"
         sig_class = "buy-sig"
         eng["master_history"].insert(0, f"🟢 {now_ist_str} - BUY @ ${px:,.1f}")
         eng["sweep_status"] = 0
         new_master_sig = "BUY"
         
-    elif eng["sweep_status"] == -1 and macd_diff < -0.5:
+    elif eng["sweep_status"] == -1 and eng["last_obi_state"] == "BEAR":
         signal_txt = f"🔥 MASTER SELL SIGNAL!<br><span style='font-size:16px;'>Liquidity Swept + OBI Confirmed @ ${px:,.1f}</span>"
         sig_class = "sell-sig"
         eng["master_history"].insert(0, f"🔴 {now_ist_str} - SELL @ ${px:,.1f}")
@@ -220,7 +236,7 @@ if l2_data:
     # RENDER DASHBOARD
     # ============================================================================
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PERSISTENT MANUAL TRADER (V1.7 NOISE-FREE) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PERSISTENT MANUAL TRADER (V1.8 SPOOF-PROOF) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
     
     c1, c2, c3, c4 = st.columns(4)
     
@@ -233,10 +249,15 @@ if l2_data:
         
     with c2:
         diff_col = "#22c55e" if macd_diff > 0 else "#ef4444"
+        
+        # Little dots to show the "spoof confirmation" progress
+        ticks_str = "🟢" * eng["bull_confirm_ticks"] if eng["bull_confirm_ticks"] > 0 else ("🔴" * eng["bear_confirm_ticks"])
+        if not ticks_str: ticks_str = "⚪"
+        
         st.markdown(f"""<div class='metric-box'>
-        <div style='color:#94a3b8; font-size:13px; font-weight:bold;'>📊 NOISE-FREE OBI MACD</div>
-        <div style='font-size:12px; color:#cbd5e1; margin-top:5px;'>Hist: {obi_histogram:+.1f} | Sig Line: {eng['signal_line']:+.1f}</div>
-        <div style='font-size:18px; font-weight:900; color:{diff_col}; margin-top:5px;'>Diff: {macd_diff:+.2f}%</div>
+        <div style='color:#94a3b8; font-size:13px; font-weight:bold;'>📊 SPOOF-PROOF MACD</div>
+        <div style='font-size:12px; color:#cbd5e1; margin-top:5px;'>Hold Ticks: {ticks_str}</div>
+        <div style='font-size:20px; font-weight:900; color:{diff_col}; margin-top:5px;'>Diff: {macd_diff:+.2f}%</div>
         </div>""", unsafe_allow_html=True)
         
     with c3:
@@ -301,7 +322,7 @@ if l2_data:
         st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Sweeps Yet</div>'}</div>", unsafe_allow_html=True)
 
     with h_col3:
-        st.markdown("<div style='color:#c084fc; font-size:13px; font-weight:bold; margin-bottom:5px;'>📊 Noise-Free OBI Shifts</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#c084fc; font-size:13px; font-weight:bold; margin-bottom:5px;'>📊 Spoof-Free OBI Shifts</div>", unsafe_allow_html=True)
         h_html = "".join([f"<div class='hist-item'>{h}</div>" for h in eng["obi_history"]])
         st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Shifts Yet</div>'}</div>", unsafe_allow_html=True)
 
