@@ -9,7 +9,7 @@ import hmac
 import hashlib
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Dr Devendra AI-Quantum Pro Terminal (V21)", layout="wide")
+st.set_page_config(page_title="Dr Devendra AI-Quantum Pro Terminal (V22)", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; }
@@ -57,23 +57,24 @@ USD_INR_RATE         = 85.0
 BROK_PER_QTY         = 82.38
 
 # ============================================================================
-# 🔒 V21 ENGINE SETTINGS: 15m DAILY VWAP FILTERED + PYRAMIDING
+# 🔒 V22 ENGINE SETTINGS: "FEARLESS SWING" (Weekly VWAP + Large Bricks)
 # ============================================================================
-FIXED_TF             = "15m"   
-FIXED_BASE_QTY       = 25      # 25 Lots Initial Entry
-FIXED_PYRAMID_QTY    = 25      # 25 Lots Added AFTER Stage-1 Safe Lock (Total 50 Lots for big run!)
-FIXED_DIVISOR        = 12.0    
+FIXED_TF             = "1h"    # 1h Timeframe for massive trends
+FIXED_BASE_QTY       = 25      # 25 Lots Initial
+FIXED_PYRAMID_QTY    = 25      # 25 Lots Pyramid
+FIXED_DIVISOR        = 10.0    # Mode 10 (Large Bricks ~285p) -> Eliminates tiny profits & chop!
 FIXED_ST_MULT        = 2.2     
 
-STAGE1_TRIG_UNITS    = 1.05    
-STAGE1_LOCK_UNITS    = 0.85    
-STAGE1_MIN_PTS_Q     = 210.0   
-STAGE2_TRIG_UNITS    = 1.85    
-STAGE2_FLOOR_UNITS   = 1.35    
+# "No Small Profits" Rule:
+STAGE1_TRIG_UNITS    = 1.50    # Trigger at +1.50 Bricks (Massive move required)
+STAGE1_LOCK_UNITS    = 1.20    # Lock +1.20 Bricks (Guaranteed Huge Net Profit before pyramiding!)
+STAGE1_MIN_PTS_Q     = 340.0   
+STAGE2_TRIG_UNITS    = 2.25    
+STAGE2_FLOOR_UNITS   = 1.65    
 CLOSE_TRAIL_UNITS    = 1.15    
 
-MAX_WAVE_STREAK      = 4
-MAX_DLINE_DIST       = 2.2
+MAX_WAVE_STREAK      = 3       # Re-entries limited to avoid late trend exhaustion
+MAX_DLINE_DIST       = 2.0
 MIN_FLOW_DOM         = 50.0
 
 ATR_PERIOD           = 5
@@ -174,8 +175,11 @@ def calc_daily_atr5():
     return rma[-2]
 
 # ============================================================================
-# STATEFUL BAR PROCESSOR (V21 MACRO VWAP PYRAMIDING ENGINE)
+# STATEFUL BAR PROCESSOR (V22 FEARLESS WEEKLY VWAP ENGINE)
 # ============================================================================
+def get_iso_week(dt):
+    return dt.isocalendar()[1]
+
 def process_closed_bar(eng, kline):
     bar_time_ms = int(kline[0])
     if bar_time_ms <= eng["last_bar_time"]: return
@@ -197,9 +201,10 @@ def process_closed_bar(eng, kline):
     s1_lock_pts_q = max(unit_size * STAGE1_LOCK_UNITS, STAGE1_MIN_PTS_Q)
     s1_trig_pts_q = max(unit_size * STAGE1_TRIG_UNITS, s1_lock_pts_q + 25.0)
 
-    # 📌 Calculate Daily VWAP
-    if bar_dt.day != eng["cur_day"]:
-        eng["cur_day"] = bar_dt.day
+    # 📌 Calculate WEEKLY VWAP (Resets every Monday)
+    current_week = get_iso_week(bar_dt)
+    if current_week != eng["cur_week"]:
+        eng["cur_week"] = current_week
         eng["cum_pv"] = ((h + l + c) / 3.0) * v
         eng["cum_v"] = v
     else:
@@ -315,22 +320,20 @@ def process_closed_bar(eng, kline):
     eng["vwap_js"].append({"time": t_sec_ist, "value": round(eng["vwap"], 1)})
 
     # ========================================================================
-    # V21 AUTO-EXIT WITH PYRAMIDING (SCALE-IN ONCE S1 IS SAFE)
+    # V22 AUTO-EXIT WITH PYRAMIDING (MASSIVE S1 LOCKS ONLY)
     # ========================================================================
     if eng["trade_dir"] != 0 and idx > eng["entry_bar"]:
         t_dir = eng["trade_dir"]; t_label = "LONG" if t_dir == 1 else "SHORT"; close_side = "sell" if t_dir == 1 else "buy"
         eng["max_fav_close"] = max(eng["max_fav_close"], c) if t_dir == 1 else min(eng["max_fav_close"], c)
 
-        # Stage-1 Hit -> Scale In (Pyramid) to 50 Lots total!
+        # Stage-1 Massive Lock Hit -> Scale In (Pyramid)
         if not eng["tp1_reached"] and ((h >= eng["tp1_price"]) if t_dir == 1 else (l <= eng["tp1_price"])):
             eng["tp1_reached"] = True; eng["wins"] += 1
             s1_sl = (eng["entry_price"] + s1_lock_pts_q) if t_dir == 1 else (eng["entry_price"] - s1_lock_pts_q)
             eng["stop_price"] = max(eng["stop_price"], s1_sl) if t_dir == 1 else min(eng["stop_price"], s1_sl)
             
-            # 🚀 Scale-In +25 Lots since trend is locked safe!
             eng["active_qty"] = base_qty + add_qty
-            cur_qty = eng["active_qty"]
-            brok_tot = BROK_PER_QTY * cur_qty
+            cur_qty = eng["active_qty"]; brok_tot = BROK_PER_QTY * cur_qty
             
             eng["markers_js"].append({"time": t_sec_ist, "position": "aboveBar" if t_dir == 1 else "belowBar", "color": "#facc15", "shape": "arrowUp", "text": f"📈 SCALE-IN (+{add_qty}L)"})
             place_delta_demo_order(eng, "buy" if t_dir == 1 else "sell", add_qty, tag="Pyramid Scale-In", is_exit=False)
@@ -387,7 +390,6 @@ def process_closed_bar(eng, kline):
             else:
                 if ((c <= eng["stop_price"]) if t_dir == 1 else (c >= eng["stop_price"])) or ((n_trend == -1) if t_dir == 1 else (n_trend == 1)):
                     exit_p = max(c, eng["stop_price"]) if t_dir == 1 else min(c, eng["stop_price"])
-                    
                     tot_pnl_base = s1_lock_pts_q * base_qty
                     run_pts_add = (exit_p - eng["tp1_price"]) if t_dir == 1 else (eng["tp1_price"] - exit_p)
                     tot_pnl_add = run_pts_add * add_qty
@@ -395,17 +397,16 @@ def process_closed_bar(eng, kline):
 
                     eng["gross_profit"] += tot_pnl; eng["total_brok"] += brok_tot
                     net_inr = pts_to_inr(tot_pnl - brok_tot)
-                    eng["markers_js"].append({"time": t_sec_ist, "position": "aboveBar" if t_dir == 1 else "belowBar", "color": "#4ade80", "shape": "circle", "text": f"✅ S1 LOCK (₹{net_inr:+,.0f})"})
-                    eng["trade_logs"].insert(0, {"time": bar_ist, "type": f"{t_label} ({cur_qty}L Pyramid)", "entry": eng["entry_price"], "exit": exit_p, "status": "✅ STAGE-1 PYRAMID LOCK", "pnl": f"+{s1_lock_pts_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#22c55e"})
+                    eng["markers_js"].append({"time": t_sec_ist, "position": "aboveBar" if t_dir == 1 else "belowBar", "color": "#4ade80", "shape": "circle", "text": f"✅ MASSIVE LOCK (₹{net_inr:+,.0f})"})
+                    eng["trade_logs"].insert(0, {"time": bar_ist, "type": f"{t_label} ({cur_qty}L Pyramid)", "entry": eng["entry_price"], "exit": exit_p, "status": "✅ MASSIVE STAGE-1 LOCK", "pnl": f"Avg +{s1_lock_pts_q:,.0f}p/L (Net ₹{net_inr:+,.0f})", "color": "#22c55e"})
                     eng["trade_logs"] = eng["trade_logs"][:50]; place_delta_demo_order(eng, close_side, cur_qty, tag="Lock Exit", is_exit=True); eng["trade_dir"] = 0
 
     # ========================================================================
-    # ENTRY SIGNALS WITH MACRO TREND FILTER (DAILY VWAP)
+    # ENTRY SIGNALS WITH MACRO TREND FILTER (WEEKLY VWAP)
     # ========================================================================
     ema21 = eng["ema21"]; vwap_live = eng["vwap"]; rsi14 = eng["rsi14"]
     q_dir = eng["q_dir"]; q_streak = eng["q_streak"]
 
-    # 📌 Macro Trend Check: Price must be on the right side of the Daily VWAP
     bull_macro_ok = c > vwap_live
     bear_macro_ok = c < vwap_live
 
@@ -425,10 +426,10 @@ def process_closed_bar(eng, kline):
         else: eng["pending_flip_sell"] = False
 
         eng["trade_dir"] = 1 if is_long else -1
-        eng["active_qty"] = base_qty  # Reset to Base 25 Lots
+        eng["active_qty"] = base_qty 
         eng["entry_bar"] = idx; eng["entry_price"] = c; eng["max_fav_close"] = c
         eng["tp1_reached"] = False; eng["tp2_reached"] = False
-        eng["entry_tag"] = "🔥 Q-Alpha (VWAP Sync)" if (trigger_flip_buy or trigger_flip_sell) else f"⚡ W#{q_streak} (VWAP Sync)"
+        eng["entry_tag"] = "🔥 Q-Alpha (Weekly Sync)" if (trigger_flip_buy or trigger_flip_sell) else f"⚡ W#{q_streak} (Weekly Sync)"
         eng["entry_time_str"] = bar_ist
 
         eng["locked_tp1_pts"] = s1_trig_pts_q
@@ -455,7 +456,7 @@ def init_locked_engine_once(eng):
     macro_range = calc_daily_atr5()
     eng["macro_range"] = macro_range; eng["unit_size"] = max(macro_range / float(FIXED_DIVISOR), MINTICK * 2.0)
     now_sec = int(time.time())
-    days_back = 25
+    days_back = 45 # 1h Timeframe
     eng["days_back"] = days_back
     anchor_start_ms = ((now_sec // 86400) * 86400 - (days_back * 86400)) * 1000
     klines = fetch_hl_klines_range(FIXED_TF, anchor_start_ms, now_sec * 1000)
@@ -474,11 +475,10 @@ def background_worker(eng, my_worker_id):
             if eng.get("initialized", False):
                 now_ts = time.time()
                 live_px = fetch_hl_live_mid_price()
-                if live_px and live_px > 0:
-                    eng["last_price"] = live_px
+                if live_px and live_px > 0: eng["last_price"] = live_px
                 
                 if now_ts - last_poll >= 4.0:
-                    klines = fetch_hl_klines_range(FIXED_TF, int(now_ts * 1000) - 8 * 900000, int(now_ts * 1000))
+                    klines = fetch_hl_klines_range(FIXED_TF, int(now_ts * 1000) - 8 * 3600000, int(now_ts * 1000))
                     if klines and len(klines) >= 2:
                         for b in klines[:-1]: process_closed_bar(eng, b)
                         eng["last_price"] = float(klines[-1][4])
@@ -491,8 +491,8 @@ def get_quantum_live_engine():
     worker_id = int(time.time() * 1000)
     eng = {
         "active_worker_id": worker_id, "initialized": False, "live_order_active": False, "delta_btc_product_id": 27, "delta_status": "🤖 Delta Live Algo: ACTIVE",
-        "macro_range": 2800.0, "unit_size": 250.0, "days_back": 25, "active_qty": FIXED_BASE_QTY, "bar_count": 0, "last_bar_time": 0, "prev_close": 0.0, "tr_sum": 0.0, "atr14": 15.0,
-        "ema21": 0.0, "vwap": 0.0, "cur_day": -1, "cum_pv": 0.0, "cum_v": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
+        "macro_range": 2800.0, "unit_size": 250.0, "days_back": 45, "active_qty": FIXED_BASE_QTY, "bar_count": 0, "last_bar_time": 0, "prev_close": 0.0, "tr_sum": 0.0, "atr14": 15.0,
+        "ema21": 0.0, "vwap": 0.0, "cur_week": -1, "cum_pv": 0.0, "cum_v": 0.0, "up_sum": 0.0, "dn_sum": 0.0, "rma_up": 0.0, "rma_dn": 0.0, "rsi14": 50.0,
         "g1": 0.0, "g2": 0.0, "buy_v1": 0.0, "buy_v2": 0.0, "sell_v1": 0.0, "sell_v2": 0.0, "buy_dom_pct": 50.0, "sell_dom_pct": 50.0,
         "q_top": 0.0, "q_bot": 0.0, "q_dir": 1, "q_streak": 1, "q_core": 0.0, "support_band": None, "resistance_band": None, "n_trend": 1, "n_line": 0.0,
         "pending_flip_buy": False, "pending_flip_sell": False, "trade_dir": 0, "entry_bar": -1, "entry_price": 0.0, "tp1_price": 0.0, "tp2_price": 0.0,
@@ -527,14 +527,14 @@ with r1_c4:
     if st.button("🔄 चार्ट रिफ्रेश करें"): st.rerun()
 
 st.markdown(f"""<div class="locked-bar">
-  <div class="locked-pill"><span>🔒 Filtered Setup</span><b>{FIXED_TF.upper()} + Daily VWAP Anchor</b></div>
+  <div class="locked-pill"><span>🔒 Fearless Setup</span><b>{FIXED_TF.upper()} + Weekly VWAP Anchor</b></div>
   <div class="locked-pill"><span>🔒 Pyramiding Strategy</span><b>Base 25L -> Adds 25L at S1</b></div>
-  <div class="locked-pill"><span>🔒 Matrix Grid</span><b>Mode {FIXED_DIVISOR:.0f} (Balanced)</b></div>
-  <div class="locked-pill"><span>🔒 Neural Shield</span><b>Core {FIXED_ST_MULT}</b></div>
+  <div class="locked-pill"><span>🔒 Matrix Grid</span><b>Mode {FIXED_DIVISOR:.0f} (Large Bricks)</b></div>
+  <div class="locked-pill"><span>🔒 No Small Profits</span><b>S1 Lock > ₹500 Net Guaranteed!</b></div>
 </div>""", unsafe_allow_html=True)
 
 if not eng.get("initialized", False):
-    st.warning("⏳ Dr Devendra AI-Quantum Pro V21 (VWAP Filtered): लाइव चार्ट सिंक हो रहा है..."); st.stop()
+    st.warning("⏳ Dr Devendra AI-Quantum Pro V22 (Fearless Swing): लाइव चार्ट सिंक हो रहा है..."); st.stop()
 
 tot_tr = eng["wins"] + eng["losses"]
 wr_pct = (eng["wins"] / tot_tr * 100.0) if tot_tr > 0 else 0.0
@@ -566,19 +566,19 @@ chart_html = f"""<!DOCTYPE html>
 <div class="chart-wrapper">
   <div class="top-hud">
     <div style="display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;">
-      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ V21 VWAP PYRAMIDING (Max {FIXED_BASE_QTY + FIXED_PYRAMID_QTY}L)</span>
+      <span style="color:#38bdf8; font-weight:800; font-size:13px;">⚡ V22 FEARLESS SWING (Max {FIXED_BASE_QTY + FIXED_PYRAMID_QTY}L)</span>
       <span class="live-px">${eng['last_price']:,.2f}</span>
       <span class="badge">{'BULLISH ▲' if eng['n_trend']==1 else 'BEARISH ▼'}</span>
-      <span style="font-size:12px; color:#facc15; font-weight:700;">🧬 Q-Grid: {eng['unit_size']:,.1f}p | VWAP Anchor: {eng['vwap_js'][-1]['value']:,.1f}</span>
+      <span style="font-size:12px; color:#facc15; font-weight:700;">🧬 Q-Grid: {eng['unit_size']:,.1f}p | Weekly VWAP Anchor: {eng['vwap_js'][-1]['value']:,.1f}</span>
     </div>
     <div><button class="c-btn" onclick="chart.timeScale().scrollToRealTime()">⏩ Latest Candle</button> <button class="c-btn" onclick="chart.timeScale().fitContent()">🔍 Fit All Signals</button></div>
   </div>
 
   <div class="legend-bar">
-    <div><span class="dot" style="background:#facc15;"></span> Q-Core</div>
+    <div><span class="dot" style="background:#facc15;"></span> Q-Core (Large Bricks)</div>
     <div><span class="dot" style="background:#00e676;"></span><span class="dot" style="background:#ff5252;"></span> Neural Shield</div>
     <div><span class="dot" style="background:#38bdf8;"></span> D-Line</div>
-    <div><span class="dot" style="background:#d946ef; width:20px; height:2px;"></span> Daily VWAP Anchor</div>
+    <div><span class="dot" style="background:#d946ef; width:20px; height:2px;"></span> Weekly VWAP</div>
     <div style="margin-left:auto; color:#e2e8f0; font-weight:700;">
       🏆 Win Rate: <span style="color:#00e676;font-size:14px;">{wr_pct:.1f}%</span> ({eng['wins']}W/{eng['losses']}L) | 💰 Net Profit (After Fee): <span style="color:#4ade80;font-size:15px;">₹{net_inr_val:+,.0f}</span>
     </div>
@@ -600,7 +600,7 @@ cSeries.setMarkers({json.dumps(eng['markers_js'])});
 chart.addLineSeries({{ color: '#facc15', lineWidth: 2, lineType: LightweightCharts.LineType.WithSteps }}).setData({json.dumps(eng['qcore_js'])});
 chart.addLineSeries({{ lineWidth: 3, lineType: LightweightCharts.LineType.WithSteps }}).setData({json.dumps(eng['nline_js'])});
 chart.addLineSeries({{ color: '#38bdf8', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed }}).setData({json.dumps(eng['dline_js'])});
-chart.addLineSeries({{ color: '#d946ef', lineWidth: 2, title: 'Daily VWAP' }}).setData({json.dumps(eng['vwap_js'])});
+chart.addLineSeries({{ color: '#d946ef', lineWidth: 2, title: 'Weekly VWAP' }}).setData({json.dumps(eng['vwap_js'])});
 
 window.addEventListener('resize', () => chart.applyOptions({{ width: document.getElementById('tv-chart').clientWidth }}));
 </script>
@@ -618,9 +618,9 @@ rows_html = "".join([f"""<tr style="border-bottom:1px solid #334155; font-size:1
 
 st.markdown(f"""<div class="t-grid">
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155;">
-  <div style="font-size:14px; font-weight:bold; color:#38bdf8; margin-bottom:10px;">📊 V21 VWAP PYRAMIDING BACKTEST (15M • UP TO 50 LOTS • {eng['days_back']} DAYS)</div>
+  <div style="font-size:14px; font-weight:bold; color:#38bdf8; margin-bottom:10px;">📊 V22 "FEARLESS SWING" BACKTEST (1H • UP TO 50 LOTS • {eng['days_back']} DAYS)</div>
   <table style="width:100%; border-collapse:collapse; font-size:13px;">
-    <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Pyramiding Strategy</td><td style="padding:7px; color:#38bdf8; font-weight:bold; text-align:right;">Base {FIXED_BASE_QTY} Lots -> Adds {FIXED_PYRAMID_QTY} Lots at S1 Lock!</td></tr>
+    <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Pyramiding Strategy</td><td style="padding:7px; color:#38bdf8; font-weight:bold; text-align:right;">Base {FIXED_BASE_QTY}L -> Adds {FIXED_PYRAMID_QTY}L at S1!</td></tr>
     <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Total Trades (W / L)</td><td style="padding:7px; color:#ffffff; font-weight:bold; text-align:right;">{tot_tr} Trades ({eng['wins']}W / {eng['losses']}L)</td></tr>
     <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Win Rate %</td><td style="padding:7px; color:#00e676; font-weight:800; font-size:15px; text-align:right;">🏆 {wr_pct:.1f}%</td></tr>
     <tr style="border-bottom:1px solid #334155;"><td style="padding:7px; color:#94a3b8;">Gross Profit (Dynamic Lots)</td><td style="padding:7px; color:#4ade80; font-weight:bold; text-align:right;">+{eng['gross_profit']:,.0f} pts (₹{pts_to_inr(eng['gross_profit']):+,.0f})</td></tr>
@@ -630,7 +630,7 @@ st.markdown(f"""<div class="t-grid">
   </table>
 </div>
 <div style="background:#1e293b; border-radius:12px; padding:14px; border:1px solid #334155;">
-  <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:10px;">📜 V21 VWAP Pyramiding Scale-In ट्रेड इतिहास लॉग</div>
+  <div style="font-size:14px; font-weight:bold; color:#f8fafc; margin-bottom:10px;">📜 V22 Fearless Swing (No Small Profits) ट्रेड इतिहास लॉग</div>
   <div style="max-height:260px; overflow-y:auto;">
     <table style="width:100%; border-collapse:collapse;">
       <thead><tr style="border-bottom:1px solid #475569; font-size:11px; color:#94a3b8; text-align:left;"><th style="padding:6px;">समय (IST)</th><th style="padding:6px;">सिग्नल</th><th style="padding:6px;">Entry → Exit</th><th style="padding:6px;">स्टेटस</th><th style="padding:6px; text-align:right;">Net PnL (₹)</th></tr></thead>
