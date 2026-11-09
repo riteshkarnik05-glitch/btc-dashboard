@@ -4,7 +4,7 @@ import time
 import math
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - Smart Tracker v1.11", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - Clean Ledger v1.12", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -16,11 +16,11 @@ st.markdown("""<style>
 .bar-fill { background: #22c55e; height: 100%; transition: width 0.3s ease; }
 div.stButton > button { background-color: #334155 !important; color: #f8fafc !important; border: 1px solid #475569 !important; border-radius: 6px !important; padding: 2px 10px !important; }
 div.stButton > button:hover { background-color: #ef4444 !important; }
-.history-box { background:#1e293b; padding:10px; border-radius:8px; border:1px solid #334155; height: 260px; overflow-y: auto;}
-.hist-item { font-size: 12px; padding: 6px 8px; border-bottom: 1px solid #334155; color: #cbd5e1; }
-.hist-tracking { border-left: 3px solid #38bdf8; background: #0f172a; }
-.hist-closed-win { border-left: 3px solid #22c55e; }
-.hist-closed-loss { border-left: 3px solid #ef4444; }
+.history-box { background:#1e293b; padding:10px; border-radius:8px; border:1px solid #334155; height: 300px; overflow-y: auto;}
+.hist-item { font-size: 13px; padding: 8px 10px; border-bottom: 1px solid #334155; color: #cbd5e1; margin-bottom:4px; border-radius:4px;}
+.hist-tracking { border-left: 4px solid #38bdf8; background: #0f172a; }
+.hist-closed-win { border-left: 4px solid #22c55e; background: #064e3b20; }
+.hist-closed-loss { border-left: 4px solid #ef4444; background: #7f1d1d20; }
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
@@ -72,7 +72,7 @@ def get_ist_time_str():
     return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
 # ============================================================================
-# PERSISTENT MEMORY ENGINE (V1.11 FIXED PNL)
+# PERSISTENT MEMORY ENGINE (V1.12 CLEAN LEDGER)
 # ============================================================================
 @st.cache_resource
 def get_persistent_engine():
@@ -85,9 +85,9 @@ def get_persistent_engine():
         "last_cvd": 0.0, "cvd_trend": 0, 
         "last_kline_fetch": 0.0,
         "sweep_status": 0, "abs_status": 0,
-        "sweep_history": [], "obi_history": [],
         
-        "master_history_objs": [], 
+        "active_trade_obj": None,      # Holds the currently tracking trade
+        "closed_trades_ledger": [],    # Holds ONLY fully closed trades
         "track_signal": None, 
         "track_entry_px": 0.0, 
         "track_max_fav": 0.0, 
@@ -147,10 +147,8 @@ if l2_data:
         eng["bull_confirm_ticks"] = eng["bear_confirm_ticks"] = 0
 
     if eng["bull_confirm_ticks"] >= 3 and eng["last_obi_state"] != "BULL":
-        eng["obi_history"].insert(0, f"🟢 {now_ist_str} - Solid Buy Flow")
         eng["last_obi_state"] = "BULL"; eng["bull_confirm_ticks"] = 0
     elif eng["bear_confirm_ticks"] >= 3 and eng["last_obi_state"] != "BEAR":
-        eng["obi_history"].insert(0, f"🔴 {now_ist_str} - Solid Sell Flow")
         eng["last_obi_state"] = "BEAR"; eng["bear_confirm_ticks"] = 0
 
     px_diff = px - eng["last_px"]; eng["last_px"] = px
@@ -165,11 +163,9 @@ if l2_data:
     
     if sh > 0 and sl > 0:
         if px < sl: eng["sweep_status"] = -2
-        elif eng["sweep_status"] == -2 and px > sl + 5.0: 
-            eng["sweep_status"] = 1; eng["sweep_history"].insert(0, f"🟢 {now_ist_str} - Bull Sweep @ ${px:,.1f}")
+        elif eng["sweep_status"] == -2 and px > sl + 5.0: eng["sweep_status"] = 1
         elif px > sh: eng["sweep_status"] = 2
-        elif eng["sweep_status"] == 2 and px < sh - 5.0: 
-            eng["sweep_status"] = -1; eng["sweep_history"].insert(0, f"🔴 {now_ist_str} - Bear Sweep @ ${px:,.1f}")
+        elif eng["sweep_status"] == 2 and px < sh - 5.0: eng["sweep_status"] = -1
             
         if eng["sweep_status"] == 1 and px > sl + 150.0: eng["sweep_status"] = 0
         if eng["sweep_status"] == -1 and px < sh - 150.0: eng["sweep_status"] = 0
@@ -186,22 +182,27 @@ if l2_data:
     new_master_sig = None
     
     if eng["sweep_status"] == 1 and eng["abs_status"] == 1 and eng["last_obi_state"] == "BULL":
-        signal_txt = f"🔥 3X SNIPER BUY! @ ${px:,.1f}"
-        sig_class = "buy-sig"
         eng["sweep_status"] = 0; new_master_sig = "BUY"
     elif eng["sweep_status"] == -1 and eng["abs_status"] == -1 and eng["last_obi_state"] == "BEAR":
-        signal_txt = f"🔥 3X SNIPER SELL! @ ${px:,.1f}"
-        sig_class = "sell-sig"
         eng["sweep_status"] = 0; new_master_sig = "SELL"
 
-    # --- SMART POST-SIGNAL TRAILING TRACKER ---
-    # 1. Close existing tracker if a NEW opposite signal comes
+    # --- SINGLE DIRECTION LOCK LOGIC ---
+    # Ignore the new signal if we are ALREADY tracking a trade in the SAME direction!
+    if new_master_sig and eng["track_status"] == "Tracking" and eng["track_signal"] == new_master_sig:
+        new_master_sig = None # Ignored!
+
+    # --- POST-SIGNAL TRAILING TRACKER ---
+    # 1. Close existing tracker if an OPPOSITE signal comes
     if new_master_sig and eng["track_signal"] and eng["track_signal"] != new_master_sig and eng["track_status"] == "Tracking":
-        if len(eng["master_history_objs"]) > 0:
-            final_pnl = eng["master_history_objs"][0]["live_pnl"]
+        if eng["active_trade_obj"]:
+            final_pnl = eng["active_trade_obj"]["live_pnl"]
             eng["track_status"] = f"Closed (Opposite Signal)"
-            eng["master_history_objs"][0]["status"] = eng["track_status"]
-            eng["master_history_objs"][0]["final_pnl"] = final_pnl
+            eng["active_trade_obj"]["status"] = eng["track_status"]
+            eng["active_trade_obj"]["final_pnl"] = final_pnl
+            eng["active_trade_obj"]["close_time"] = now_ist_str
+            # Move to Closed Ledger
+            eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"])
+            eng["active_trade_obj"] = None
 
     # 2. Start new tracker
     if new_master_sig:
@@ -210,14 +211,13 @@ if l2_data:
         eng["track_max_fav"] = px
         eng["track_status"] = "Tracking"
         
-        trade_obj = {
-            "time": now_ist_str, "type": new_master_sig, "entry": px,
+        eng["active_trade_obj"] = {
+            "open_time": now_ist_str, "close_time": "", "type": new_master_sig, "entry": px,
             "status": "Tracking", "max_pnl": 0.0, "live_pnl": 0.0, "final_pnl": 0.0
         }
-        eng["master_history_objs"].insert(0, trade_obj)
 
     # 3. Process Live Tracking & Trailing SL logic (300 points)
-    if eng["track_status"] == "Tracking" and eng["track_signal"] and len(eng["master_history_objs"]) > 0:
+    if eng["track_status"] == "Tracking" and eng["track_signal"] and eng["active_trade_obj"]:
         t_type = eng["track_signal"]
         t_entry = eng["track_entry_px"]
         
@@ -233,8 +233,11 @@ if l2_data:
                 if max_pnl < 10.0: sts_text = "🛑 Hard SL Hit (-300p)"
                 else: sts_text = f"✅ Trailing Locked [Peak: +{max_pnl:,.0f}p]"
                 
-                eng["master_history_objs"][0]["status"] = sts_text
-                eng["master_history_objs"][0]["final_pnl"] = final_pnl
+                eng["active_trade_obj"]["status"] = sts_text
+                eng["active_trade_obj"]["final_pnl"] = final_pnl
+                eng["active_trade_obj"]["close_time"] = now_ist_str
+                eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"])
+                eng["active_trade_obj"] = None
                 
         elif t_type == "SELL":
             live_pnl = t_entry - px
@@ -248,22 +251,23 @@ if l2_data:
                 if max_pnl < 10.0: sts_text = "🛑 Hard SL Hit (-300p)"
                 else: sts_text = f"✅ Trailing Locked [Peak: +{max_pnl:,.0f}p]"
                 
-                eng["master_history_objs"][0]["status"] = sts_text
-                eng["master_history_objs"][0]["final_pnl"] = final_pnl
+                eng["active_trade_obj"]["status"] = sts_text
+                eng["active_trade_obj"]["final_pnl"] = final_pnl
+                eng["active_trade_obj"]["close_time"] = now_ist_str
+                eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"])
+                eng["active_trade_obj"] = None
 
-        if eng["track_status"] == "Tracking":
-            eng["master_history_objs"][0]["live_pnl"] = live_pnl
-            eng["master_history_objs"][0]["max_pnl"] = max_pnl
+        if eng["track_status"] == "Tracking" and eng["active_trade_obj"]:
+            eng["active_trade_obj"]["live_pnl"] = live_pnl
+            eng["active_trade_obj"]["max_pnl"] = max_pnl
 
-    eng["master_history_objs"] = eng["master_history_objs"][:10]
-    eng["sweep_history"] = eng["sweep_history"][:15]
-    eng["obi_history"] = eng["obi_history"][:15]
+    eng["closed_trades_ledger"] = eng["closed_trades_ledger"][:20]
 
     # ============================================================================
     # RENDER DASHBOARD
     # ============================================================================
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ 3X SNIPER MANUAL TRADER (V1.11) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ 3X SNIPER MANUAL TRADER (V1.12 CLEAN LEDGER) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
     
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -319,54 +323,53 @@ if l2_data:
         </div>""", unsafe_allow_html=True)
         
     with r2_c2:
-        if eng["track_status"] == "Tracking" and eng["track_signal"]:
+        if eng["track_status"] == "Tracking" and eng["active_trade_obj"]:
             trk_col = "#22c55e" if eng["track_signal"] == "BUY" else "#ef4444"
-            act_obj = eng["master_history_objs"][0]
-            live_p = act_obj["live_pnl"]
-            max_p = act_obj["max_pnl"]
+            live_p = eng["active_trade_obj"]["live_pnl"]
+            max_p = eng["active_trade_obj"]["max_pnl"]
             live_col = "#4ade80" if live_p >= 0 else "#f87171"
             
             st.markdown(f"""<div class='signal-box' style='border-color:{trk_col}; background:#0f172a; flex-direction:row; justify-content:space-around;'>
             <div style='text-align:left;'>
-                <div style='font-size:14px; color:#94a3b8; margin-bottom:5px;'>Active Post-Signal Tracker</div>
-                <div style='font-size:18px; color:#ffffff; font-weight:bold;'>{eng['track_signal']} @ ${eng['track_entry_px']:,.1f}</div>
+                <div style='font-size:14px; color:#94a3b8; margin-bottom:5px;'>Active Trade Tracker</div>
+                <div style='font-size:20px; color:#ffffff; font-weight:bold;'>{eng['track_signal']} @ ${eng['track_entry_px']:,.1f}</div>
                 <div style='font-size:13px; color:#facc15; margin-top:5px;'>300pt Trailing SL Active</div>
             </div>
             <div style='text-align:right; border-left:1px solid #334155; padding-left:20px;'>
-                <div style='font-size:14px; color:#94a3b8;'>Live PnL: <b style='color:{live_col}; font-size:24px;'>{live_p:+.1f}p</b></div>
+                <div style='font-size:14px; color:#94a3b8;'>Live PnL: <b style='color:{live_col}; font-size:26px;'>{live_p:+.1f}p</b></div>
                 <div style='font-size:14px; color:#cbd5e1; margin-top:8px;'>Max Favorable: <b style='color:#38bdf8;'>+{max_p:,.1f}p</b></div>
             </div>
             </div>""", unsafe_allow_html=True)
         else:
-            st.markdown(f"<div class='signal-box {sig_class}'>{signal_txt}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='signal-box' style='border-color:#475569; color:#94a3b8;'>{signal_txt}</div>", unsafe_allow_html=True)
 
-    st.markdown("<div style='margin-top:20px; margin-bottom:8px; font-weight:bold; color:#f8fafc; font-size:15px;'>📜 Smart Trackers History</div>", unsafe_allow_html=True)
-    h_col1, h_col2, h_col3 = st.columns([0.4, 0.3, 0.3])
+    st.markdown("<div style='margin-top:20px; margin-bottom:8px; font-weight:bold; color:#f8fafc; font-size:15px;'>📜 Smart Trade Logs</div>", unsafe_allow_html=True)
+    h_col1, h_col2 = st.columns([0.4, 0.6])
     
     with h_col1:
-        st.markdown("<div style='color:#38bdf8; font-size:13px; font-weight:bold; margin-bottom:5px;'>🔥 3X Master Signals (Smart History)</div>", unsafe_allow_html=True)
-        h_html = ""
-        for h in eng["master_history_objs"]:
+        st.markdown("<div style='color:#38bdf8; font-size:13px; font-weight:bold; margin-bottom:5px;'>🔥 Live Active Trade</div>", unsafe_allow_html=True)
+        if eng["active_trade_obj"]:
+            h = eng["active_trade_obj"]
             h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"
-            if h["status"] == "Tracking":
-                live_col = "#4ade80" if h["live_pnl"] >= 0 else "#f87171"
-                h_html += f"<div class='hist-item hist-tracking'><b>{h['time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#facc15;'>Tracking...</span> Live: <span style='color:{live_col};'>{h['live_pnl']:+.1f}p</span> | Max: +{h['max_pnl']:,.1f}p</div>"
-            else:
-                pnl_col = "#22c55e" if h["final_pnl"] >= 0 else "#ef4444"
-                border_cls = "hist-closed-win" if h["final_pnl"] > 0 else "hist-closed-loss"
-                h_html += f"<div class='hist-item {border_cls}'><b>{h['time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#94a3b8;'>{h['status']}</span> <b style='color:{pnl_col};'>({h['final_pnl']:+.1f}p)</b></div>"
-        
-        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Signals Yet</div>'}</div>", unsafe_allow_html=True)
+            live_col = "#4ade80" if h["live_pnl"] >= 0 else "#f87171"
+            h_html = f"<div class='hist-item hist-tracking'><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#facc15;'>Tracking...</span><br>Live: <b style='color:{live_col}; font-size:15px;'>{h['live_pnl']:+.1f}p</b> | Max: +{h['max_pnl']:,.1f}p</div>"
+        else:
+            h_html = "<div class='hist-item' style='color:#64748b; text-align:center; padding-top:40px;'>No Active Trade</div>"
+        st.markdown(f"<div class='history-box'>{h_html}</div>", unsafe_allow_html=True)
 
     with h_col2:
-        st.markdown("<div style='color:#facc15; font-size:13px; font-weight:bold; margin-bottom:5px;'>🎯 Liquidity Sweeps</div>", unsafe_allow_html=True)
-        h_html = "".join([f"<div class='hist-item'>{h}</div>" for h in eng["sweep_history"]])
-        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Sweeps Yet</div>'}</div>", unsafe_allow_html=True)
-
-    with h_col3:
-        st.markdown("<div style='color:#c084fc; font-size:13px; font-weight:bold; margin-bottom:5px;'>📊 Spoof-Free OBI Shifts</div>", unsafe_allow_html=True)
-        h_html = "".join([f"<div class='hist-item'>{h}</div>" for h in eng["obi_history"]])
-        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Shifts Yet</div>'}</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#facc15; font-size:13px; font-weight:bold; margin-bottom:5px;'>📓 Closed Trades Ledger</div>", unsafe_allow_html=True)
+        h_html = ""
+        for h in eng["closed_trades_ledger"]:
+            h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"
+            pnl_col = "#22c55e" if h["final_pnl"] >= 0 else "#ef4444"
+            border_cls = "hist-closed-win" if h["final_pnl"] > 0 else "hist-closed-loss"
+            h_html += f"""<div class='hist-item {border_cls}' style='display:flex; justify-content:space-between; align-items:center;'>
+                <div><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#94a3b8; font-size:11.5px;'>{h['status']} (Closed: {h['close_time']})</span></div>
+                <div style='font-size:16px; font-weight:bold; color:{pnl_col};'>{h['final_pnl']:+.1f}p</div>
+            </div>"""
+        
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:40px;\">No Closed Trades Yet</div>'}</div>", unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
