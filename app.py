@@ -1,9 +1,9 @@
 import streamlit as st
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - L2 Engine v1.2", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - L2 Engine v1.3", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -45,10 +45,13 @@ def fetch_l2_orderbook():
     except: pass
     return None
 
+# Helper Function: Get Current IST Time string (AM/PM)
+def get_ist_time_str():
+    return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
+
 # ============================================================================
 # ROBUST STATE & MEMORY (THE EMA & SPREAD ENGINE)
 # ============================================================================
-# अगर मेमोरी नहीं है, या पुरानी मेमोरी में नए फीचर्स (max_spread) नहीं हैं, तो पूरी मेमोरी को रिफ्रेश करें
 if "engine_state" not in st.session_state or "max_spread" not in st.session_state.engine_state:
     st.session_state.engine_state = {
         "fast_ema": 50.0,  
@@ -79,11 +82,12 @@ if l2_data:
     px = l2_data["mid_px"]
     buy_pressure = l2_data["bid_pct"]
     current_spread = l2_data["spread"]
+    now_ist_str = get_ist_time_str()
     
-    # Update Max Spread Record
+    # Update Max Spread Record (With IST Time)
     if current_spread > eng["max_spread"]:
         eng["max_spread"] = current_spread
-        eng["max_spread_time"] = datetime.now().strftime('%H:%M:%S')
+        eng["max_spread_time"] = now_ist_str
 
     # 1. Update OBI MACD (Fast vs Slow Memory)
     if eng["fast_ema"] == 50.0:
@@ -114,12 +118,12 @@ if l2_data:
     if eng["spike_active"] == 1 and obi_histogram > 1.5:
         signal_txt = f"🟢 BUY SIGNAL! (Whale Bid Wall Trap @ ${px:,.1f})"
         sig_class = "buy-sig"
-        eng["history"].insert(0, f"{datetime.now().strftime('%H:%M:%S')} - BUY (Spike + OBI Div) @ ${px:,.1f} | Spread: ${current_spread:.1f}")
+        eng["history"].insert(0, f"{now_ist_str} - BUY (Spike + OBI Div) @ ${px:,.1f} | Spread: ${current_spread:.1f}")
         
     elif eng["spike_active"] == -1 and obi_histogram < -1.5:
         signal_txt = f"🔴 SELL SIGNAL! (Whale Ask Wall Trap @ ${px:,.1f})"
         sig_class = "sell-sig"
-        eng["history"].insert(0, f"{datetime.now().strftime('%H:%M:%S')} - SELL (Spike + OBI Div) @ ${px:,.1f} | Spread: ${current_spread:.1f}")
+        eng["history"].insert(0, f"{now_ist_str} - SELL (Spike + OBI Div) @ ${px:,.1f} | Spread: ${current_spread:.1f}")
 
     eng["history"] = eng["history"][:5]
 
