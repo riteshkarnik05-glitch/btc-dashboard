@@ -3,7 +3,7 @@ import requests
 import time
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - Master Target Tracker v1.6", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - Noise-Free Engine v1.7", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -66,13 +66,14 @@ def get_ist_time_str():
     return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
 # ============================================================================
-# PERSISTENT MEMORY ENGINE
+# PERSISTENT MEMORY ENGINE (V1.7 NOISE-FREE)
 # ============================================================================
 @st.cache_resource
 def get_persistent_engine():
     return {
         "fast_ema": 50.0,  
-        "slow_ema": 50.0,  
+        "slow_ema": 50.0,
+        "signal_line": 0.0,    # New: Signal Line Memory
         "last_px": 0.0,
         "spike_active": 0, 
         "max_spread": 0.0,     
@@ -81,15 +82,14 @@ def get_persistent_engine():
         "swing_low": 0.0,
         "last_kline_fetch": 0.0,
         "sweep_status": 0,
-        # Separate Histories
         "master_history": [],
         "sweep_history": [],
         "obi_history": [],
-        # Post-Signal Tracker
-        "track_signal": None,  # "BUY" or "SELL"
+        "track_signal": None,
         "track_entry_px": 0.0,
         "track_max_fav": 0.0,
-        "track_status": "Idle" # "Tracking", "Target 300p Hit!", "Closed"
+        "track_status": "Idle",
+        "last_obi_state": "NONE"
     }
 
 eng = get_persistent_engine()
@@ -124,24 +124,31 @@ if l2_data:
         eng["max_spread"] = current_spread
         eng["max_spread_time"] = now_ist_str
 
-    # --- ENGINE 1: OBI MACD ---
+    # --- ENGINE 1: NOISE-FREE OBI MACD ---
     if eng["fast_ema"] == 50.0:
         eng["fast_ema"] = buy_pressure
         eng["slow_ema"] = buy_pressure
+        eng["signal_line"] = 0.0
         eng["last_px"] = px
         obi_histogram = 0.0
+        macd_diff = 0.0
     else:
         eng["fast_ema"] = buy_pressure * 0.30 + eng["fast_ema"] * 0.70
         eng["slow_ema"] = buy_pressure * 0.05 + eng["slow_ema"] * 0.95
+        obi_histogram = eng["fast_ema"] - eng["slow_ema"]
         
-    obi_histogram = eng["fast_ema"] - eng["slow_ema"]
+        # New: Smooth the Histogram to create a Signal Line
+        eng["signal_line"] = obi_histogram * 0.20 + eng["signal_line"] * 0.80
+        
+        # MACD Difference (The actual noise-free signal trigger)
+        macd_diff = obi_histogram - eng["signal_line"]
     
-    # Track Individual OBI Shifts
-    if obi_histogram > 1.5 and eng.get("last_obi_state", "") != "BULL":
-        eng["obi_history"].insert(0, f"🟢 {now_ist_str} - Buyers Dominating")
+    # Noise Threshold logic (Must cross Signal Line by at least 1.5% to trigger alert)
+    if macd_diff > 1.5 and eng["last_obi_state"] != "BULL":
+        eng["obi_history"].insert(0, f"🟢 {now_ist_str} - Solid Whale Buy Flow")
         eng["last_obi_state"] = "BULL"
-    elif obi_histogram < -1.5 and eng.get("last_obi_state", "") != "BEAR":
-        eng["obi_history"].insert(0, f"🔴 {now_ist_str} - Sellers Dominating")
+    elif macd_diff < -1.5 and eng["last_obi_state"] != "BEAR":
+        eng["obi_history"].insert(0, f"🔴 {now_ist_str} - Solid Whale Sell Flow")
         eng["last_obi_state"] = "BEAR"
 
     px_diff = px - eng["last_px"]
@@ -159,11 +166,11 @@ if l2_data:
         if px < sl: eng["sweep_status"] = -2
         elif eng["sweep_status"] == -2 and px > sl + 5.0: 
             eng["sweep_status"] = 1
-            eng["sweep_history"].insert(0, f"🟢 {now_ist_str} - Bullish Sweep @ ${px:,.1f}")
+            eng["sweep_history"].insert(0, f"🟢 {now_ist_str} - Bullish Sweep Trap @ ${px:,.1f}")
         elif px > sh: eng["sweep_status"] = 2
         elif eng["sweep_status"] == 2 and px < sh - 5.0: 
             eng["sweep_status"] = -1
-            eng["sweep_history"].insert(0, f"🔴 {now_ist_str} - Bearish Sweep @ ${px:,.1f}")
+            eng["sweep_history"].insert(0, f"🔴 {now_ist_str} - Bearish Sweep Trap @ ${px:,.1f}")
             
         if eng["sweep_status"] == 1 and px > sl + 150.0: eng["sweep_status"] = 0
         if eng["sweep_status"] == -1 and px < sh - 150.0: eng["sweep_status"] = 0
@@ -173,15 +180,16 @@ if l2_data:
     sig_class = ""
     new_master_sig = None
     
-    if eng["sweep_status"] == 1 and obi_histogram > 1.5:
-        signal_txt = f"🔥 MASTER BUY SIGNAL!<br><span style='font-size:16px;'>Liquidity Swept + OBI Trap @ ${px:,.1f}</span>"
+    # Master Signal triggers when Sweep happens AND the Noise-Free OBI momentum confirms it
+    if eng["sweep_status"] == 1 and macd_diff > 0.5:
+        signal_txt = f"🔥 MASTER BUY SIGNAL!<br><span style='font-size:16px;'>Liquidity Swept + OBI Confirmed @ ${px:,.1f}</span>"
         sig_class = "buy-sig"
         eng["master_history"].insert(0, f"🟢 {now_ist_str} - BUY @ ${px:,.1f}")
         eng["sweep_status"] = 0
         new_master_sig = "BUY"
         
-    elif eng["sweep_status"] == -1 and obi_histogram < -1.5:
-        signal_txt = f"🔥 MASTER SELL SIGNAL!<br><span style='font-size:16px;'>Liquidity Swept + OBI Trap @ ${px:,.1f}</span>"
+    elif eng["sweep_status"] == -1 and macd_diff < -0.5:
+        signal_txt = f"🔥 MASTER SELL SIGNAL!<br><span style='font-size:16px;'>Liquidity Swept + OBI Confirmed @ ${px:,.1f}</span>"
         sig_class = "sell-sig"
         eng["master_history"].insert(0, f"🔴 {now_ist_str} - SELL @ ${px:,.1f}")
         eng["sweep_status"] = 0
@@ -204,7 +212,6 @@ if l2_data:
             if (eng["track_entry_px"] - eng["track_max_fav"]) >= 300.0:
                 eng["track_status"] = "🎯 Target 300p Hit!"
 
-    # Trim histories
     eng["master_history"] = eng["master_history"][:10]
     eng["sweep_history"] = eng["sweep_history"][:10]
     eng["obi_history"] = eng["obi_history"][:10]
@@ -213,7 +220,7 @@ if l2_data:
     # RENDER DASHBOARD
     # ============================================================================
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PERSISTENT MANUAL TRADER (L2 + SWEEP) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PERSISTENT MANUAL TRADER (V1.7 NOISE-FREE) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
     
     c1, c2, c3, c4 = st.columns(4)
     
@@ -225,11 +232,11 @@ if l2_data:
         </div>""", unsafe_allow_html=True)
         
     with c2:
-        hist_col = "#22c55e" if obi_histogram > 0 else "#ef4444"
+        diff_col = "#22c55e" if macd_diff > 0 else "#ef4444"
         st.markdown(f"""<div class='metric-box'>
-        <div style='color:#94a3b8; font-size:13px; font-weight:bold;'>📊 OBI MACD (MOMENTUM)</div>
-        <div style='font-size:12px; color:#cbd5e1; margin-top:5px;'>Fast {eng['fast_ema']:.1f} | Slow {eng['slow_ema']:.1f}</div>
-        <div style='font-size:20px; font-weight:900; color:{hist_col}; margin-top:5px;'>Hist: {obi_histogram:+.2f}%</div>
+        <div style='color:#94a3b8; font-size:13px; font-weight:bold;'>📊 NOISE-FREE OBI MACD</div>
+        <div style='font-size:12px; color:#cbd5e1; margin-top:5px;'>Hist: {obi_histogram:+.1f} | Sig Line: {eng['signal_line']:+.1f}</div>
+        <div style='font-size:18px; font-weight:900; color:{diff_col}; margin-top:5px;'>Diff: {macd_diff:+.2f}%</div>
         </div>""", unsafe_allow_html=True)
         
     with c3:
@@ -248,7 +255,6 @@ if l2_data:
         <div style='font-size:16px; font-weight:900; color:#facc15; margin-top:5px;'>Max: ${eng['max_spread']:.2f} <span style='font-size:11px; color:#94a3b8;'>({eng['max_spread_time']})</span></div>
         </div>""", unsafe_allow_html=True)
 
-    # 🎯 ROW 2: LIQUIDITY ZONES & ULTIMATE SIGNAL
     r2_c1, r2_c2 = st.columns([0.4, 0.6])
     
     with r2_c1:
@@ -267,7 +273,6 @@ if l2_data:
         </div>""", unsafe_allow_html=True)
         
     with r2_c2:
-        # Show Signal or Tracker Status
         if eng["track_signal"]:
             trk_col = "#22c55e" if eng["track_signal"] == "BUY" else "#ef4444"
             pts_moved = (eng["track_max_fav"] - eng["track_entry_px"]) if eng["track_signal"] == "BUY" else (eng["track_entry_px"] - eng["track_max_fav"])
@@ -282,7 +287,6 @@ if l2_data:
         else:
             st.markdown(f"<div class='signal-box {sig_class}'>{signal_txt}</div>", unsafe_allow_html=True)
 
-    # 🎯 ROW 3: THREE SEPARATE HISTORIES
     st.markdown("<div style='margin-top:20px; margin-bottom:8px; font-weight:bold; color:#f8fafc; font-size:15px;'>📜 Individual Trackers History</div>", unsafe_allow_html=True)
     h_col1, h_col2, h_col3 = st.columns(3)
     
@@ -297,7 +301,7 @@ if l2_data:
         st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Sweeps Yet</div>'}</div>", unsafe_allow_html=True)
 
     with h_col3:
-        st.markdown("<div style='color:#c084fc; font-size:13px; font-weight:bold; margin-bottom:5px;'>📊 OBI MACD Shifts</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#c084fc; font-size:13px; font-weight:bold; margin-bottom:5px;'>📊 Noise-Free OBI Shifts</div>", unsafe_allow_html=True)
         h_html = "".join([f"<div class='hist-item'>{h}</div>" for h in eng["obi_history"]])
         st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Shifts Yet</div>'}</div>", unsafe_allow_html=True)
 
