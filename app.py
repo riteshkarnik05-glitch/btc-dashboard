@@ -3,18 +3,20 @@ import requests
 import time
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - Persistent L2 Engine v1.5", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - Master Target Tracker v1.6", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
 .metric-box { background: #1e293b; border: 1px solid #334155; padding: 15px; border-radius: 12px; text-align: center; height: 100%; }
-.signal-box { background: #0f172a; border: 2px dashed #475569; padding: 20px; border-radius: 12px; text-align: center; font-size: 22px; font-weight: 900; height: 100%; display: flex; align-items: center; justify-content: center; }
+.signal-box { background: #0f172a; border: 2px dashed #475569; padding: 20px; border-radius: 12px; text-align: center; font-size: 22px; font-weight: 900; height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column;}
 .buy-sig { border-color: #22c55e; color: #22c55e; background: #064e3b; }
 .sell-sig { border-color: #ef4444; color: #ef4444; background: #7f1d1d; }
 .bar-container { width: 100%; background: #ef4444; height: 16px; border-radius: 8px; overflow: hidden; margin-top: 8px; }
 .bar-fill { background: #22c55e; height: 100%; transition: width 0.3s ease; }
 div.stButton > button { background-color: #334155 !important; color: #f8fafc !important; border: 1px solid #475569 !important; border-radius: 6px !important; padding: 2px 10px !important; }
 div.stButton > button:hover { background-color: #ef4444 !important; }
+.history-box { background:#1e293b; padding:10px; border-radius:8px; border:1px solid #334155; height: 200px; overflow-y: auto;}
+.hist-item { font-size: 12px; padding: 5px 8px; border-bottom: 1px solid #334155; color: #cbd5e1; }
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
@@ -49,10 +51,7 @@ def fetch_recent_swings():
     try:
         end_time = int(time.time() * 1000)
         start_time = end_time - (30 * 60 * 1000) 
-        r = requests.post(HYPERLIQUID_URL, json={
-            "type": "candleSnapshot",
-            "req": {"coin": "BTC", "interval": "1m", "startTime": start_time, "endTime": end_time}
-        }, timeout=3)
+        r = requests.post(HYPERLIQUID_URL, json={"type": "candleSnapshot", "req": {"coin": "BTC", "interval": "1m", "startTime": start_time, "endTime": end_time}}, timeout=3)
         if r.status_code == 200:
             data = r.json()
             if data and len(data) > 2:
@@ -67,7 +66,7 @@ def get_ist_time_str():
     return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
 # ============================================================================
-# PERSISTENT MEMORY ENGINE (Survives Page Refresh & Closes)
+# PERSISTENT MEMORY ENGINE
 # ============================================================================
 @st.cache_resource
 def get_persistent_engine():
@@ -82,7 +81,15 @@ def get_persistent_engine():
         "swing_low": 0.0,
         "last_kline_fetch": 0.0,
         "sweep_status": 0,
-        "history": []
+        # Separate Histories
+        "master_history": [],
+        "sweep_history": [],
+        "obi_history": [],
+        # Post-Signal Tracker
+        "track_signal": None,  # "BUY" or "SELL"
+        "track_entry_px": 0.0,
+        "track_max_fav": 0.0,
+        "track_status": "Idle" # "Tracking", "Target 300p Hit!", "Closed"
     }
 
 eng = get_persistent_engine()
@@ -117,16 +124,26 @@ if l2_data:
         eng["max_spread"] = current_spread
         eng["max_spread_time"] = now_ist_str
 
+    # --- ENGINE 1: OBI MACD ---
     if eng["fast_ema"] == 50.0:
         eng["fast_ema"] = buy_pressure
         eng["slow_ema"] = buy_pressure
         eng["last_px"] = px
+        obi_histogram = 0.0
     else:
         eng["fast_ema"] = buy_pressure * 0.30 + eng["fast_ema"] * 0.70
         eng["slow_ema"] = buy_pressure * 0.05 + eng["slow_ema"] * 0.95
         
     obi_histogram = eng["fast_ema"] - eng["slow_ema"]
     
+    # Track Individual OBI Shifts
+    if obi_histogram > 1.5 and eng.get("last_obi_state", "") != "BULL":
+        eng["obi_history"].insert(0, f"🟢 {now_ist_str} - Buyers Dominating")
+        eng["last_obi_state"] = "BULL"
+    elif obi_histogram < -1.5 and eng.get("last_obi_state", "") != "BEAR":
+        eng["obi_history"].insert(0, f"🔴 {now_ist_str} - Sellers Dominating")
+        eng["last_obi_state"] = "BEAR"
+
     px_diff = px - eng["last_px"]
     eng["last_px"] = px
     
@@ -134,34 +151,63 @@ if l2_data:
     elif px_diff >= 15.0: eng["spike_active"] = -1 
     else: eng["spike_active"] = 0
 
+    # --- ENGINE 2: SWEEP TRACKER ---
     sh = eng["swing_high"]
     sl = eng["swing_low"]
     
     if sh > 0 and sl > 0:
         if px < sl: eng["sweep_status"] = -2
-        elif eng["sweep_status"] == -2 and px > sl + 5.0: eng["sweep_status"] = 1
+        elif eng["sweep_status"] == -2 and px > sl + 5.0: 
+            eng["sweep_status"] = 1
+            eng["sweep_history"].insert(0, f"🟢 {now_ist_str} - Bullish Sweep @ ${px:,.1f}")
         elif px > sh: eng["sweep_status"] = 2
-        elif eng["sweep_status"] == 2 and px < sh - 5.0: eng["sweep_status"] = -1
+        elif eng["sweep_status"] == 2 and px < sh - 5.0: 
+            eng["sweep_status"] = -1
+            eng["sweep_history"].insert(0, f"🔴 {now_ist_str} - Bearish Sweep @ ${px:,.1f}")
             
         if eng["sweep_status"] == 1 and px > sl + 150.0: eng["sweep_status"] = 0
         if eng["sweep_status"] == -1 and px < sh - 150.0: eng["sweep_status"] = 0
 
-    signal_txt = "⏳ कोई मास्टर सिग्नल नहीं (Waiting for Confluence)"
+    # --- ULTIMATE MASTER SIGNAL ---
+    signal_txt = "⏳ Waiting for Master Confluence"
     sig_class = ""
+    new_master_sig = None
     
     if eng["sweep_status"] == 1 and obi_histogram > 1.5:
-        signal_txt = f"🔥 HIGH PROB BUY!<br><span style='font-size:16px;'>Liquidity Swept + Whale OBI Trap @ ${px:,.1f}</span>"
+        signal_txt = f"🔥 MASTER BUY SIGNAL!<br><span style='font-size:16px;'>Liquidity Swept + OBI Trap @ ${px:,.1f}</span>"
         sig_class = "buy-sig"
-        eng["history"].insert(0, f"{now_ist_str} - 🔥 MASTER BUY (Sweep + OBI) @ ${px:,.1f}")
+        eng["master_history"].insert(0, f"🟢 {now_ist_str} - BUY @ ${px:,.1f}")
         eng["sweep_status"] = 0
+        new_master_sig = "BUY"
         
     elif eng["sweep_status"] == -1 and obi_histogram < -1.5:
-        signal_txt = f"🔥 HIGH PROB SELL!<br><span style='font-size:16px;'>Liquidity Swept + Whale OBI Trap @ ${px:,.1f}</span>"
+        signal_txt = f"🔥 MASTER SELL SIGNAL!<br><span style='font-size:16px;'>Liquidity Swept + OBI Trap @ ${px:,.1f}</span>"
         sig_class = "sell-sig"
-        eng["history"].insert(0, f"{now_ist_str} - 🔥 MASTER SELL (Sweep + OBI) @ ${px:,.1f}")
+        eng["master_history"].insert(0, f"🔴 {now_ist_str} - SELL @ ${px:,.1f}")
         eng["sweep_status"] = 0
+        new_master_sig = "SELL"
 
-    eng["history"] = eng["history"][:8] # Keep last 8 signals safely
+    # --- POST-SIGNAL TRACKER (300 Point Limit) ---
+    if new_master_sig:
+        eng["track_signal"] = new_master_sig
+        eng["track_entry_px"] = px
+        eng["track_max_fav"] = px
+        eng["track_status"] = "Tracking"
+
+    if eng["track_status"] == "Tracking" and eng["track_signal"]:
+        if eng["track_signal"] == "BUY":
+            eng["track_max_fav"] = max(eng["track_max_fav"], px)
+            if (eng["track_max_fav"] - eng["track_entry_px"]) >= 300.0:
+                eng["track_status"] = "🎯 Target 300p Hit!"
+        elif eng["track_signal"] == "SELL":
+            eng["track_max_fav"] = min(eng["track_max_fav"], px)
+            if (eng["track_entry_px"] - eng["track_max_fav"]) >= 300.0:
+                eng["track_status"] = "🎯 Target 300p Hit!"
+
+    # Trim histories
+    eng["master_history"] = eng["master_history"][:10]
+    eng["sweep_history"] = eng["sweep_history"][:10]
+    eng["obi_history"] = eng["obi_history"][:10]
 
     # ============================================================================
     # RENDER DASHBOARD
@@ -202,6 +248,7 @@ if l2_data:
         <div style='font-size:16px; font-weight:900; color:#facc15; margin-top:5px;'>Max: ${eng['max_spread']:.2f} <span style='font-size:11px; color:#94a3b8;'>({eng['max_spread_time']})</span></div>
         </div>""", unsafe_allow_html=True)
 
+    # 🎯 ROW 2: LIQUIDITY ZONES & ULTIMATE SIGNAL
     r2_c1, r2_c2 = st.columns([0.4, 0.6])
     
     with r2_c1:
@@ -220,12 +267,39 @@ if l2_data:
         </div>""", unsafe_allow_html=True)
         
     with r2_c2:
-        st.markdown(f"<div class='signal-box {sig_class}'>{signal_txt}</div>", unsafe_allow_html=True)
+        # Show Signal or Tracker Status
+        if eng["track_signal"]:
+            trk_col = "#22c55e" if eng["track_signal"] == "BUY" else "#ef4444"
+            pts_moved = (eng["track_max_fav"] - eng["track_entry_px"]) if eng["track_signal"] == "BUY" else (eng["track_entry_px"] - eng["track_max_fav"])
+            pts_moved = max(0.0, pts_moved)
+            sts_col = "#4ade80" if eng["track_status"] != "Tracking" else "#facc15"
+            
+            st.markdown(f"""<div class='signal-box' style='border-color:{trk_col}; background:#0f172a;'>
+            <div style='font-size:15px; color:#cbd5e1; margin-bottom:5px;'>Active Post-Signal Tracker ({eng['track_signal']} @ ${eng['track_entry_px']:,.1f})</div>
+            <div style='font-size:26px; color:{trk_col}; font-weight:900;'>Max Favorable Move: +{pts_moved:,.1f} pts</div>
+            <div style='font-size:14px; color:{sts_col}; margin-top:5px; padding:4px 10px; background:#1e293b; border-radius:6px;'>{eng['track_status']}</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='signal-box {sig_class}'>{signal_txt}</div>", unsafe_allow_html=True)
+
+    # 🎯 ROW 3: THREE SEPARATE HISTORIES
+    st.markdown("<div style='margin-top:20px; margin-bottom:8px; font-weight:bold; color:#f8fafc; font-size:15px;'>📜 Individual Trackers History</div>", unsafe_allow_html=True)
+    h_col1, h_col2, h_col3 = st.columns(3)
     
-    if eng["history"]:
-        st.markdown("<h4 style='color:#cbd5e1; margin-top:20px;'>📜 Persistent Master Signals History</h4>", unsafe_allow_html=True)
-        for h in eng["history"]:
-            st.markdown(f"<div style='background:#1e293b; padding:8px 15px; border-radius:6px; margin-bottom:5px; color:#facc15; font-weight:bold; font-size:13px;'>{h}</div>", unsafe_allow_html=True)
+    with h_col1:
+        st.markdown("<div style='color:#38bdf8; font-size:13px; font-weight:bold; margin-bottom:5px;'>🔥 Master Signals</div>", unsafe_allow_html=True)
+        h_html = "".join([f"<div class='hist-item'>{h}</div>" for h in eng["master_history"]])
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Signals Yet</div>'}</div>", unsafe_allow_html=True)
+
+    with h_col2:
+        st.markdown("<div style='color:#facc15; font-size:13px; font-weight:bold; margin-bottom:5px;'>🎯 Liquidity Sweeps</div>", unsafe_allow_html=True)
+        h_html = "".join([f"<div class='hist-item'>{h}</div>" for h in eng["sweep_history"]])
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Sweeps Yet</div>'}</div>", unsafe_allow_html=True)
+
+    with h_col3:
+        st.markdown("<div style='color:#c084fc; font-size:13px; font-weight:bold; margin-bottom:5px;'>📊 OBI MACD Shifts</div>", unsafe_allow_html=True)
+        h_html = "".join([f"<div class='hist-item'>{h}</div>" for h in eng["obi_history"]])
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item>No Shifts Yet</div>'}</div>", unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
