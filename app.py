@@ -3,7 +3,7 @@ import requests
 import time
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - L2 + Sweep Engine v1.4", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - Persistent L2 Engine v1.5", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -46,7 +46,6 @@ def fetch_l2_orderbook():
     return None
 
 def fetch_recent_swings():
-    # Light Klines Fetcher (Only grabs last 30 1-min candles to find Support/Resistance)
     try:
         end_time = int(time.time() * 1000)
         start_time = end_time - (30 * 60 * 1000) 
@@ -57,7 +56,7 @@ def fetch_recent_swings():
         if r.status_code == 200:
             data = r.json()
             if data and len(data) > 2:
-                closed_candles = data[:-1] # Ignore the currently moving candle
+                closed_candles = data[:-1]
                 highs = [float(k["h"]) for k in closed_candles]
                 lows = [float(k["l"]) for k in closed_candles]
                 return max(highs), min(lows)
@@ -68,30 +67,31 @@ def get_ist_time_str():
     return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
 # ============================================================================
-# ROBUST STATE & MEMORY (TWO-ENGINE SYSTEM)
+# PERSISTENT MEMORY ENGINE (Survives Page Refresh & Closes)
 # ============================================================================
-if "engine_state" not in st.session_state or "swing_high" not in st.session_state.engine_state:
-    st.session_state.engine_state = {
+@st.cache_resource
+def get_persistent_engine():
+    return {
         "fast_ema": 50.0,  
         "slow_ema": 50.0,  
         "last_px": 0.0,
         "spike_active": 0, 
         "max_spread": 0.0,     
-        "max_spread_time": "", 
+        "max_spread_time": "--", 
         "swing_high": 0.0,
         "swing_low": 0.0,
         "last_kline_fetch": 0.0,
-        "sweep_status": 0,  # 0=None, -2=Breaking Low, 1=Bull Sweep, 2=Breaking High, -1=Bear Sweep
+        "sweep_status": 0,
         "history": []
     }
 
-eng = st.session_state.engine_state
+eng = get_persistent_engine()
 
 col_top1, col_top2 = st.columns([0.85, 0.15])
 with col_top2:
     if st.button("🔄 Reset Max Spread"):
         eng["max_spread"] = 0.0
-        eng["max_spread_time"] = ""
+        eng["max_spread_time"] = "--"
         st.rerun()
 
 # ============================================================================
@@ -100,7 +100,6 @@ with col_top2:
 now_ts = time.time()
 l2_data = fetch_l2_orderbook()
 
-# --- Engine 2: Update Swing High/Low every 30 seconds (Lightweight) ---
 if now_ts - eng["last_kline_fetch"] > 30:
     sh, sl = fetch_recent_swings()
     if sh and sl:
@@ -118,7 +117,6 @@ if l2_data:
         eng["max_spread"] = current_spread
         eng["max_spread_time"] = now_ist_str
 
-    # --- Engine 1: Update OBI MACD ---
     if eng["fast_ema"] == 50.0:
         eng["fast_ema"] = buy_pressure
         eng["slow_ema"] = buy_pressure
@@ -136,52 +134,40 @@ if l2_data:
     elif px_diff >= 15.0: eng["spike_active"] = -1 
     else: eng["spike_active"] = 0
 
-    # --- Engine 2: Sweep & Stop-Hunt Detection ---
     sh = eng["swing_high"]
     sl = eng["swing_low"]
     
     if sh > 0 and sl > 0:
-        # Bullish Sweep Logic
-        if px < sl:
-            eng["sweep_status"] = -2 # Warning: Breaking Support
-        elif eng["sweep_status"] == -2 and px > sl + 5.0:
-            eng["sweep_status"] = 1  # Bullish Sweep Confirmed (Trap!)
+        if px < sl: eng["sweep_status"] = -2
+        elif eng["sweep_status"] == -2 and px > sl + 5.0: eng["sweep_status"] = 1
+        elif px > sh: eng["sweep_status"] = 2
+        elif eng["sweep_status"] == 2 and px < sh - 5.0: eng["sweep_status"] = -1
             
-        # Bearish Sweep Logic
-        elif px > sh:
-            eng["sweep_status"] = 2  # Warning: Breaking Resistance
-        elif eng["sweep_status"] == 2 and px < sh - 5.0:
-            eng["sweep_status"] = -1 # Bearish Sweep Confirmed (Trap!)
-            
-        # Auto-reset if price moves far away
         if eng["sweep_status"] == 1 and px > sl + 150.0: eng["sweep_status"] = 0
         if eng["sweep_status"] == -1 and px < sh - 150.0: eng["sweep_status"] = 0
 
-    # --- ULTIMATE MASTER SIGNAL (Combining Both Engines) ---
     signal_txt = "⏳ कोई मास्टर सिग्नल नहीं (Waiting for Confluence)"
     sig_class = ""
     
-    # MASTER BUY: Bullish Sweep Confirmed AND OBI MACD is heavily positive
     if eng["sweep_status"] == 1 and obi_histogram > 1.5:
         signal_txt = f"🔥 HIGH PROB BUY!<br><span style='font-size:16px;'>Liquidity Swept + Whale OBI Trap @ ${px:,.1f}</span>"
         sig_class = "buy-sig"
         eng["history"].insert(0, f"{now_ist_str} - 🔥 MASTER BUY (Sweep + OBI) @ ${px:,.1f}")
-        eng["sweep_status"] = 0 # Reset after firing
+        eng["sweep_status"] = 0
         
-    # MASTER SELL: Bearish Sweep Confirmed AND OBI MACD is heavily negative
     elif eng["sweep_status"] == -1 and obi_histogram < -1.5:
         signal_txt = f"🔥 HIGH PROB SELL!<br><span style='font-size:16px;'>Liquidity Swept + Whale OBI Trap @ ${px:,.1f}</span>"
         sig_class = "sell-sig"
         eng["history"].insert(0, f"{now_ist_str} - 🔥 MASTER SELL (Sweep + OBI) @ ${px:,.1f}")
         eng["sweep_status"] = 0
 
-    eng["history"] = eng["history"][:5]
+    eng["history"] = eng["history"][:8] # Keep last 8 signals safely
 
     # ============================================================================
     # RENDER DASHBOARD
     # ============================================================================
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PRO MANUAL TRADER (L2 + SWEEP ENGINE) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PERSISTENT MANUAL TRADER (L2 + SWEEP) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
     
     c1, c2, c3, c4 = st.columns(4)
     
@@ -216,7 +202,6 @@ if l2_data:
         <div style='font-size:16px; font-weight:900; color:#facc15; margin-top:5px;'>Max: ${eng['max_spread']:.2f} <span style='font-size:11px; color:#94a3b8;'>({eng['max_spread_time']})</span></div>
         </div>""", unsafe_allow_html=True)
 
-    # 🎯 ROW 2: LIQUIDITY ZONES & ULTIMATE SIGNAL
     r2_c1, r2_c2 = st.columns([0.4, 0.6])
     
     with r2_c1:
@@ -237,9 +222,8 @@ if l2_data:
     with r2_c2:
         st.markdown(f"<div class='signal-box {sig_class}'>{signal_txt}</div>", unsafe_allow_html=True)
     
-    # Recent Signals History
     if eng["history"]:
-        st.markdown("<h4 style='color:#cbd5e1; margin-top:20px;'>📜 Master Signals History</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='color:#cbd5e1; margin-top:20px;'>📜 Persistent Master Signals History</h4>", unsafe_allow_html=True)
         for h in eng["history"]:
             st.markdown(f"<div style='background:#1e293b; padding:8px 15px; border-radius:6px; margin-bottom:5px; color:#facc15; font-weight:bold; font-size:13px;'>{h}</div>", unsafe_allow_html=True)
 
