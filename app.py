@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - Pro UI v2.2", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - V3.0 Hedge Fund Edition", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -53,7 +53,6 @@ def calculate_fibo_146_pivots(df, left_bars=5, right_bars=5):
 # LIGHTWEIGHT API FETCHERS
 # ============================================================================
 HYPERLIQUID_URL = "https://api.hyperliquid.xyz/info"
-
 def get_ist_time_str(): return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
 def fetch_l2_orderbook():
@@ -83,6 +82,11 @@ def fetch_advanced_klines():
                 df.rename(columns={'o':'Open', 'h':'High', 'l':'Low', 'c':'Close', 'v':'Volume', 't':'Time'}, inplace=True)
                 for col in ['Open', 'High', 'Low', 'Close', 'Volume']: df[col] = df[col].astype(float)
                 
+                # HTF Trend (100-SMA on 1m chart approximates a 1.5 hour trend)
+                sma_100 = df['Close'].mean()
+                latest_close = df['Close'].iloc[-1]
+                htf_trend = "BULLISH" if latest_close > sma_100 else "BEARISH"
+
                 df = calculate_fibo_146_pivots(df)
                 last_row = df.iloc[-1]
                 
@@ -98,9 +102,9 @@ def fetch_advanced_klines():
                     bull_score = max(0.0, (c - l) + (c - o if c > o else 0.0)); bear_score = max(0.0, (h - c) + (o - c if c < o else 0.0))
                     tot_score = bull_score + bear_score
                     if tot_score > 0: cvd_5m += (v * (bull_score / tot_score)) - (v * (bear_score / tot_score))
-                return fibo_data, cvd_5m
+                return fibo_data, cvd_5m, htf_trend, sma_100
     except: pass
-    return None, 0.0
+    return None, 0.0, "NONE", 0.0
 
 # ============================================================================
 # 24x7 BACKGROUND WORKER 
@@ -110,25 +114,34 @@ def background_sniper_worker(eng, worker_id):
         if eng.get("worker_id") != worker_id: break
         try:
             now_ts = time.time(); l2_data = fetch_l2_orderbook()
+            
+            # Master Signal Placeholder
+            new_master_sig = None
+            master_sig_reason = ""
+            now_ist_str = get_ist_time_str()
+
             if now_ts - eng["last_kline_fetch"] > 20:
-                fibo_data, cvd_5m = fetch_advanced_klines()
+                fibo_data, cvd_5m, htf_trend, sma_100 = fetch_advanced_klines()
                 if fibo_data and pd.notna(fibo_data["piv_high"]) and pd.notna(fibo_data["piv_low"]):
+                    eng["htf_trend"] = htf_trend; eng["htf_sma"] = sma_100
                     eng["swing_high"] = fibo_data["piv_high"]; eng["swing_low"] = fibo_data["piv_low"]
                     eng["fibo_long_lvl"] = fibo_data["long_lvl"]; eng["fibo_short_lvl"] = fibo_data["short_lvl"]
                     c_time = fibo_data["candle_time"]
+                    
+                    # FIBO MASTER ACTIVATION (Aligned with HTF Trend)
                     if c_time != eng.get("last_fibo_candle_time", 0):
-                        now_ist_str = get_ist_time_str()
-                        if fibo_data["long_sig"]:
-                            eng["fibo_history"].insert(0, f"<div class='hist-item hist-closed-win'><b>{now_ist_str} - 🟢 LONG JUMP</b><br><span style='color:#94a3b8;'>Level: ${fibo_data['long_lvl']:,.1f}</span></div>")
+                        if fibo_data["long_sig"] and htf_trend == "BULLISH":
+                            new_master_sig = "BUY"; master_sig_reason = "🚀 FIBO MOMENTUM"
                             eng["last_fibo_candle_time"] = c_time
-                        elif fibo_data["short_sig"]:
-                            eng["fibo_history"].insert(0, f"<div class='hist-item hist-closed-loss'><b>{now_ist_str} - 🔴 SHORT JUMP</b><br><span style='color:#94a3b8;'>Level: ${fibo_data['short_lvl']:,.1f}</span></div>")
+                        elif fibo_data["short_sig"] and htf_trend == "BEARISH":
+                            new_master_sig = "SELL"; master_sig_reason = "🚀 FIBO MOMENTUM"
                             eng["last_fibo_candle_time"] = c_time
+                            
                     eng["cvd_5m"] = cvd_5m; eng["cvd_trend"] = 1 if cvd_5m > 0 else -1
                 eng["last_kline_fetch"] = now_ts
 
             if l2_data:
-                px = l2_data["mid_px"]; buy_pressure = l2_data["bid_pct"]; current_spread = l2_data["spread"]; now_ist_str = get_ist_time_str()
+                px = l2_data["mid_px"]; buy_pressure = l2_data["bid_pct"]; current_spread = l2_data["spread"]
                 eng["px"] = px; eng["buy_pressure"] = buy_pressure; eng["ask_pct"] = l2_data["ask_pct"]
                 eng["current_spread"] = current_spread; eng["last_update_ist"] = now_ist_str
                 if current_spread > eng["max_spread"]: eng["max_spread"] = current_spread; eng["max_spread_time"] = now_ist_str
@@ -168,47 +181,79 @@ def background_sniper_worker(eng, worker_id):
                     elif near_resistance and (eng["cvd_trend"] == 1 or buy_pressure <= 46.0): eng["abs_status"] = -1; eng["abs_latch_time"] = now_ts
                     elif now_ts - eng.get("abs_latch_time", 0.0) > 180: eng["abs_status"] = 0
 
-                # MASTER SIGNAL CONFLUENCE
-                new_master_sig = None
-                obi_bull_ok = (eng["last_obi_state"] == "BULL") or (macd_diff > 0.8 and buy_pressure >= 54.0)
-                obi_bear_ok = (eng["last_obi_state"] == "BEAR") or (macd_diff < -0.8 and buy_pressure <= 46.0)
-                if eng["sweep_status"] == 1 and (eng["abs_status"] == 1 or obi_bull_ok): new_master_sig = "BUY"; eng["sweep_status"] = 0
-                elif eng["sweep_status"] == -1 and (eng["abs_status"] == -1 or obi_bear_ok): new_master_sig = "SELL"; eng["sweep_status"] = 0
+                # MASTER 3X SIGNAL CONFLUENCE (Aligned with HTF Trend)
+                if not new_master_sig: # If Fibo didn't fire
+                    obi_bull_ok = (eng["last_obi_state"] == "BULL") or (macd_diff > 0.8 and buy_pressure >= 54.0)
+                    obi_bear_ok = (eng["last_obi_state"] == "BEAR") or (macd_diff < -0.8 and buy_pressure <= 46.0)
+                    if eng["sweep_status"] == 1 and (eng["abs_status"] == 1 or obi_bull_ok) and eng["htf_trend"] == "BULLISH": 
+                        new_master_sig = "BUY"; master_sig_reason = "🔥 3X SWEEP"
+                        eng["sweep_status"] = 0
+                    elif eng["sweep_status"] == -1 and (eng["abs_status"] == -1 or obi_bear_ok) and eng["htf_trend"] == "BEARISH": 
+                        new_master_sig = "SELL"; master_sig_reason = "🔥 3X SWEEP"
+                        eng["sweep_status"] = 0
+
+                # Ignore same direction
                 if new_master_sig and eng["track_status"] == "Tracking" and eng["track_signal"] == new_master_sig: new_master_sig = None
 
-                # POST-SIGNAL TRAILING TRACKER
+                # POST-SIGNAL DYNAMIC TRAILING TRACKER
                 if new_master_sig and eng["track_signal"] and eng["track_signal"] != new_master_sig and eng["track_status"] == "Tracking":
                     if eng["active_trade_obj"]:
-                        final_pnl = eng["active_trade_obj"]["live_pnl"]; eng["track_status"] = "Closed (Opposite Signal)"
+                        final_pnl = eng["active_trade_obj"]["live_pnl"]; eng["track_status"] = "Closed (Trend Reversed)"
                         eng["active_trade_obj"]["status"] = eng["track_status"]; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
                         eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None
 
                 if new_master_sig:
                     eng["track_signal"] = new_master_sig; eng["track_entry_px"] = px; eng["track_max_fav"] = px; eng["track_status"] = "Tracking"
-                    eng["active_trade_obj"] = {"open_time": now_ist_str, "close_time": "", "type": new_master_sig, "entry": px, "status": "Tracking", "max_pnl": 0.0, "live_pnl": 0.0, "final_pnl": 0.0}
+                    eng["active_trade_obj"] = {"open_time": now_ist_str, "close_time": "", "type": new_master_sig, "entry": px, "status": "Tracking", "max_pnl": 0.0, "live_pnl": 0.0, "final_pnl": 0.0, "reason": master_sig_reason}
 
                 if eng["track_status"] == "Tracking" and eng["track_signal"] and eng["active_trade_obj"]:
                     t_type = eng["track_signal"]; t_entry = eng["track_entry_px"]
+                    
                     if t_type == "BUY":
-                        live_pnl = px - t_entry; eng["track_max_fav"] = max(eng["track_max_fav"], px); max_pnl = eng["track_max_fav"] - t_entry; trail_sl_px = eng["track_max_fav"] - 300.0
-                        if px <= trail_sl_px:
-                            eng["track_status"] = "Closed"; final_pnl = live_pnl; sts_text = "🛑 Hard SL (-300p)" if max_pnl < 10.0 else f"✅ Locked [Peak: +{max_pnl:,.0f}p]"
-                            eng["active_trade_obj"]["status"] = sts_text; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
-                            eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None
-                    elif t_type == "SELL":
-                        live_pnl = t_entry - px; eng["track_max_fav"] = min(eng["track_max_fav"], px); max_pnl = t_entry - eng["track_max_fav"]; trail_sl_px = eng["track_max_fav"] + 300.0
-                        if px >= trail_sl_px:
-                            eng["track_status"] = "Closed"; final_pnl = live_pnl; sts_text = "🛑 Hard SL (-300p)" if max_pnl < 10.0 else f"✅ Locked [Peak: +{max_pnl:,.0f}p]"
-                            eng["active_trade_obj"]["status"] = sts_text; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
-                            eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None
-                    if eng["track_status"] == "Tracking" and eng["active_trade_obj"]: eng["active_trade_obj"]["live_pnl"] = live_pnl; eng["active_trade_obj"]["max_pnl"] = max_pnl
+                        live_pnl = px - t_entry; eng["track_max_fav"] = max(eng["track_max_fav"], px); max_pnl = eng["track_max_fav"] - t_entry
+                        
+                        # Smart Tier Trailing
+                        if max_pnl >= 500.0: trail_sl_px = eng["track_max_fav"] - 150.0 # Tier 3: Follow tight behind 150p
+                        elif max_pnl >= 300.0: trail_sl_px = t_entry + 150.0 # Tier 2: Lock 150p profit
+                        elif max_pnl >= 150.0: trail_sl_px = t_entry + 10.0 # Tier 1: Break-even
+                        else: trail_sl_px = t_entry - 300.0 # Base: Hard SL -300p
 
-                eng["closed_trades_ledger"] = eng["closed_trades_ledger"][:25]; eng["fibo_history"] = eng["fibo_history"][:15]
+                        if px <= trail_sl_px:
+                            eng["track_status"] = "Closed"; final_pnl = live_pnl
+                            if final_pnl < 0: sts_text = f"🛑 Hard SL Hit ({final_pnl:+.0f}p)"
+                            elif final_pnl < 140: sts_text = f"🛡️ Break-Even Hit (+{final_pnl:,.0f}p)"
+                            else: sts_text = f"✅ Smart Lock (+{final_pnl:,.0f}p) [Peak: +{max_pnl:,.0f}p]"
+                            
+                            eng["active_trade_obj"]["status"] = sts_text; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
+                            eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None
+
+                    elif t_type == "SELL":
+                        live_pnl = t_entry - px; eng["track_max_fav"] = min(eng["track_max_fav"], px); max_pnl = t_entry - eng["track_max_fav"]
+                        
+                        # Smart Tier Trailing
+                        if max_pnl >= 500.0: trail_sl_px = eng["track_max_fav"] + 150.0 
+                        elif max_pnl >= 300.0: trail_sl_px = t_entry - 150.0 
+                        elif max_pnl >= 150.0: trail_sl_px = t_entry - 10.0 
+                        else: trail_sl_px = t_entry + 300.0 
+
+                        if px >= trail_sl_px:
+                            eng["track_status"] = "Closed"; final_pnl = live_pnl
+                            if final_pnl < 0: sts_text = f"🛑 Hard SL Hit ({final_pnl:+.0f}p)"
+                            elif final_pnl < 140: sts_text = f"🛡️ Break-Even Hit (+{final_pnl:,.0f}p)"
+                            else: sts_text = f"✅ Smart Lock (+{final_pnl:,.0f}p) [Peak: +{max_pnl:,.0f}p]"
+                            
+                            eng["active_trade_obj"]["status"] = sts_text; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
+                            eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None
+
+                    if eng["track_status"] == "Tracking" and eng["active_trade_obj"]:
+                        eng["active_trade_obj"]["live_pnl"] = live_pnl; eng["active_trade_obj"]["max_pnl"] = max_pnl
+
+                eng["closed_trades_ledger"] = eng["closed_trades_ledger"][:30]
         except Exception as e: eng["last_err"] = str(e)
         time.sleep(2)
 
 @st.cache_resource
-def get_persistent_sniper_v2_2():
+def get_persistent_sniper_v3():
     worker_id = int(time.time() * 1000)
     eng = {
         "worker_id": worker_id, "ema_initialized": False, "px": 0.0, "buy_pressure": 50.0, "ask_pct": 50.0,
@@ -216,19 +261,28 @@ def get_persistent_sniper_v2_2():
         "obi_histogram": 0.0, "macd_diff": 0.0, "bull_confirm_ticks": 0, "bear_confirm_ticks": 0, "last_px": 0.0,
         "px_diff": 0.0, "spike_active": 0, "max_spread": 0.0, "max_spread_time": "--", "swing_high": 0.0, "swing_low": 0.0,
         "fibo_long_lvl": 0.0, "fibo_short_lvl": 0.0, "last_fibo_candle_time": 0, "lowest_sweep_px": 999999.0, "highest_sweep_px": 0.0,
-        "sweep_latch_time": 0.0, "abs_latch_time": 0.0, "obi_state_time": 0.0, "cvd_5m": 0.0, "cvd_trend": 0,
-        "last_kline_fetch": 0.0, "sweep_status": 0, "abs_status": 0, "active_trade_obj": None, "closed_trades_ledger": [],
-        "fibo_history": [], "track_signal": None, "track_entry_px": 0.0, "track_max_fav": 0.0, "track_status": "Idle",
-        "last_obi_state": "NONE", "last_err": None
+        "sweep_latch_time": 0.0, "abs_latch_time": 0.0, "obi_state_time": 0.0, "cvd_5m": 0.0, "cvd_trend": 0, "last_kline_fetch": 0.0, 
+        "sweep_status": 0, "abs_status": 0, "htf_trend": "NONE", "htf_sma": 0.0,
+        "active_trade_obj": None, "closed_trades_ledger": [], "track_signal": None, "track_entry_px": 0.0, 
+        "track_max_fav": 0.0, "track_status": "Idle", "last_obi_state": "NONE", "last_err": None
     }
     threading.Thread(target=background_sniper_worker, args=(eng, worker_id), daemon=True).start()
     return eng
 
-eng = get_persistent_sniper_v2_2()
+eng = get_persistent_sniper_v3()
 
 col_top1, col_top2 = st.columns([0.85, 0.15])
 with col_top2:
     if st.button("🔄 Reset Spread"): eng["max_spread"] = 0.0; eng["max_spread_time"] = "--"; st.rerun()
+
+# ============================================================================
+# WIN RATE CALCULATOR
+# ============================================================================
+total_trades = len(eng["closed_trades_ledger"])
+wins = sum(1 for t in eng["closed_trades_ledger"] if t["final_pnl"] > 0)
+losses = total_trades - wins
+win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+win_col = "#22c55e" if win_rate >= 50 else "#ef4444"
 
 # ============================================================================
 # RENDER DASHBOARD
@@ -236,10 +290,11 @@ with col_top2:
 if eng["px"] > 0:
     px, buy_pressure, macd_diff, px_diff, current_spread = eng["px"], eng["buy_pressure"], eng["macd_diff"], eng["px_diff"], eng["current_spread"]
     sh, sl, flo, fsh = eng["swing_high"], eng["swing_low"], eng["fibo_long_lvl"], eng["fibo_short_lvl"]
+    htf_trend = eng["htf_trend"]
     danger_zone = 45.0
 
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PRO STUDIO TRADER (V2.2) - BTC: ${px:,.1f} <span style='font-size:13px; color:#4ade80;'>[Live: {eng['last_update_ist']}]</span></h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PRO STUDIO TRADER (V3.0 HEDGE FUND) - BTC: ${px:,.1f} <span style='font-size:13px; color:#4ade80;'>[Live: {eng['last_update_ist']}]</span></h3>", unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns(4)
     with c1: st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:13px; font-weight:bold;'>🔴 LIVE OBI 🟢</div><div style='font-size:18px; font-weight:900; margin-top:5px;'><span style='color:#22c55e;'>{buy_pressure:.1f}%</span> / <span style='color:#ef4444;'>{eng['ask_pct']:.1f}%</span></div><div class='bar-container'><div class='bar-fill' style='width:{buy_pressure}%;'></div></div></div>", unsafe_allow_html=True)
@@ -248,9 +303,8 @@ if eng["px"] > 0:
         ticks_str = "🟢" * eng["bull_confirm_ticks"] if eng["bull_confirm_ticks"] > 0 else ("🔴" * eng["bear_confirm_ticks"])
         st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:13px; font-weight:bold;'>📊 OBI MACD ({eng['last_obi_state']})</div><div style='font-size:12px; color:#cbd5e1; margin-top:5px;'>Ticks: {ticks_str if ticks_str else '⚪'}</div><div style='font-size:20px; font-weight:900; color:{diff_col}; margin-top:5px;'>Diff: {macd_diff:+.2f}%</div></div>", unsafe_allow_html=True)
     with c3:
-        spk_col = "#22c55e" if eng["spike_active"] == 1 else ("#ef4444" if eng["spike_active"] == -1 else "#94a3b8")
-        spk_txt = "📉 Down Spike" if eng["spike_active"] == 1 else ("📈 Up Spike" if eng["spike_active"] == -1 else "No Px Spike")
-        st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:13px; font-weight:bold;'>⚡ PRICE JUMP (2s)</div><div style='font-size:18px; font-weight:900; color:{spk_col}; margin-top:5px;'>{spk_txt} <br><span style='font-size:14px; color:#facc15;'>${px_diff:+.1f}</span></div></div>", unsafe_allow_html=True)
+        htf_col = "#22c55e" if htf_trend == "BULLISH" else "#ef4444"
+        st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:13px; font-weight:bold;'>🏢 HTF TREND (100-SMA)</div><div style='font-size:18px; font-weight:900; color:{htf_col}; margin-top:5px;'>{htf_trend} <br><span style='font-size:13px; color:#cbd5e1;'>Base: ${eng['htf_sma']:,.1f}</span></div></div>", unsafe_allow_html=True)
     with c4: st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:13px; font-weight:bold;'>🧱 SPREAD SPIKE</div><div style='font-size:14px; color:#cbd5e1; margin-top:5px;'>Live: <b style='color:#ffffff;'>${current_spread:.2f}</b></div><div style='font-size:16px; font-weight:900; color:#facc15; margin-top:5px;'>Max: ${eng['max_spread']:.2f} <span style='font-size:11px; color:#94a3b8;'>({eng['max_spread_time']})</span></div></div>", unsafe_allow_html=True)
 
     # ROW 2: ZONES AND TRACKER
@@ -283,32 +337,40 @@ if eng["px"] > 0:
             live_p = eng["active_trade_obj"]["live_pnl"]; max_p = eng["active_trade_obj"]["max_pnl"]
             live_col = "#4ade80" if live_p >= 0 else "#f87171"
             st.markdown(f"""<div class='signal-box' style='border-color:{trk_col}; background:#0f172a; flex-direction:row; justify-content:space-around;'>
-            <div style='text-align:left;'><div style='font-size:15px; color:#94a3b8; margin-bottom:5px;'>🎯 Active Trade Tracker</div><div style='font-size:24px; color:#ffffff; font-weight:900;'>{eng['track_signal']} @ ${eng['track_entry_px']:,.1f}</div><div style='font-size:14px; color:#facc15; margin-top:5px;'>300pt Trailing SL Active</div></div>
+            <div style='text-align:left;'><div style='font-size:15px; color:#94a3b8; margin-bottom:5px;'>🎯 Active Trade Tracker</div><div style='font-size:24px; color:#ffffff; font-weight:900;'>{eng['track_signal']} @ ${eng['track_entry_px']:,.1f}</div><div style='font-size:14px; color:#facc15; margin-top:5px;'>SMART TIER TRAILING SL ACTIVE</div></div>
             <div style='text-align:right; border-left:1px solid #334155; padding-left:25px;'><div style='font-size:15px; color:#94a3b8;'>Live PnL: <b style='color:{live_col}; font-size:32px;'>{live_p:+.1f}p</b></div><div style='font-size:15px; color:#cbd5e1; margin-top:8px;'>Max Favorable: <b style='color:#38bdf8;'>+{max_p:,.1f}p</b></div></div></div>""", unsafe_allow_html=True)
         else:
-            st.markdown("<div class='signal-box' style='border-color:#475569; color:#94a3b8;'>⏳ Waiting for 3X Sniper Confluence...</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='signal-box' style='border-color:#475569; color:#94a3b8;'>⏳ Waiting for {htf_trend} Setup... (3X Confluence or Fibo Momentum)</div>", unsafe_allow_html=True)
 
-    # ROW 3: CLEAN LEDGERS
+    # ROW 3: CLEAN LEDGERS & WIN RATE
     st.markdown("<br>", unsafe_allow_html=True)
-    h_col1, h_col2 = st.columns(2)
+    st.markdown(f"<div style='margin-bottom:10px; font-weight:900; color:{win_col}; font-size:18px; padding:10px; background:#0f172a; border-radius:8px; border:1px solid #334155; display:inline-block;'>🏆 Smart Money Win Rate: {win_rate:.1f}% <span style='font-size:13px; color:#94a3b8;'>(Wins: {wins} | Losses: {losses} | Total: {total_trades})</span></div>", unsafe_allow_html=True)
+    
+    h_col1, h_col2 = st.columns([0.4, 0.6])
     
     with h_col1:
-        st.markdown("<div style='color:#facc15; font-size:15px; font-weight:bold; margin-bottom:10px;'>📓 3X Closed Trades Ledger</div>", unsafe_allow_html=True)
-        h_html = ""
-        for h in eng["closed_trades_ledger"]:
-            h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"; pnl_col = "#22c55e" if h["final_pnl"] >= 0 else "#ef4444"; border_cls = "hist-closed-win" if h["final_pnl"] > 0 else "hist-closed-loss"
-            h_html += f"<div class='hist-item {border_cls}' style='display:flex; justify-content:space-between; align-items:center;'><div><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#94a3b8; font-size:11.5px;'>{h['status']} (Closed: {h['close_time']})</span></div><div style='font-size:18px; font-weight:900; color:{pnl_col};'>{h['final_pnl']:+.1f}p</div></div>"
-        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:120px;\">No Closed Trades Yet</div>'}</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#38bdf8; font-size:15px; font-weight:bold; margin-bottom:10px;'>🔥 Live Active Trade Logs</div>", unsafe_allow_html=True)
+        if eng["active_trade_obj"]:
+            h = eng["active_trade_obj"]
+            h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"
+            live_col = "#4ade80" if h["live_pnl"] >= 0 else "#f87171"
+            h_html = f"<div class='hist-item hist-tracking'><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#c084fc; font-weight:bold;'>{h['reason']}</span><br><br>Live: <b style='color:{live_col}; font-size:15px;'>{h['live_pnl']:+.1f}p</b> | Max: +{h['max_pnl']:,.1f}p</div>"
+        else:
+            h_html = "<div class='hist-item' style='color:#64748b; text-align:center; padding-top:120px;'>No Active Trade</div>"
+        st.markdown(f"<div class='history-box'>{h_html}</div>", unsafe_allow_html=True)
 
     with h_col2:
-        st.markdown("<div style='color:#c084fc; font-size:15px; font-weight:bold; margin-bottom:10px;'>⚡ Fibo 146 Jumps (Live Test)</div>", unsafe_allow_html=True)
-        h_html = "".join([h for h in eng["fibo_history"]])
-        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:120px;\">No Fibo Signals Yet</div>'}</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#facc15; font-size:15px; font-weight:bold; margin-bottom:10px;'>📓 Smart Money Ledger (Closed Trades)</div>", unsafe_allow_html=True)
+        h_html = ""
+        for h in eng["closed_trades_ledger"]:
+            h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"; pnl_col = "#22c55e" if h["final_pnl"] > 0 else "#ef4444"; border_cls = "hist-closed-win" if h["final_pnl"] > 0 else "hist-closed-loss"
+            h_html += f"<div class='hist-item {border_cls}' style='display:flex; justify-content:space-between; align-items:center;'><div><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b> <span style='color:#c084fc; font-size:11px;'>[{h['reason']}]</span><br><span style='color:#94a3b8; font-size:11.5px;'>{h['status']} (Closed: {h['close_time']})</span></div><div style='font-size:18px; font-weight:900; color:{pnl_col};'>{h['final_pnl']:+.1f}p</div></div>"
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:120px;\">No Closed Trades Yet</div>'}</div>", unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
 
 else:
-    st.warning("⏳ 24x7 Pro Studio UI (V2.2) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+    st.warning("⏳ 24x7 Hedge Fund Engine (V3.0) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
     time.sleep(2)
     st.rerun()
