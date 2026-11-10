@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - V3.2 Iceberg Quant", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - V3.3 Simple Hindi", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -21,13 +21,13 @@ st.markdown("""<style>
 div.stButton > button { background-color: #334155 !important; color: #f8fafc !important; border: 1px solid #475569 !important; border-radius: 6px !important; padding: 2px 10px !important; }
 div.stButton > button:hover { background-color: #ef4444 !important; }
 .history-box { background:#1e293b; padding:12px; border-radius:12px; border:1px solid #334155; height: 340px; overflow-y: auto; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);}
-.hist-item { font-size: 13px; padding: 9px 11px; border-bottom: 1px solid #334155; color: #cbd5e1; margin-bottom:6px; border-radius:6px; background: #0f172a;}
+.hist-item { font-size: 13.5px; padding: 10px 12px; border-bottom: 1px solid #334155; color: #cbd5e1; margin-bottom:6px; border-radius:6px; background: #0f172a; line-height: 1.5;}
 .hist-tracking { border-left: 4px solid #38bdf8; }
 .hist-closed-win { border-left: 4px solid #22c55e; background: #064e3b20; }
 .hist-closed-loss { border-left: 4px solid #ef4444; background: #7f1d1d20; }
 .hist-void-bull { border-left: 4px solid #22c55e; background: #064e3b15;}
 .hist-void-bear { border-left: 4px solid #ef4444; background: #7f1d1d15;}
-.hist-void-ice { border-left: 4px solid #38bdf8; background: #0c4a6e25;}
+.hist-void-ice { border-left: 4px solid #facc15; background: #42200630;}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
@@ -113,7 +113,7 @@ def fetch_advanced_klines():
     return None, 0.0, "NONE", 0.0
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (V3.2 ICEBERG QUANT ENGINE)
+# 24x7 BACKGROUND WORKER (V3.3 SIMPLE HINDI EDITION)
 # ============================================================================
 def background_sniper_worker(eng, worker_id):
     SPREAD_VOID_THRESHOLD = 4.0
@@ -134,9 +134,9 @@ def background_sniper_worker(eng, worker_id):
                     
                     if c_time != eng.get("last_fibo_candle_time", 0):
                         if fibo_data["long_sig"] and htf_trend == "BULLISH":
-                            new_master_sig = "BUY"; master_sig_reason = "🚀 FIBO 14.6% MOMENTUM"; eng["last_fibo_candle_time"] = c_time
+                            new_master_sig = "BUY"; master_sig_reason = "🚀 Fibo 14.6% तेज़ मोमेंटम"; eng["last_fibo_candle_time"] = c_time
                         elif fibo_data["short_sig"] and htf_trend == "BEARISH":
-                            new_master_sig = "SELL"; master_sig_reason = "🚀 FIBO 14.6% MOMENTUM"; eng["last_fibo_candle_time"] = c_time
+                            new_master_sig = "SELL"; master_sig_reason = "🚀 Fibo 14.6% तेज़ मोमेंटम"; eng["last_fibo_candle_time"] = c_time
                             
                     eng["cvd_5m"] = cvd_5m; eng["cvd_trend"] = 1 if cvd_5m > 0 else -1
                 eng["last_kline_fetch"] = now_ts
@@ -161,9 +161,9 @@ def background_sniper_worker(eng, worker_id):
                 if macd_diff > 1.2: eng["bull_confirm_ticks"] = min(5, eng["bull_confirm_ticks"] + 1); eng["bear_confirm_ticks"] = 0
                 elif macd_diff < -1.2: eng["bear_confirm_ticks"] = min(5, eng["bear_confirm_ticks"] + 1); eng["bull_confirm_ticks"] = 0
                 else: eng["bull_confirm_ticks"] = max(0, eng["bull_confirm_ticks"] - 1); eng["bear_confirm_ticks"] = max(0, eng["bear_confirm_ticks"] - 1)
-                if eng["bull_confirm_ticks"] >= 3: eng["last_obi_state"] = "BULL"; eng["obi_state_time"] = now_ts
-                elif eng["bear_confirm_ticks"] >= 3: eng["last_obi_state"] = "BEAR"; eng["obi_state_time"] = now_ts
-                elif now_ts - eng.get("obi_state_time", 0.0) > 180: eng["last_obi_state"] = "NONE"
+                if eng["bull_confirm_ticks"] >= 3: eng["last_obi_state"] = "बायर्स हावी"; eng["obi_state_time"] = now_ts
+                elif eng["bear_confirm_ticks"] >= 3: eng["last_obi_state"] = "सेलर्स हावी"; eng["obi_state_time"] = now_ts
+                elif now_ts - eng.get("obi_state_time", 0.0) > 180: eng["last_obi_state"] = "शांत"
 
                 px_diff = px - eng["last_px"]; eng["px_diff"] = px_diff; eng["last_px"] = px
                 if px_diff <= -15.0: eng["spike_active"] = 1
@@ -171,68 +171,70 @@ def background_sniper_worker(eng, worker_id):
                 else: eng["spike_active"] = 0
 
                 # ====================================================================
-                # 2. NEW QUANT LOGIC: ICEBERG ACCUMULATION & VOID DIVERGENCE ENGINE
+                # 2. SIMPLE HINDI ICEBERG & WHALE TRACKER
                 # ====================================================================
-                # Natural 1.5% decay every 2s so old noise fades out without any cooldown timer
                 eng["iceberg_score"] = eng.get("iceberg_score", 0.0) * 0.985
-                imbalance_delta = buy_pressure - 50.0 # Range: -50 to +50
+                imbalance_delta = buy_pressure - 50.0
 
-                # Continuous stealth absorption in sideways market (High imbalance, tiny price move)
                 if abs(imbalance_delta) >= 12.0 and abs(px_diff) <= 5.0:
                     eng["iceberg_score"] += (imbalance_delta * 0.18)
 
-                # When Liquidity Void (Spread >= $4.0) hits: Analyze True Intent!
+                def get_simple_mood(score_val):
+                    if score_val >= 150.0: return "🔥 बायर्स का पूरा कब्ज़ा (BUY ढूँढें)"
+                    elif score_val >= 50.0: return "🟢 बायर्स माल भर रहे हैं"
+                    elif score_val <= -150.0: return "🔥 सेलर्स का पूरा कब्ज़ा (SELL ढूँढें)"
+                    elif score_val <= -50.0: return "🔴 सेलर्स माल दबा रहे हैं"
+                    else: return "⚖️ बराबरी की टक्कर (वेट करें)"
+
                 if current_spread >= SPREAD_VOID_THRESHOLD:
                     spread_weight = min(current_spread / 4.0, 3.5)
                     void_delta = imbalance_delta * spread_weight * 0.65
                     
-                    # Detect Hidden Iceberg Divergence vs Aggressive Sweep
                     if px_diff < -3.0 and buy_pressure >= 56.0:
-                        # Price dropped, but Buyers have a huge wall -> Passive Whale Absorbing the dip!
-                        action_tag = "🧊 Bull Iceberg (Dip Absorbed)"
+                        action_tag = "🚨 नकली गिरावट! व्हेल नीचे खरीद रही है"
+                        vol_desc = f"व्हेल ने खरीदा: +{abs(net_vol):.0f} BTC"
                         cls_tag = "hist-void-ice"
                         eng["iceberg_score"] += abs(void_delta) * 1.4
                     elif px_diff > 3.0 and buy_pressure <= 44.0:
-                        # Price jumped, but Sellers have a huge wall -> Passive Whale Absorbing the pump!
-                        action_tag = "🧊 Bear Iceberg (Pump Absorbed)"
+                        action_tag = "🚨 नकली उछाल! व्हेल ऊपर बेच रही है"
+                        vol_desc = f"व्हेल ने बेचा: -{abs(net_vol):.0f} BTC"
                         cls_tag = "hist-void-ice"
                         eng["iceberg_score"] -= abs(void_delta) * 1.4
                     elif buy_pressure >= 55.0:
-                        action_tag = "🟢 Buyer Sweep (Aggressive)"
+                        action_tag = "🟢 बायर्स का सीधा हमला (तेज़ खरीदारी)"
+                        vol_desc = f"बायर्स ने उठाए: +{abs(net_vol):.0f} BTC ({buy_pressure:.0f}%)"
                         cls_tag = "hist-void-bull"
                         eng["iceberg_score"] += void_delta
                     elif buy_pressure <= 45.0:
-                        action_tag = "🔴 Seller Sweep (Aggressive)"
+                        action_tag = "🔴 सेलर्स का सीधा हमला (तेज़ बिकवाली)"
+                        vol_desc = f"सेलर्स ने पटके: -{abs(net_vol):.0f} BTC ({100-buy_pressure:.0f}%)"
                         cls_tag = "hist-void-bear"
                         eng["iceberg_score"] += void_delta
                     else:
-                        action_tag = "⚪ Mixed Void Chop"
+                        action_tag = "⚪ दोनों तरफ की खींचतान (कोई साफ दिशा नहीं)"
+                        vol_desc = f"अंतर: {net_vol:+.0f} BTC"
                         cls_tag = "hist-item"
 
                     eng["iceberg_score"] = max(-300.0, min(300.0, eng["iceberg_score"]))
-                    
-                    if eng["iceberg_score"] >= 120.0: eng["iceberg_state"] = "🐳 HEAVY BUY ACCUMULATION"
-                    elif eng["iceberg_score"] >= 50.0: eng["iceberg_state"] = "🟢 Mild Buy Absorption"
-                    elif eng["iceberg_score"] <= -120.0: eng["iceberg_state"] = "🐳 HEAVY SELL DISTRIBUTION"
-                    elif eng["iceberg_score"] <= -50.0: eng["iceberg_state"] = "🔴 Mild Sell Distribution"
-                    else: eng["iceberg_state"] = "⚖️ Neutral / Balanced"
+                    eng["iceberg_state"] = get_simple_mood(eng["iceberg_score"])
 
-                    jump_txt = f"+${px_diff:.1f}" if px_diff > 0 else f"${px_diff:.1f}"
+                    jump_txt = f"प्राइस +${px_diff:.1f} उछला" if px_diff > 0 else f"प्राइस -${abs(px_diff):.1f} गिरा"
+                    mood_short = "🟢 बायर्स आगे" if eng["iceberg_score"] > 30 else ("🔴 सेलर्स आगे" if eng["iceberg_score"] < -30 else "⚖️ बराबरी पर")
+
                     void_obj = {
-                        "time": now_ist_str, "spread": current_spread, "jump": jump_txt,
-                        "action": action_tag, "cls": cls_tag, "b_pct": buy_pressure,
-                        "net_vol": net_vol, "score_snap": eng["iceberg_score"]
+                        "time": now_ist_str,
+                        "action": action_tag,
+                        "cls": cls_tag,
+                        "jump_txt": jump_txt,
+                        "vol_desc": vol_desc,
+                        "mood_short": f"{mood_short} (स्कोर: {eng['iceberg_score']:+.0f})"
                     }
                     if not eng["void_ledger"] or eng["void_ledger"][0]["time"] != now_ist_str:
                         eng["void_ledger"].insert(0, void_obj)
                         eng["void_ledger"] = eng["void_ledger"][:25]
                 else:
                     eng["iceberg_score"] = max(-300.0, min(300.0, eng["iceberg_score"]))
-                    if eng["iceberg_score"] >= 120.0: eng["iceberg_state"] = "🐳 HEAVY BUY ACCUMULATION"
-                    elif eng["iceberg_score"] >= 50.0: eng["iceberg_state"] = "🟢 Mild Buy Absorption"
-                    elif eng["iceberg_score"] <= -120.0: eng["iceberg_state"] = "🐳 HEAVY SELL DISTRIBUTION"
-                    elif eng["iceberg_score"] <= -50.0: eng["iceberg_state"] = "🔴 Mild Sell Distribution"
-                    else: eng["iceberg_state"] = "⚖️ Neutral / Balanced"
+                    eng["iceberg_state"] = get_simple_mood(eng["iceberg_score"])
 
                 # 3. SWEEP & ZONE ABSORPTION
                 sh, sl = eng["swing_high"], eng["swing_low"]; danger_zone = 45.0
@@ -248,25 +250,20 @@ def background_sniper_worker(eng, worker_id):
                     elif near_resistance and (eng["cvd_trend"] == 1 or buy_pressure <= 46.0): eng["abs_status"] = -1; eng["abs_latch_time"] = now_ts
                     elif now_ts - eng.get("abs_latch_time", 0.0) > 180: eng["abs_status"] = 0
 
-                # ====================================================================
-                # 4. MASTER SIGNAL CONFLUENCE (3X SWEEP OR ICEBERG BREAKOUT)
-                # ====================================================================
-                obi_bull_ok = (eng["last_obi_state"] == "BULL") or (macd_diff > 0.8 and buy_pressure >= 54.0)
-                obi_bear_ok = (eng["last_obi_state"] == "BEAR") or (macd_diff < -0.8 and buy_pressure <= 46.0)
+                # 4. MASTER SIGNAL CONFLUENCE
+                obi_bull_ok = (eng["last_obi_state"] == "बायर्स हावी") or (macd_diff > 0.8 and buy_pressure >= 54.0)
+                obi_bear_ok = (eng["last_obi_state"] == "सेलर्स हावी") or (macd_diff < -0.8 and buy_pressure <= 46.0)
 
                 if not new_master_sig:
-                    # Trigger A: Classic 3X Sweep + HTF Trend
                     if eng["sweep_status"] == 1 and (eng["abs_status"] == 1 or obi_bull_ok) and eng["htf_trend"] == "BULLISH": 
-                        new_master_sig = "BUY"; master_sig_reason = "🔥 3X SWEEP"; eng["sweep_status"] = 0
+                        new_master_sig = "BUY"; master_sig_reason = "🔥 सपोर्ट ट्रैप (3X कन्फर्म)"; eng["sweep_status"] = 0
                     elif eng["sweep_status"] == -1 and (eng["abs_status"] == -1 or obi_bear_ok) and eng["htf_trend"] == "BEARISH": 
-                        new_master_sig = "SELL"; master_sig_reason = "🔥 3X SWEEP"; eng["sweep_status"] = 0
-                    
-                    # Trigger B: Sideways Iceberg Accumulation Breakout!
+                        new_master_sig = "SELL"; master_sig_reason = "🔥 रेजिस्टेंस ट्रैप (3X कन्फर्म)"; eng["sweep_status"] = 0
                     elif eng["iceberg_score"] >= 150.0 and obi_bull_ok and px_diff >= 5.0:
-                        new_master_sig = "BUY"; master_sig_reason = "🐳 ICEBERG ACCUMULATION BREAKOUT"
-                        eng["iceberg_score"] = 60.0 # Reset partially after firing
+                        new_master_sig = "BUY"; master_sig_reason = "🐳 व्हेल खरीदारी ब्रेकआउट"
+                        eng["iceberg_score"] = 60.0
                     elif eng["iceberg_score"] <= -150.0 and obi_bear_ok and px_diff <= -5.0:
-                        new_master_sig = "SELL"; master_sig_reason = "🐳 ICEBERG DISTRIBUTION BREAKOUT"
+                        new_master_sig = "SELL"; master_sig_reason = "🐳 व्हेल बिकवाली ब्रेकडाउन"
                         eng["iceberg_score"] = -60.0
 
                 if new_master_sig and eng["track_status"] == "Tracking" and eng["track_signal"] == new_master_sig:
@@ -275,7 +272,7 @@ def background_sniper_worker(eng, worker_id):
                 # 5. SMART POST-SIGNAL TRAILING TRACKER
                 if new_master_sig and eng["track_signal"] and eng["track_signal"] != new_master_sig and eng["track_status"] == "Tracking":
                     if eng["active_trade_obj"]:
-                        final_pnl = eng["active_trade_obj"]["live_pnl"]; eng["track_status"] = "Closed (Opposite Signal)"
+                        final_pnl = eng["active_trade_obj"]["live_pnl"]; eng["track_status"] = "उल्टा सिग्नल आने पर बंद"
                         eng["active_trade_obj"]["status"] = eng["track_status"]; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
                         eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None
 
@@ -295,9 +292,9 @@ def background_sniper_worker(eng, worker_id):
 
                         if px <= trail_sl_px:
                             eng["track_status"] = "Closed"; final_pnl = live_pnl
-                            if final_pnl < 0: sts_text = f"🛑 Hard SL Hit ({final_pnl:+.0f}p)"
-                            elif final_pnl < 140: sts_text = f"🛡️ Break-Even Hit (+{final_pnl:,.0f}p)"
-                            else: sts_text = f"✅ Smart Lock (+{final_pnl:,.0f}p) [Peak: +{max_pnl:,.0f}p]"
+                            if final_pnl < 0: sts_text = f"🛑 स्टॉप-लॉस हिट ({final_pnl:+.0f}p)"
+                            elif final_pnl < 140: sts_text = f"🛡️ नो-लॉस पर निकला (+{final_pnl:,.0f}p)"
+                            else: sts_text = f"✅ प्रॉफिट लॉक (+{final_pnl:,.0f}p) [हाई: +{max_pnl:,.0f}p]"
                             eng["active_trade_obj"]["status"] = sts_text; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
                             eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None
 
@@ -310,9 +307,9 @@ def background_sniper_worker(eng, worker_id):
 
                         if px >= trail_sl_px:
                             eng["track_status"] = "Closed"; final_pnl = live_pnl
-                            if final_pnl < 0: sts_text = f"🛑 Hard SL Hit ({final_pnl:+.0f}p)"
-                            elif final_pnl < 140: sts_text = f"🛡️ Break-Even Hit (+{final_pnl:,.0f}p)"
-                            else: sts_text = f"✅ Smart Lock (+{final_pnl:,.0f}p) [Peak: +{max_pnl:,.0f}p]"
+                            if final_pnl < 0: sts_text = f"🛑 स्टॉप-लॉस हिट ({final_pnl:+.0f}p)"
+                            elif final_pnl < 140: sts_text = f"🛡️ नो-लॉस पर निकला (+{final_pnl:,.0f}p)"
+                            else: sts_text = f"✅ प्रॉफिट लॉक (+{final_pnl:,.0f}p) [हाई: +{max_pnl:,.0f}p]"
                             eng["active_trade_obj"]["status"] = sts_text; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
                             eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None
 
@@ -324,7 +321,7 @@ def background_sniper_worker(eng, worker_id):
         time.sleep(2)
 
 @st.cache_resource
-def get_persistent_sniper_v3_2():
+def get_persistent_sniper_v3_3():
     worker_id = int(time.time() * 1000)
     eng = {
         "worker_id": worker_id, "ema_initialized": False, "px": 0.0, "buy_pressure": 50.0, "ask_pct": 50.0,
@@ -334,20 +331,20 @@ def get_persistent_sniper_v3_2():
         "fibo_long_lvl": 0.0, "fibo_short_lvl": 0.0, "last_fibo_candle_time": 0, "lowest_sweep_px": 999999.0, "highest_sweep_px": 0.0,
         "sweep_latch_time": 0.0, "abs_latch_time": 0.0, "obi_state_time": 0.0, "cvd_5m": 0.0, "cvd_trend": 0, "last_kline_fetch": 0.0, 
         "sweep_status": 0, "abs_status": 0, "htf_trend": "NONE", "htf_sma": 0.0,
-        "iceberg_score": 0.0, "iceberg_state": "⚖️ Neutral / Balanced",
+        "iceberg_score": 0.0, "iceberg_state": "⚖️ बराबरी की टक्कर (वेट करें)",
         "active_trade_obj": None, "closed_trades_ledger": [], "void_ledger": [], "track_signal": None, "track_entry_px": 0.0, 
-        "track_max_fav": 0.0, "track_status": "Idle", "last_obi_state": "NONE", "last_err": None
+        "track_max_fav": 0.0, "track_status": "Idle", "last_obi_state": "शांत", "last_err": None
     }
     threading.Thread(target=background_sniper_worker, args=(eng, worker_id), daemon=True).start()
     return eng
 
-eng = get_persistent_sniper_v3_2()
+eng = get_persistent_sniper_v3_3()
 
 col_top1, col_top2, col_top3 = st.columns([0.70, 0.15, 0.15])
 with col_top2:
-    if st.button("🔄 Reset Iceberg"): eng["iceberg_score"] = 0.0; st.rerun()
+    if st.button("🔄 मीटर रीसेट"): eng["iceberg_score"] = 0.0; st.rerun()
 with col_top3:
-    if st.button("🔄 Reset Spread"): eng["max_spread"] = 0.0; eng["max_spread_time"] = "--"; st.rerun()
+    if st.button("🔄 स्प्रेड रीसेट"): eng["max_spread"] = 0.0; eng["max_spread_time"] = "--"; st.rerun()
 
 # ============================================================================
 # WIN RATE CALCULATOR
@@ -367,80 +364,87 @@ if eng["px"] > 0:
     htf_trend = eng["htf_trend"]; ice_score = eng["iceberg_score"]
 
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PRO QUANT TRADER (V3.2 ICEBERG) - BTC: ${px:,.1f} <span style='font-size:13px; color:#4ade80;'>[Live: {eng['last_update_ist']}]</span></h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ प्रो स्नाइपर डैशबोर्ड (V3.3 सरल हिंदी) - BTC: ${px:,.1f} <span style='font-size:13px; color:#4ade80;'>[लाइव: {eng['last_update_ist']}]</span></h3>", unsafe_allow_html=True)
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:12px; font-weight:bold;'>🔴 LIVE OBI 🟢</div><div style='font-size:17px; font-weight:900; margin-top:5px;'><span style='color:#22c55e;'>{buy_pressure:.1f}%</span> / <span style='color:#ef4444;'>{eng['ask_pct']:.1f}%</span></div><div class='bar-container'><div class='bar-fill' style='width:{buy_pressure}%;'></div></div></div>", unsafe_allow_html=True)
+    with c1: st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:12px; font-weight:bold;'>🔴 बायर्स vs सेलर्स 🟢</div><div style='font-size:17px; font-weight:900; margin-top:5px;'><span style='color:#22c55e;'>{buy_pressure:.1f}%</span> / <span style='color:#ef4444;'>{eng['ask_pct']:.1f}%</span></div><div class='bar-container'><div class='bar-fill' style='width:{buy_pressure}%;'></div></div></div>", unsafe_allow_html=True)
     with c2: 
         diff_col = "#22c55e" if macd_diff > 0 else "#ef4444"
         ticks_str = "🟢" * eng["bull_confirm_ticks"] if eng["bull_confirm_ticks"] > 0 else ("🔴" * eng["bear_confirm_ticks"])
-        st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:12px; font-weight:bold;'>📊 OBI MACD ({eng['last_obi_state']})</div><div style='font-size:11px; color:#cbd5e1; margin-top:4px;'>Ticks: {ticks_str if ticks_str else '⚪'}</div><div style='font-size:18px; font-weight:900; color:{diff_col}; margin-top:4px;'>Diff: {macd_diff:+.2f}%</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:12px; font-weight:bold;'>📊 ऑर्डर फ्लो ({eng['last_obi_state']})</div><div style='font-size:11px; color:#cbd5e1; margin-top:4px;'>मजबूती: {ticks_str if ticks_str else '⚪'}</div><div style='font-size:18px; font-weight:900; color:{diff_col}; margin-top:4px;'>रफ्तार: {macd_diff:+.2f}%</div></div>", unsafe_allow_html=True)
     with c3:
         ice_col = "#22c55e" if ice_score >= 50 else ("#ef4444" if ice_score <= -50 else "#38bdf8")
-        ice_pct = min(100.0, max(0.0, (ice_score + 300.0) / 600.0 * 100.0))
-        st.markdown(f"<div class='metric-box'><div style='color:#facc15; font-size:12px; font-weight:bold;'>🐳 ICEBERG NET FLOW</div><div style='font-size:18px; font-weight:900; color:{ice_col}; margin-top:4px;'>{ice_score:+.1f} <span style='font-size:11px; color:#cbd5e1;'>(±150 Trig)</span></div><div style='font-size:11px; color:#94a3b8; margin-top:3px;'>{eng['iceberg_state']}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='metric-box'><div style='color:#facc15; font-size:12px; font-weight:bold;'>🐳 स्मार्ट मनी मीटर (कौन हावी?)</div><div style='font-size:18px; font-weight:900; color:{ice_col}; margin-top:4px;'>स्कोर: {ice_score:+.0f} <span style='font-size:11px; color:#cbd5e1;'>(±150 पर ट्रेड)</span></div><div style='font-size:11.5px; color:#ffffff; font-weight:bold; margin-top:4px;'>{eng['iceberg_state']}</div></div>", unsafe_allow_html=True)
     with c4:
         htf_col = "#22c55e" if htf_trend == "BULLISH" else "#ef4444"
-        st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:12px; font-weight:bold;'>🏢 HTF TREND (100-SMA)</div><div style='font-size:17px; font-weight:900; color:{htf_col}; margin-top:5px;'>{htf_trend} <br><span style='font-size:12px; color:#cbd5e1;'>Base: ${eng['htf_sma']:,.1f}</span></div></div>", unsafe_allow_html=True)
-    with c5: st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:12px; font-weight:bold;'>🧱 SPREAD SPIKE</div><div style='font-size:13px; color:#cbd5e1; margin-top:4px;'>Live: <b style='color:#ffffff;'>${current_spread:.2f}</b></div><div style='font-size:15px; font-weight:900; color:#facc15; margin-top:4px;'>Max: ${eng['max_spread']:.2f} <span style='font-size:10px; color:#94a3b8;'>({eng['max_spread_time']})</span></div></div>", unsafe_allow_html=True)
+        htf_hindi = "🟢 तेज़ी (BUY ट्रेंड)" if htf_trend == "BULLISH" else "🔴 मंदी (SELL ट्रेंड)"
+        st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:12px; font-weight:bold;'>🏢 बड़ा ट्रेंड (100-SMA)</div><div style='font-size:16px; font-weight:900; color:{htf_col}; margin-top:5px;'>{htf_hindi} <br><span style='font-size:12px; color:#cbd5e1;'>औसत: ${eng['htf_sma']:,.1f}</span></div></div>", unsafe_allow_html=True)
+    with c5: st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:12px; font-weight:bold;'>🧱 ऑर्डरबुक गैप (Spread)</div><div style='font-size:13px; color:#cbd5e1; margin-top:4px;'>अभी: <b style='color:#ffffff;'>${current_spread:.2f}</b></div><div style='font-size:15px; font-weight:900; color:#facc15; margin-top:4px;'>सबसे बड़ा: ${eng['max_spread']:.2f}</div></div>", unsafe_allow_html=True)
 
     # ROW 2: ZONES AND TRACKER
     st.markdown("<br>", unsafe_allow_html=True)
     r2_c1, r2_c2 = st.columns([0.35, 0.65])
     with r2_c1:
-        swp_txt = "⏳ Normal Flow"; swp_col = "#94a3b8"
-        if eng["sweep_status"] == -2: swp_txt = "⚠️ Testing Support"; swp_col = "#facc15"
-        elif eng["sweep_status"] == 1: swp_txt = "🟢 Bull Sweep Armed"; swp_col = "#22c55e"
-        elif eng["sweep_status"] == 2: swp_txt = "⚠️ Testing Resistance"; swp_col = "#facc15"
-        elif eng["sweep_status"] == -1: swp_txt = "🔴 Bear Sweep Armed"; swp_col = "#ef4444"
+        swp_txt = "⏳ सामान्य चाल (लेवल का इंतज़ार)"; swp_col = "#94a3b8"
+        if eng["sweep_status"] == -2: swp_txt = "⚠️ सपोर्ट टेस्ट हो रहा है"; swp_col = "#facc15"
+        elif eng["sweep_status"] == 1: swp_txt = "🟢 सपोर्ट ट्रैप तैयार! (BUY की तलाश)"; swp_col = "#22c55e"
+        elif eng["sweep_status"] == 2: swp_txt = "⚠️ रेजिस्टेंस टेस्ट हो रहा है"; swp_col = "#facc15"
+        elif eng["sweep_status"] == -1: swp_txt = "🔴 रेजिस्टेंस ट्रैप तैयार! (SELL की तलाश)"; swp_col = "#ef4444"
         abs_txt = ""
-        if eng["abs_status"] == 1: abs_txt = "<div style='color:#22c55e; font-size:13px; font-weight:bold; margin-top:5px;'>🔥 Bullish Whale Absorption</div>"
-        elif eng["abs_status"] == -1: abs_txt = "<div style='color:#ef4444; font-size:13px; font-weight:bold; margin-top:5px;'>🔥 Bearish Whale Absorption</div>"
+        if eng["abs_status"] == 1: abs_txt = "<div style='color:#22c55e; font-size:13px; font-weight:bold; margin-top:5px;'>🔥 सपोर्ट पर व्हेल खरीदारी दिख रही है</div>"
+        elif eng["abs_status"] == -1: abs_txt = "<div style='color:#ef4444; font-size:13px; font-weight:bold; margin-top:5px;'>🔥 रेजिस्टेंस पर व्हेल बिकवाली दिख रही है</div>"
 
-        st.markdown(f"""<div class='zone-box' style='text-align:center;'><div style='color:#38bdf8; font-size:16px; font-weight:900; margin-bottom:15px; border-bottom:1px solid #334155; padding-bottom:10px;'>🎯 MARKET ZONES & TRAPS</div><div style='font-size:15px; color:#cbd5e1;'>🔴 Swing High: <b style='color:#ef4444;'>${sh:,.1f}</b></div><div style='font-size:13px; color:#94a3b8; margin-bottom:10px;'>⬇️ Fibo Short Rej (14.6%): <b style='color:#facc15;'>${fsh:,.1f}</b></div><div style='width:50%; margin:10px auto; border-top:1px dashed #475569;'></div><div style='font-size:13px; color:#94a3b8; margin-top:10px;'>⬆️ Fibo Long Rej (14.6%): <b style='color:#38bdf8;'>${flo:,.1f}</b></div><div style='font-size:15px; color:#cbd5e1;'>🟢 Swing Low: <b style='color:#22c55e;'>${sl:,.1f}</b></div><div style='margin-top:15px; font-size:15px; font-weight:bold; color:{swp_col}; padding:8px; background:#1e293b; border-radius:8px;'>{swp_txt}{abs_txt}</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class='zone-box' style='text-align:center;'><div style='color:#38bdf8; font-size:16px; font-weight:900; margin-bottom:15px; border-bottom:1px solid #334155; padding-bottom:10px;'>🎯 प्रमुख लेवल्स (Support & Resistance)</div><div style='font-size:15px; color:#cbd5e1;'>🔴 ऊपर की रुकावट (High): <b style='color:#ef4444;'>${sh:,.1f}</b></div><div style='font-size:13px; color:#94a3b8; margin-bottom:10px;'>⬇️ Fibo शॉर्ट लेवल (14.6%): <b style='color:#facc15;'>${fsh:,.1f}</b></div><div style='width:50%; margin:10px auto; border-top:1px dashed #475569;'></div><div style='font-size:13px; color:#94a3b8; margin-top:10px;'>⬆️ Fibo लॉन्ग लेवल (14.6%): <b style='color:#38bdf8;'>${flo:,.1f}</b></div><div style='font-size:15px; color:#cbd5e1;'>🟢 नीचे का सहारा (Low): <b style='color:#22c55e;'>${sl:,.1f}</b></div><div style='margin-top:15px; font-size:14px; font-weight:bold; color:{swp_col}; padding:8px; background:#1e293b; border-radius:8px;'>{swp_txt}{abs_txt}</div></div>""", unsafe_allow_html=True)
         
     with r2_c2:
         if eng["track_status"] == "Tracking" and eng["active_trade_obj"]:
             trk_col = "#22c55e" if eng["track_signal"] == "BUY" else "#ef4444"; live_p = eng["active_trade_obj"]["live_pnl"]; max_p = eng["active_trade_obj"]["max_pnl"]; live_col = "#4ade80" if live_p >= 0 else "#f87171"
-            st.markdown(f"""<div class='signal-box' style='border-color:{trk_col}; background:#0f172a; flex-direction:row; justify-content:space-around;'>
-            <div style='text-align:left;'><div style='font-size:15px; color:#94a3b8; margin-bottom:5px;'>🎯 Active Trade Tracker</div><div style='font-size:24px; color:#ffffff; font-weight:900;'>{eng['track_signal']} @ ${eng['track_entry_px']:,.1f}</div><div style='font-size:13px; color:#c084fc; margin-top:4px;'>{eng['active_trade_obj']['reason']}</div><div style='font-size:13px; color:#facc15; margin-top:4px;'>SMART TIER TRAILING SL ACTIVE</div></div>
-            <div style='text-align:right; border-left:1px solid #334155; padding-left:25px;'><div style='font-size:15px; color:#94a3b8;'>Live PnL: <b style='color:{live_col}; font-size:32px;'>{live_p:+.1f}p</b></div><div style='font-size:15px; color:#cbd5e1; margin-top:8px;'>Max Favorable: <b style='color:#38bdf8;'>+{max_p:,.1f}p</b></div></div></div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div class='signal-box' style='border-color:#475569; color:#94a3b8;'>⏳ Scanning 3X Sweep, Fibo 14.6%, & Iceberg Accumulation ({htf_trend})...</div>", unsafe_allow_html=True)
+            
+            # Show current SL status in simple Hindi
+            if max_p >= 500: sl_hindi = "🔒 सुपर ट्रेलिंग चालू (हाई से 150p पीछे)"
+            elif max_p >= 300: sl_hindi = "🔒 +150 पॉइंट्स प्रॉफिट पक्का लॉक हो चुका है!"
+            elif max_p >= 150: sl_hindi = "🛡️ रिस्क ज़ीरो! स्टॉप-लॉस कॉस्ट (+10p) पर आ गया है"
+            else: sl_hindi = "⚠️ शुरुआती स्टॉप-लॉस: -300 पॉइंट्स (+150p जाते ही रिस्क ज़ीरो होगा)"
 
-    # ROW 3: CLEAN LEDGERS & WIN RATE & ICEBERG VOIDS
+            st.markdown(f"""<div class='signal-box' style='border-color:{trk_col}; background:#0f172a; flex-direction:row; justify-content:space-around;'>
+            <div style='text-align:left;'><div style='font-size:15px; color:#94a3b8; margin-bottom:5px;'>🎯 लाइव ट्रेड चालू है</div><div style='font-size:24px; color:#ffffff; font-weight:900;'>{eng['track_signal']} @ ${eng['track_entry_px']:,.1f}</div><div style='font-size:14px; color:#c084fc; margin-top:4px;'>कारण: {eng['active_trade_obj']['reason']}</div><div style='font-size:13px; color:#facc15; margin-top:6px;'>{sl_hindi}</div></div>
+            <div style='text-align:right; border-left:1px solid #334155; padding-left:25px;'><div style='font-size:15px; color:#94a3b8;'>अभी चल रहा प्रॉफिट/लॉस: <b style='color:{live_col}; font-size:32px;'>{live_p:+.1f}p</b></div><div style='font-size:15px; color:#cbd5e1; margin-top:8px;'>अधिकतम गया (High): <b style='color:#38bdf8;'>+{max_p:,.1f}p</b></div></div></div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='signal-box' style='border-color:#475569; color:#94a3b8;'>⏳ पक्के सिग्नल की तलाश जारी है... ({eng['iceberg_state']})</div>", unsafe_allow_html=True)
+
+    # ROW 3: CLEAN LEDGERS & WIN RATE & SIMPLE HINDI X-RAY
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown(f"<div style='margin-bottom:10px; font-weight:900; color:{win_col}; font-size:18px; padding:10px; background:#0f172a; border-radius:8px; border:1px solid #334155; display:inline-block;'>🏆 Smart Money Win Rate: {win_rate:.1f}% <span style='font-size:13px; color:#94a3b8;'>(Wins: {wins} | Losses: {losses} | Total: {total_trades})</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='margin-bottom:10px; font-weight:900; color:{win_col}; font-size:18px; padding:10px; background:#0f172a; border-radius:8px; border:1px solid #334155; display:inline-block;'>🏆 सिस्टम की सफलता दर (Win Rate): {win_rate:.1f}% <span style='font-size:13px; color:#94a3b8;'>(जीते: {wins} | हारे: {losses} | कुल ट्रेड: {total_trades})</span></div>", unsafe_allow_html=True)
     
-    h_col1, h_col2, h_col3 = st.columns([0.32, 0.34, 0.34])
+    h_col1, h_col2, h_col3 = st.columns([0.30, 0.34, 0.36])
     
     with h_col1:
-        st.markdown("<div style='color:#38bdf8; font-size:15px; font-weight:bold; margin-bottom:10px;'>🔥 Live Active Trade Logs</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#38bdf8; font-size:15px; font-weight:bold; margin-bottom:10px;'>🔥 अभी चल रहा ट्रेड</div>", unsafe_allow_html=True)
         if eng["active_trade_obj"]:
             h = eng["active_trade_obj"]; h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"; live_col = "#4ade80" if h["live_pnl"] >= 0 else "#f87171"
-            h_html = f"<div class='hist-item hist-tracking'><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#c084fc; font-weight:bold;'>{h['reason']}</span><br><br>Live: <b style='color:{live_col}; font-size:15px;'>{h['live_pnl']:+.1f}p</b> | Max: +{h['max_pnl']:,.1f}p</div>"
-        else: h_html = "<div class='hist-item' style='color:#64748b; text-align:center; padding-top:140px;'>No Active Trade</div>"
+            h_html = f"<div class='hist-item hist-tracking'><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#c084fc; font-weight:bold;'>{h['reason']}</span><br><br>अभी: <b style='color:{live_col}; font-size:16px;'>{h['live_pnl']:+.1f}p</b> | हाई: +{h['max_pnl']:,.1f}p</div>"
+        else: h_html = "<div class='hist-item' style='color:#64748b; text-align:center; padding-top:140px;'>कोई ट्रेड चालू नहीं है</div>"
         st.markdown(f"<div class='history-box'>{h_html}</div>", unsafe_allow_html=True)
 
     with h_col2:
-        st.markdown("<div style='color:#facc15; font-size:15px; font-weight:bold; margin-bottom:10px;'>📓 Closed Trades Ledger</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#facc15; font-size:15px; font-weight:bold; margin-bottom:10px;'>📓 पूरे हो चुके ट्रेड्स (प्रॉफिट/लॉस खाता)</div>", unsafe_allow_html=True)
         h_html = ""
         for h in eng["closed_trades_ledger"]:
             h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"; pnl_col = "#22c55e" if h["final_pnl"] > 0 else "#ef4444"; border_cls = "hist-closed-win" if h["final_pnl"] > 0 else "hist-closed-loss"
-            h_html += f"<div class='hist-item {border_cls}' style='display:flex; justify-content:space-between; align-items:center;'><div><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b> <span style='color:#c084fc; font-size:11px;'>[{h['reason']}]</span><br><span style='color:#94a3b8; font-size:11.5px;'>{h['status']}</span></div><div style='font-size:18px; font-weight:900; color:{pnl_col};'>{h['final_pnl']:+.1f}p</div></div>"
-        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:140px;\">No Closed Trades Yet</div>'}</div>", unsafe_allow_html=True)
+            h_html += f"<div class='hist-item {border_cls}' style='display:flex; justify-content:space-between; align-items:center;'><div><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b> <span style='color:#c084fc; font-size:11px;'>[{h['reason']}]</span><br><span style='color:#94a3b8; font-size:12px;'>{h['status']} (बंद: {h['close_time']})</span></div><div style='font-size:18px; font-weight:900; color:{pnl_col};'>{h['final_pnl']:+.1f}p</div></div>"
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:140px;\">अभी कोई ट्रेड बंद नहीं हुआ</div>'}</div>", unsafe_allow_html=True)
 
     with h_col3:
-        st.markdown("<div style='color:#38bdf8; font-size:15px; font-weight:bold; margin-bottom:10px;'>🧊 Iceberg & Void X-Ray (Spread > $4.0)</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#38bdf8; font-size:15px; font-weight:bold; margin-bottom:10px;'>🕵️ व्हेल की चाल (सरल भाषा में एक्स-रे)</div>", unsafe_allow_html=True)
         h_html = ""
         for v in eng["void_ledger"]:
-            h_html += f"<div class='hist-item {v['cls']}'><b>{v['time']} - <span style='color:#facc15;'>Void: ${v['spread']:.1f}</span> | {v['action']}</b><br><span style='color:#cbd5e1;'>Jump: {v['jump']} | Buy: {v['b_pct']:.0f}% | Net Vol: {v['net_vol']:+.1f} BTC | <b>Score: {v['score_snap']:+.0f}</b></span></div>"
-        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:140px;\">No Voids Yet</div>'}</div>", unsafe_allow_html=True)
+            h_html += f"<div class='hist-item {v['cls']}'><b>{v['time']} — {v['action']}</b><br><span style='color:#cbd5e1;'>{v['jump_txt']} | {v['vol_desc']}</span><br><span style='color:#facc15; font-weight:bold;'>कुल माहौल: {v['mood_short']}</span></div>"
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:140px;\">अभी कोई बड़ी हलचल नहीं हुई</div>'}</div>", unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
 
 else:
-    st.warning("⏳ 24x7 V3.2 (Iceberg Quant Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+    st.warning("⏳ 24x7 V3.3 (सरल हिंदी एडिशन) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
     time.sleep(2)
     st.rerun()
