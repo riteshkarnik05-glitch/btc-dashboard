@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Manual Trader - V3.0 Hedge Fund Edition", layout="wide")
+st.set_page_config(page_title="Pro Manual Trader - V3.1 Liquidity Voids", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -20,11 +20,12 @@ st.markdown("""<style>
 .bar-fill { background: #22c55e; height: 100%; transition: width 0.3s ease; }
 div.stButton > button { background-color: #334155 !important; color: #f8fafc !important; border: 1px solid #475569 !important; border-radius: 6px !important; padding: 2px 10px !important; }
 div.stButton > button:hover { background-color: #ef4444 !important; }
-.history-box { background:#1e293b; padding:12px; border-radius:12px; border:1px solid #334155; height: 320px; overflow-y: auto; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);}
+.history-box { background:#1e293b; padding:12px; border-radius:12px; border:1px solid #334155; height: 340px; overflow-y: auto; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);}
 .hist-item { font-size: 13.5px; padding: 10px 12px; border-bottom: 1px solid #334155; color: #cbd5e1; margin-bottom:6px; border-radius:6px; background: #0f172a;}
 .hist-tracking { border-left: 4px solid #38bdf8; }
 .hist-closed-win { border-left: 4px solid #22c55e; background: #064e3b20; }
 .hist-closed-loss { border-left: 4px solid #ef4444; background: #7f1d1d20; }
+.hist-void { border-left: 4px solid #facc15; background: #42200620;}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
@@ -82,7 +83,6 @@ def fetch_advanced_klines():
                 df.rename(columns={'o':'Open', 'h':'High', 'l':'Low', 'c':'Close', 'v':'Volume', 't':'Time'}, inplace=True)
                 for col in ['Open', 'High', 'Low', 'Close', 'Volume']: df[col] = df[col].astype(float)
                 
-                # HTF Trend (100-SMA on 1m chart approximates a 1.5 hour trend)
                 sma_100 = df['Close'].mean()
                 latest_close = df['Close'].iloc[-1]
                 htf_trend = "BULLISH" if latest_close > sma_100 else "BEARISH"
@@ -110,15 +110,14 @@ def fetch_advanced_klines():
 # 24x7 BACKGROUND WORKER 
 # ============================================================================
 def background_sniper_worker(eng, worker_id):
+    SPREAD_VOID_THRESHOLD = 4.0 # 4 Dollars Spread (Liquidity Void)
+    
     while True:
         if eng.get("worker_id") != worker_id: break
         try:
             now_ts = time.time(); l2_data = fetch_l2_orderbook()
             
-            # Master Signal Placeholder
-            new_master_sig = None
-            master_sig_reason = ""
-            now_ist_str = get_ist_time_str()
+            new_master_sig = None; master_sig_reason = ""; now_ist_str = get_ist_time_str()
 
             if now_ts - eng["last_kline_fetch"] > 20:
                 fibo_data, cvd_5m, htf_trend, sma_100 = fetch_advanced_klines()
@@ -128,14 +127,11 @@ def background_sniper_worker(eng, worker_id):
                     eng["fibo_long_lvl"] = fibo_data["long_lvl"]; eng["fibo_short_lvl"] = fibo_data["short_lvl"]
                     c_time = fibo_data["candle_time"]
                     
-                    # FIBO MASTER ACTIVATION (Aligned with HTF Trend)
                     if c_time != eng.get("last_fibo_candle_time", 0):
                         if fibo_data["long_sig"] and htf_trend == "BULLISH":
-                            new_master_sig = "BUY"; master_sig_reason = "🚀 FIBO MOMENTUM"
-                            eng["last_fibo_candle_time"] = c_time
+                            new_master_sig = "BUY"; master_sig_reason = "🚀 FIBO MOMENTUM"; eng["last_fibo_candle_time"] = c_time
                         elif fibo_data["short_sig"] and htf_trend == "BEARISH":
-                            new_master_sig = "SELL"; master_sig_reason = "🚀 FIBO MOMENTUM"
-                            eng["last_fibo_candle_time"] = c_time
+                            new_master_sig = "SELL"; master_sig_reason = "🚀 FIBO MOMENTUM"; eng["last_fibo_candle_time"] = c_time
                             
                     eng["cvd_5m"] = cvd_5m; eng["cvd_trend"] = 1 if cvd_5m > 0 else -1
                 eng["last_kline_fetch"] = now_ts
@@ -155,6 +151,7 @@ def background_sniper_worker(eng, worker_id):
                     obi_histogram = eng["fast_ema"] - eng["slow_ema"]; eng["signal_line"] = obi_histogram * 0.20 + eng["signal_line"] * 0.80
                     macd_diff = obi_histogram - eng["signal_line"]
                 eng["obi_histogram"] = obi_histogram; eng["macd_diff"] = macd_diff
+                
                 if macd_diff > 1.2: eng["bull_confirm_ticks"] = min(5, eng["bull_confirm_ticks"] + 1); eng["bear_confirm_ticks"] = 0
                 elif macd_diff < -1.2: eng["bear_confirm_ticks"] = min(5, eng["bear_confirm_ticks"] + 1); eng["bull_confirm_ticks"] = 0
                 else: eng["bull_confirm_ticks"] = max(0, eng["bull_confirm_ticks"] - 1); eng["bear_confirm_ticks"] = max(0, eng["bear_confirm_ticks"] - 1)
@@ -166,6 +163,21 @@ def background_sniper_worker(eng, worker_id):
                 if px_diff <= -15.0: eng["spike_active"] = 1
                 elif px_diff >= 15.0: eng["spike_active"] = -1
                 else: eng["spike_active"] = 0
+
+                # ==========================================
+                # NEW: LIQUIDITY VOID LOGGER (Spread > 4.0)
+                # ==========================================
+                if current_spread >= SPREAD_VOID_THRESHOLD:
+                    flow_txt = "🟢 Buyers Dominating" if buy_pressure > 55 else ("🔴 Sellers Dominating" if buy_pressure < 45 else "⚪ Mixed Flow")
+                    jump_txt = f"+${px_diff:.1f}" if px_diff > 0 else f"${px_diff:.1f}"
+                    void_obj = {
+                        "time": now_ist_str, "spread": current_spread, 
+                        "jump": jump_txt, "flow": flow_txt, "px": px, "b_pct": buy_pressure
+                    }
+                    # Prevent multiple logs in the exact same second
+                    if not eng["void_ledger"] or eng["void_ledger"][0]["time"] != now_ist_str:
+                        eng["void_ledger"].insert(0, void_obj)
+                        eng["void_ledger"] = eng["void_ledger"][:20]
 
                 # SWEEP & ABSORPTION
                 sh, sl = eng["swing_high"], eng["swing_low"]; danger_zone = 45.0
@@ -181,18 +193,15 @@ def background_sniper_worker(eng, worker_id):
                     elif near_resistance and (eng["cvd_trend"] == 1 or buy_pressure <= 46.0): eng["abs_status"] = -1; eng["abs_latch_time"] = now_ts
                     elif now_ts - eng.get("abs_latch_time", 0.0) > 180: eng["abs_status"] = 0
 
-                # MASTER 3X SIGNAL CONFLUENCE (Aligned with HTF Trend)
-                if not new_master_sig: # If Fibo didn't fire
+                # MASTER 3X SIGNAL CONFLUENCE
+                if not new_master_sig: 
                     obi_bull_ok = (eng["last_obi_state"] == "BULL") or (macd_diff > 0.8 and buy_pressure >= 54.0)
                     obi_bear_ok = (eng["last_obi_state"] == "BEAR") or (macd_diff < -0.8 and buy_pressure <= 46.0)
                     if eng["sweep_status"] == 1 and (eng["abs_status"] == 1 or obi_bull_ok) and eng["htf_trend"] == "BULLISH": 
-                        new_master_sig = "BUY"; master_sig_reason = "🔥 3X SWEEP"
-                        eng["sweep_status"] = 0
+                        new_master_sig = "BUY"; master_sig_reason = "🔥 3X SWEEP"; eng["sweep_status"] = 0
                     elif eng["sweep_status"] == -1 and (eng["abs_status"] == -1 or obi_bear_ok) and eng["htf_trend"] == "BEARISH": 
-                        new_master_sig = "SELL"; master_sig_reason = "🔥 3X SWEEP"
-                        eng["sweep_status"] = 0
+                        new_master_sig = "SELL"; master_sig_reason = "🔥 3X SWEEP"; eng["sweep_status"] = 0
 
-                # Ignore same direction
                 if new_master_sig and eng["track_status"] == "Tracking" and eng["track_signal"] == new_master_sig: new_master_sig = None
 
                 # POST-SIGNAL DYNAMIC TRAILING TRACKER
@@ -211,12 +220,10 @@ def background_sniper_worker(eng, worker_id):
                     
                     if t_type == "BUY":
                         live_pnl = px - t_entry; eng["track_max_fav"] = max(eng["track_max_fav"], px); max_pnl = eng["track_max_fav"] - t_entry
-                        
-                        # Smart Tier Trailing
-                        if max_pnl >= 500.0: trail_sl_px = eng["track_max_fav"] - 150.0 # Tier 3: Follow tight behind 150p
-                        elif max_pnl >= 300.0: trail_sl_px = t_entry + 150.0 # Tier 2: Lock 150p profit
-                        elif max_pnl >= 150.0: trail_sl_px = t_entry + 10.0 # Tier 1: Break-even
-                        else: trail_sl_px = t_entry - 300.0 # Base: Hard SL -300p
+                        if max_pnl >= 500.0: trail_sl_px = eng["track_max_fav"] - 150.0 
+                        elif max_pnl >= 300.0: trail_sl_px = t_entry + 150.0 
+                        elif max_pnl >= 150.0: trail_sl_px = t_entry + 10.0 
+                        else: trail_sl_px = t_entry - 300.0 
 
                         if px <= trail_sl_px:
                             eng["track_status"] = "Closed"; final_pnl = live_pnl
@@ -229,8 +236,6 @@ def background_sniper_worker(eng, worker_id):
 
                     elif t_type == "SELL":
                         live_pnl = t_entry - px; eng["track_max_fav"] = min(eng["track_max_fav"], px); max_pnl = t_entry - eng["track_max_fav"]
-                        
-                        # Smart Tier Trailing
                         if max_pnl >= 500.0: trail_sl_px = eng["track_max_fav"] + 150.0 
                         elif max_pnl >= 300.0: trail_sl_px = t_entry - 150.0 
                         elif max_pnl >= 150.0: trail_sl_px = t_entry - 10.0 
@@ -263,7 +268,7 @@ def get_persistent_sniper_v3():
         "fibo_long_lvl": 0.0, "fibo_short_lvl": 0.0, "last_fibo_candle_time": 0, "lowest_sweep_px": 999999.0, "highest_sweep_px": 0.0,
         "sweep_latch_time": 0.0, "abs_latch_time": 0.0, "obi_state_time": 0.0, "cvd_5m": 0.0, "cvd_trend": 0, "last_kline_fetch": 0.0, 
         "sweep_status": 0, "abs_status": 0, "htf_trend": "NONE", "htf_sma": 0.0,
-        "active_trade_obj": None, "closed_trades_ledger": [], "track_signal": None, "track_entry_px": 0.0, 
+        "active_trade_obj": None, "closed_trades_ledger": [], "void_ledger": [], "track_signal": None, "track_entry_px": 0.0, 
         "track_max_fav": 0.0, "track_status": "Idle", "last_obi_state": "NONE", "last_err": None
     }
     threading.Thread(target=background_sniper_worker, args=(eng, worker_id), daemon=True).start()
@@ -290,11 +295,10 @@ win_col = "#22c55e" if win_rate >= 50 else "#ef4444"
 if eng["px"] > 0:
     px, buy_pressure, macd_diff, px_diff, current_spread = eng["px"], eng["buy_pressure"], eng["macd_diff"], eng["px_diff"], eng["current_spread"]
     sh, sl, flo, fsh = eng["swing_high"], eng["swing_low"], eng["fibo_long_lvl"], eng["fibo_short_lvl"]
-    htf_trend = eng["htf_trend"]
-    danger_zone = 45.0
+    htf_trend = eng["htf_trend"]; danger_zone = 45.0
 
     with col_top1:
-        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PRO STUDIO TRADER (V3.0 HEDGE FUND) - BTC: ${px:,.1f} <span style='font-size:13px; color:#4ade80;'>[Live: {eng['last_update_ist']}]</span></h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PRO STUDIO TRADER (V3.1 VOIDS) - BTC: ${px:,.1f} <span style='font-size:13px; color:#4ade80;'>[Live: {eng['last_update_ist']}]</span></h3>", unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns(4)
     with c1: st.markdown(f"<div class='metric-box'><div style='color:#94a3b8; font-size:13px; font-weight:bold;'>🔴 LIVE OBI 🟢</div><div style='font-size:18px; font-weight:900; margin-top:5px;'><span style='color:#22c55e;'>{buy_pressure:.1f}%</span> / <span style='color:#ef4444;'>{eng['ask_pct']:.1f}%</span></div><div class='bar-container'><div class='bar-fill' style='width:{buy_pressure}%;'></div></div></div>", unsafe_allow_html=True)
@@ -316,61 +320,53 @@ if eng["px"] > 0:
         elif eng["sweep_status"] == 1: swp_txt = "🟢 Bull Sweep Armed"; swp_col = "#22c55e"
         elif eng["sweep_status"] == 2: swp_txt = "⚠️ Testing Resistance"; swp_col = "#facc15"
         elif eng["sweep_status"] == -1: swp_txt = "🔴 Bear Sweep Armed"; swp_col = "#ef4444"
-        
         abs_txt = ""
         if eng["abs_status"] == 1: abs_txt = "<div style='color:#22c55e; font-size:13px; font-weight:bold; margin-top:5px;'>🔥 Bullish Whale Absorption</div>"
         elif eng["abs_status"] == -1: abs_txt = "<div style='color:#ef4444; font-size:13px; font-weight:bold; margin-top:5px;'>🔥 Bearish Whale Absorption</div>"
 
-        st.markdown(f"""<div class='zone-box' style='text-align:center;'>
-        <div style='color:#38bdf8; font-size:16px; font-weight:900; margin-bottom:15px; border-bottom:1px solid #334155; padding-bottom:10px;'>🎯 MARKET ZONES & TRAPS</div>
-        <div style='font-size:15px; color:#cbd5e1;'>🔴 Swing High: <b style='color:#ef4444;'>${sh:,.1f}</b></div>
-        <div style='font-size:13px; color:#94a3b8; margin-bottom:10px;'>⬇️ Fibo Short Rej (14.6%): <b style='color:#facc15;'>${fsh:,.1f}</b></div>
-        <div style='width:50%; margin:10px auto; border-top:1px dashed #475569;'></div>
-        <div style='font-size:13px; color:#94a3b8; margin-top:10px;'>⬆️ Fibo Long Rej (14.6%): <b style='color:#38bdf8;'>${flo:,.1f}</b></div>
-        <div style='font-size:15px; color:#cbd5e1;'>🟢 Swing Low: <b style='color:#22c55e;'>${sl:,.1f}</b></div>
-        <div style='margin-top:15px; font-size:15px; font-weight:bold; color:{swp_col}; padding:8px; background:#1e293b; border-radius:8px;'>{swp_txt}{abs_txt}</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class='zone-box' style='text-align:center;'><div style='color:#38bdf8; font-size:16px; font-weight:900; margin-bottom:15px; border-bottom:1px solid #334155; padding-bottom:10px;'>🎯 MARKET ZONES & TRAPS</div><div style='font-size:15px; color:#cbd5e1;'>🔴 Swing High: <b style='color:#ef4444;'>${sh:,.1f}</b></div><div style='font-size:13px; color:#94a3b8; margin-bottom:10px;'>⬇️ Fibo Short Rej (14.6%): <b style='color:#facc15;'>${fsh:,.1f}</b></div><div style='width:50%; margin:10px auto; border-top:1px dashed #475569;'></div><div style='font-size:13px; color:#94a3b8; margin-top:10px;'>⬆️ Fibo Long Rej (14.6%): <b style='color:#38bdf8;'>${flo:,.1f}</b></div><div style='font-size:15px; color:#cbd5e1;'>🟢 Swing Low: <b style='color:#22c55e;'>${sl:,.1f}</b></div><div style='margin-top:15px; font-size:15px; font-weight:bold; color:{swp_col}; padding:8px; background:#1e293b; border-radius:8px;'>{swp_txt}{abs_txt}</div></div>""", unsafe_allow_html=True)
         
     with r2_c2:
         if eng["track_status"] == "Tracking" and eng["active_trade_obj"]:
-            trk_col = "#22c55e" if eng["track_signal"] == "BUY" else "#ef4444"
-            live_p = eng["active_trade_obj"]["live_pnl"]; max_p = eng["active_trade_obj"]["max_pnl"]
-            live_col = "#4ade80" if live_p >= 0 else "#f87171"
+            trk_col = "#22c55e" if eng["track_signal"] == "BUY" else "#ef4444"; live_p = eng["active_trade_obj"]["live_pnl"]; max_p = eng["active_trade_obj"]["max_pnl"]; live_col = "#4ade80" if live_p >= 0 else "#f87171"
             st.markdown(f"""<div class='signal-box' style='border-color:{trk_col}; background:#0f172a; flex-direction:row; justify-content:space-around;'>
             <div style='text-align:left;'><div style='font-size:15px; color:#94a3b8; margin-bottom:5px;'>🎯 Active Trade Tracker</div><div style='font-size:24px; color:#ffffff; font-weight:900;'>{eng['track_signal']} @ ${eng['track_entry_px']:,.1f}</div><div style='font-size:14px; color:#facc15; margin-top:5px;'>SMART TIER TRAILING SL ACTIVE</div></div>
             <div style='text-align:right; border-left:1px solid #334155; padding-left:25px;'><div style='font-size:15px; color:#94a3b8;'>Live PnL: <b style='color:{live_col}; font-size:32px;'>{live_p:+.1f}p</b></div><div style='font-size:15px; color:#cbd5e1; margin-top:8px;'>Max Favorable: <b style='color:#38bdf8;'>+{max_p:,.1f}p</b></div></div></div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div class='signal-box' style='border-color:#475569; color:#94a3b8;'>⏳ Waiting for {htf_trend} Setup... (3X Confluence or Fibo Momentum)</div>", unsafe_allow_html=True)
+        else: st.markdown(f"<div class='signal-box' style='border-color:#475569; color:#94a3b8;'>⏳ Waiting for {htf_trend} Setup... (3X Confluence or Fibo Momentum)</div>", unsafe_allow_html=True)
 
-    # ROW 3: CLEAN LEDGERS & WIN RATE
+    # ROW 3: CLEAN LEDGERS & WIN RATE & LIQUIDITY VOIDS
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"<div style='margin-bottom:10px; font-weight:900; color:{win_col}; font-size:18px; padding:10px; background:#0f172a; border-radius:8px; border:1px solid #334155; display:inline-block;'>🏆 Smart Money Win Rate: {win_rate:.1f}% <span style='font-size:13px; color:#94a3b8;'>(Wins: {wins} | Losses: {losses} | Total: {total_trades})</span></div>", unsafe_allow_html=True)
     
-    h_col1, h_col2 = st.columns([0.4, 0.6])
+    h_col1, h_col2, h_col3 = st.columns([0.35, 0.35, 0.30])
     
     with h_col1:
         st.markdown("<div style='color:#38bdf8; font-size:15px; font-weight:bold; margin-bottom:10px;'>🔥 Live Active Trade Logs</div>", unsafe_allow_html=True)
         if eng["active_trade_obj"]:
-            h = eng["active_trade_obj"]
-            h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"
-            live_col = "#4ade80" if h["live_pnl"] >= 0 else "#f87171"
+            h = eng["active_trade_obj"]; h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"; live_col = "#4ade80" if h["live_pnl"] >= 0 else "#f87171"
             h_html = f"<div class='hist-item hist-tracking'><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b><br><span style='color:#c084fc; font-weight:bold;'>{h['reason']}</span><br><br>Live: <b style='color:{live_col}; font-size:15px;'>{h['live_pnl']:+.1f}p</b> | Max: +{h['max_pnl']:,.1f}p</div>"
-        else:
-            h_html = "<div class='hist-item' style='color:#64748b; text-align:center; padding-top:120px;'>No Active Trade</div>"
+        else: h_html = "<div class='hist-item' style='color:#64748b; text-align:center; padding-top:140px;'>No Active Trade</div>"
         st.markdown(f"<div class='history-box'>{h_html}</div>", unsafe_allow_html=True)
 
     with h_col2:
-        st.markdown("<div style='color:#facc15; font-size:15px; font-weight:bold; margin-bottom:10px;'>📓 Smart Money Ledger (Closed Trades)</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#facc15; font-size:15px; font-weight:bold; margin-bottom:10px;'>📓 Closed Trades Ledger</div>", unsafe_allow_html=True)
         h_html = ""
         for h in eng["closed_trades_ledger"]:
             h_type_col = "#22c55e" if h["type"] == "BUY" else "#ef4444"; pnl_col = "#22c55e" if h["final_pnl"] > 0 else "#ef4444"; border_cls = "hist-closed-win" if h["final_pnl"] > 0 else "hist-closed-loss"
-            h_html += f"<div class='hist-item {border_cls}' style='display:flex; justify-content:space-between; align-items:center;'><div><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b> <span style='color:#c084fc; font-size:11px;'>[{h['reason']}]</span><br><span style='color:#94a3b8; font-size:11.5px;'>{h['status']} (Closed: {h['close_time']})</span></div><div style='font-size:18px; font-weight:900; color:{pnl_col};'>{h['final_pnl']:+.1f}p</div></div>"
-        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:120px;\">No Closed Trades Yet</div>'}</div>", unsafe_allow_html=True)
+            h_html += f"<div class='hist-item {border_cls}' style='display:flex; justify-content:space-between; align-items:center;'><div><b>{h['open_time']} - <span style='color:{h_type_col};'>{h['type']}</span> @ ${h['entry']:,.1f}</b> <span style='color:#c084fc; font-size:11px;'>[{h['reason']}]</span><br><span style='color:#94a3b8; font-size:11.5px;'>{h['status']}</span></div><div style='font-size:18px; font-weight:900; color:{pnl_col};'>{h['final_pnl']:+.1f}p</div></div>"
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:140px;\">No Closed Trades Yet</div>'}</div>", unsafe_allow_html=True)
+
+    with h_col3:
+        st.markdown("<div style='color:#ef4444; font-size:15px; font-weight:bold; margin-bottom:10px;'>🌪️ Liquidity Voids (Spread > $4.0)</div>", unsafe_allow_html=True)
+        h_html = ""
+        for v in eng["void_ledger"]:
+            h_html += f"<div class='hist-item hist-void'><b>{v['time']} - <span style='color:#facc15;'>Void: ${v['spread']:.2f}</span></b><br><span style='color:#cbd5e1;'>Jump: {v['jump']} | {v['flow']} ({v['b_pct']:.0f}%)</span></div>"
+        st.markdown(f"<div class='history-box'>{h_html if h_html else '<div class=hist-item style=\"color:#64748b; text-align:center; padding-top:140px;\">No Voids Yet</div>'}</div>", unsafe_allow_html=True)
 
     time.sleep(2)
     st.rerun()
 
 else:
-    st.warning("⏳ 24x7 Hedge Fund Engine (V3.0) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+    st.warning("⏳ 24x7 V3.1 (Liquidity Voids Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
     time.sleep(2)
     st.rerun()
