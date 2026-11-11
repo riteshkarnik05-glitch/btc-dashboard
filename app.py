@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant - V3.5 V-Shape Engine", layout="wide")
+st.set_page_config(page_title="Pro Quant - V3.6 Auto-Repair", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -39,21 +39,21 @@ def fetch_l2_orderbook():
             data = r.json()
             if data and "levels" in data and len(data["levels"]) >= 2:
                 bids = data["levels"][0][:15]; asks = data["levels"][1][:15]
-                bid_vol = sum(float(b["sz"]) for b in bids); ask_vol = sum(float(a["sz"]) for a in asks)
-                tot_vol = bid_vol + ask_vol; best_bid, best_ask = float(bids[0]["px"]), float(asks[0]["px"])
-                mid_px = (best_bid + best_ask) / 2.0; spread = best_ask - best_bid
-                bid_pct = (bid_vol / tot_vol * 100.0) if tot_vol > 0 else 50.0
-                
-                # L1 Micro Ticker calculation
-                l1_bid_sz = float(bids[0]["sz"]); l1_ask_sz = float(asks[0]["sz"])
-                l1_bid_pct = (l1_bid_sz / (l1_bid_sz + l1_ask_sz) * 100.0) if (l1_bid_sz + l1_ask_sz) > 0 else 50.0
-                
-                return {
-                    "mid_px": mid_px, "spread": spread, "bid_pct": bid_pct, 
-                    "ask_pct": 100.0 - bid_pct, "net_vol": bid_vol - ask_vol,
-                    "l1_bid_pct": l1_bid_pct
-                }
-    except: pass
+                if len(bids) > 0 and len(asks) > 0:
+                    bid_vol = sum(float(b["sz"]) for b in bids); ask_vol = sum(float(a["sz"]) for a in asks)
+                    tot_vol = bid_vol + ask_vol; best_bid, best_ask = float(bids[0]["px"]), float(asks[0]["px"])
+                    mid_px = (best_bid + best_ask) / 2.0; spread = best_ask - best_bid
+                    bid_pct = (bid_vol / tot_vol * 100.0) if tot_vol > 0 else 50.0
+                    
+                    l1_bid_sz = float(bids[0]["sz"]); l1_ask_sz = float(asks[0]["sz"])
+                    l1_bid_pct = (l1_bid_sz / (l1_bid_sz + l1_ask_sz) * 100.0) if (l1_bid_sz + l1_ask_sz) > 0 else 50.0
+                    
+                    return {
+                        "mid_px": mid_px, "spread": spread, "bid_pct": bid_pct, 
+                        "ask_pct": 100.0 - bid_pct, "net_vol": bid_vol - ask_vol,
+                        "l1_bid_pct": l1_bid_pct
+                    }
+    except Exception as e: return str(e)
     return None
 
 def fetch_advanced_klines():
@@ -72,46 +72,41 @@ def fetch_advanced_klines():
                 latest_close = df['Close'].iloc[-1]
                 htf_trend = "BULLISH" if latest_close > sma_100 else "BEARISH"
 
-                # 10-Minute Momentum Stretch Logic
                 last_10 = df.tail(10)
                 highest_10m = last_10['High'].max()
                 lowest_10m = last_10['Low'].min()
 
-                fibo_data = {
-                    "piv_high": highest_10m, "piv_low": lowest_10m,
-                    "candle_time": df.iloc[-1]['Time']
-                }
-                return fibo_data, 0.0, htf_trend, sma_100, highest_10m, lowest_10m
-    except: pass
-    return None, 0.0, "NONE", 0.0, 0.0, 0.0
+                return True, 0.0, htf_trend, sma_100, highest_10m, lowest_10m
+    except Exception as e: return str(e), 0.0, "NONE", 0.0, 0.0, 0.0
+    return False, 0.0, "NONE", 0.0, 0.0, 0.0
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (V3.5 V-SHAPE ENGINE)
+# 24x7 BACKGROUND WORKER (V3.6 AUTO-REPAIR)
 # ============================================================================
 def background_sniper_worker(eng, worker_id):
-    SPREAD_VOID_THRESHOLD = 4.0
-    
     while True:
         if eng.get("worker_id") != worker_id: break
         try:
             now_ts = time.time(); l2_data = fetch_l2_orderbook()
-            new_master_sig = None; master_sig_reason = ""; now_ist_str = get_ist_time_str()
+            now_ist_str = get_ist_time_str()
 
-            if now_ts - eng["last_kline_fetch"] > 20:
-                fibo_data, cvd_5m, htf_trend, sma_100, h10, l10 = fetch_advanced_klines()
-                if fibo_data:
-                    eng["htf_trend"] = htf_trend; eng["htf_sma"] = sma_100
-                    eng["swing_high"] = h10; eng["swing_low"] = l10
-                eng["last_kline_fetch"] = now_ts
+            if isinstance(l2_data, str): eng["last_err"] = f"L2 API Error: {l2_data}"
+            elif l2_data is None: pass 
+            else:
+                if now_ts - eng["last_kline_fetch"] > 15:
+                    is_ok, cvd_5m, htf_trend, sma_100, h10, l10 = fetch_advanced_klines()
+                    if isinstance(is_ok, str): eng["last_err"] = f"Kline API Error: {is_ok}"
+                    elif is_ok:
+                        eng["htf_trend"] = htf_trend; eng["htf_sma"] = sma_100
+                        eng["swing_high"] = h10; eng["swing_low"] = l10
+                    eng["last_kline_fetch"] = now_ts
 
-            if l2_data:
                 px = l2_data["mid_px"]; buy_pressure = l2_data["bid_pct"]; current_spread = l2_data["spread"]
                 net_vol = l2_data["net_vol"]; l1_bid_pct = l2_data["l1_bid_pct"]
                 eng["px"] = px; eng["buy_pressure"] = buy_pressure; eng["ask_pct"] = l2_data["ask_pct"]
                 eng["current_spread"] = current_spread; eng["last_update_ist"] = now_ist_str
                 if current_spread > eng["max_spread"]: eng["max_spread"] = current_spread; eng["max_spread_time"] = now_ist_str
 
-                # OBI MACD ENGINE
                 if not eng["ema_initialized"]:
                     eng["fast_ema"] = eng["slow_ema"] = buy_pressure; eng["signal_line"] = 0.0; eng["last_px"] = px
                     eng["ema_initialized"] = True; obi_histogram = macd_diff = 0.0
@@ -119,106 +114,74 @@ def background_sniper_worker(eng, worker_id):
                     eng["fast_ema"] = buy_pressure * 0.18 + eng["fast_ema"] * 0.82; eng["slow_ema"] = buy_pressure * 0.06 + eng["slow_ema"] * 0.94
                     obi_histogram = eng["fast_ema"] - eng["slow_ema"]; eng["signal_line"] = obi_histogram * 0.20 + eng["signal_line"] * 0.80
                     macd_diff = obi_histogram - eng["signal_line"]
-                eng["obi_histogram"] = obi_histogram; eng["macd_diff"] = macd_diff
                 
                 px_diff = px - eng["last_px"]; eng["px_diff"] = px_diff; eng["last_px"] = px
-
-                # Tracking L2 historical turning points for Exhaustion
                 eng["buy_pct_history"].append(buy_pressure)
-                if len(eng["buy_pct_history"]) > 60: eng["buy_pct_history"].pop(0) # Keep 1-2 min
+                if len(eng["buy_pct_history"]) > 60: eng["buy_pct_history"].pop(0)
 
                 # ====================================================================
-                # V-SHAPE REVERSAL ENGINE (10-POINT SCORING)
+                # V-SHAPE REVERSAL ENGINE
                 # ====================================================================
-                drop_10m = eng["swing_high"] - px
-                rally_10m = px - eng["swing_low"]
-                
-                v_dir = "कोई साफ सेटअप नहीं"
-                v_prob = "बहुत कम"
-                v_score = 0
-                v_reasons = []
-                v_danger = "अभी मार्केट एकतरफा मूव में है, कोई रिजेक्शन नहीं आया है।"
-                action_idea = "प्राइस रिजेक्शन और एग्जॉशन की पुष्टि का इंतजार करें — अभी कोई ट्रेड नहीं"
+                if eng["swing_high"] > 0:
+                    drop_10m = eng["swing_high"] - px
+                    rally_10m = px - eng["swing_low"]
+                    
+                    v_dir = "कोई साफ सेटअप नहीं"; v_prob = "बहुत कम"; v_score = 0; v_reasons = []
+                    v_danger = "अभी मार्केट एकतरफा मूव में है, कोई रिजेक्शन नहीं आया है।"
+                    action_idea = "प्राइस रिजेक्शन और एग्जॉशन की पुष्टि का इंतजार करें — अभी कोई ट्रेड नहीं"
 
-                # CHECK PRE-CONDITIONS
-                if drop_10m >= 150.0:
-                    v_dir = "बुलिश V-शेप"
-                    # Pillar 1: L2 Extreme
-                    if buy_pressure <= 27.0: v_score += 2; v_reasons.append(f"चरम सेलिंग प्रेशर (L2 Buy: {buy_pressure:.0f}%)")
-                    elif buy_pressure <= 30.0: v_score += 1
-                    
-                    # Pillar 2: Proxy OI Trap (Whale Absorption Iceberg > 50)
-                    if eng.get("iceberg_score", 0) >= 50: v_score += 2; v_reasons.append("शॉर्ट्स ट्रैप (व्हेल बाइंग अब्जॉर्प्शन)")
-                    
-                    # Pillar 3: Pressure Exhaustion (L1 > 50% & L2 turning up)
-                    l2_min_recent = min(eng["buy_pct_history"]) if eng["buy_pct_history"] else buy_pressure
-                    if buy_pressure > l2_min_recent and l1_bid_pct >= 50.0:
-                        v_score += 2; v_reasons.append(f"सेलिंग एग्जॉशन (L1 Bid: {l1_bid_pct:.0f}% पर रिकवरी)")
-                    
-                    # Pillar 4: Price Rejection
-                    recovery = px - eng.get("lowest_sweep_px", eng["swing_low"])
-                    if recovery >= 35.0:
-                        v_score += 2; v_reasons.append(f"लो से प्राइस रिजेक्शन (+${recovery:.1f} बाउंस)")
-                    else:
-                        v_danger = f"प्राइस अभी भी लो के पास है (बाउंस सिर्फ +${recovery:.1f} है)। गिरती छुरी पकड़ना खतरनाक है!"
+                    if drop_10m >= 150.0:
+                        v_dir = "बुलिश V-शेप"
+                        if buy_pressure <= 27.0: v_score += 2; v_reasons.append(f"चरम सेलिंग प्रेशर (L2 Buy: {buy_pressure:.0f}%)")
+                        elif buy_pressure <= 30.0: v_score += 1
+                        if eng.get("iceberg_score", 0) >= 50: v_score += 2; v_reasons.append("शॉर्ट्स ट्रैप (व्हेल बाइंग अब्जॉर्प्शन)")
+                        
+                        l2_min = min(eng["buy_pct_history"]) if eng["buy_pct_history"] else buy_pressure
+                        if buy_pressure > l2_min and l1_bid_pct >= 50.0: v_score += 2; v_reasons.append(f"सेलिंग एग्जॉशन (L1 Bid: {l1_bid_pct:.0f}% पर रिकवरी)")
+                        
+                        recovery = px - eng.get("lowest_sweep_px", eng["swing_low"])
+                        if recovery >= 35.0: v_score += 2; v_reasons.append(f"लो से प्राइस रिजेक्शन (+${recovery:.1f} बाउंस)")
+                        else: v_danger = f"प्राइस अभी भी लो के पास है (बाउंस सिर्फ +${recovery:.1f} है)। गिरती छुरी पकड़ना खतरनाक है!"
+                        
+                        if eng["htf_trend"] == "BULLISH": v_score += 2; v_reasons.append("बड़ा ट्रेंड Bullish है (सपोर्ट)")
 
-                    # Pillar 5: Proxy Options Support (Trend/Sweep alignment)
-                    if eng["htf_trend"] == "BULLISH": v_score += 2; v_reasons.append("बड़ा ट्रेंड Bullish है (डिप सपोर्ट)")
+                    elif rally_10m >= 150.0:
+                        v_dir = "बियरिश Inverted V-शेप"
+                        if buy_pressure >= 70.0: v_score += 2; v_reasons.append(f"चरम बाइंग प्रेशर (L2 Buy: {buy_pressure:.0f}%)")
+                        elif buy_pressure >= 67.0: v_score += 1
+                        if eng.get("iceberg_score", 0) <= -50: v_score += 2; v_reasons.append("लॉन्ग्स ट्रैप (व्हेल सेलिंग अब्जॉर्प्शन)")
+                        
+                        l2_max = max(eng["buy_pct_history"]) if eng["buy_pct_history"] else buy_pressure
+                        if buy_pressure < l2_max and l1_bid_pct <= 50.0: v_score += 2; v_reasons.append(f"बाइंग एग्जॉशन (L1 Ask हावी: {100-l1_bid_pct:.0f}%)")
+                        
+                        fall = eng.get("highest_sweep_px", eng["swing_high"]) - px
+                        if fall >= 35.0: v_score += 2; v_reasons.append(f"हाई से प्राइस रिजेक्शन (-${fall:.1f} गिरावट)")
+                        else: v_danger = f"प्राइस अभी भी हाई के पास है (गिरावट सिर्फ -${fall:.1f} है)। ट्रेंड ऊपर जा सकता है!"
+                        
+                        if eng["htf_trend"] == "BEARISH": v_score += 2; v_reasons.append("बड़ा ट्रेंड Bearish है (रेजिस्टेंस)")
 
-                elif rally_10m >= 150.0:
-                    v_dir = "बियरिश Inverted V-शेप"
-                    if buy_pressure >= 70.0: v_score += 2; v_reasons.append(f"चरम बाइंग प्रेशर (L2 Buy: {buy_pressure:.0f}%)")
-                    elif buy_pressure >= 67.0: v_score += 1
-                    
-                    if eng.get("iceberg_score", 0) <= -50: v_score += 2; v_reasons.append("लॉन्ग्स ट्रैप (व्हेल सेलिंग अब्जॉर्प्शन)")
-                    
-                    l2_max_recent = max(eng["buy_pct_history"]) if eng["buy_pct_history"] else buy_pressure
-                    if buy_pressure < l2_max_recent and l1_bid_pct <= 50.0:
-                        v_score += 2; v_reasons.append(f"बाइंग एग्जॉशन (L1 Ask हावी: {100-l1_bid_pct:.0f}%)")
-                    
-                    fall = eng.get("highest_sweep_px", eng["swing_high"]) - px
-                    if fall >= 35.0:
-                        v_score += 2; v_reasons.append(f"हाई से प्राइस रिजेक्शन (-${fall:.1f} गिरावट)")
-                    else:
-                        v_danger = f"प्राइस अभी भी हाई के पास है (गिरावट सिर्फ -${fall:.1f} है)। ट्रेंड अभी भी ऊपर जा सकता है!"
-                    
-                    if eng["htf_trend"] == "BEARISH": v_score += 2; v_reasons.append("बड़ा ट्रेंड Bearish है (रेजिस्टेंस सप्लाई)")
+                    if v_dir != "कोई साफ सेटअप नहीं":
+                        has_ex = any("एग्जॉशन" in r for r in v_reasons); has_rej = any("रिजेक्शन" in r for r in v_reasons)
+                        if not (has_ex and has_rej): v_score = min(v_score, 4)
+                        
+                        if v_score <= 2: v_prob = "बहुत कम"
+                        elif v_score <= 4: v_prob = "कम (प्रेशर है, पर एग्जॉशन/रिजेक्शन नहीं)"
+                        elif v_score <= 6: v_prob = "मध्यम (पूरी पुष्टि का इंतजार करें)"
+                        elif v_score <= 8: v_prob = "अच्छी"
+                        else: v_prob = "बहुत अच्छी (हाई कन्विक्शन)"
 
-                # HARD GATING RULES
-                if v_dir != "कोई साफ सेटअप नहीं":
-                    has_exhaust = any("एग्जॉशन" in r for r in v_reasons)
-                    has_reject = any("रिजेक्शन" in r for r in v_reasons)
-                    if not (has_exhaust and has_reject):
-                        v_score = min(v_score, 4) # Lock at 4/10
-                    
-                    # Probability Mapping
-                    if v_score <= 2: v_prob = "बहुत कम"
-                    elif v_score <= 4: v_prob = "कम (प्रेशर है, पर एग्जॉशन/रिजेक्शन नहीं)"
-                    elif v_score <= 6: v_prob = "मध्यम (पूरी पुष्टि का इंतजार करें)"
-                    elif v_score <= 8: v_prob = "अच्छी"
-                    else: v_prob = "बहुत अच्छी (हाई कन्विक्शन)"
+                        if v_score >= 7:
+                            v_danger = "कोई बड़ा खतरा नहीं। रिस्क मैनेज करके एंट्री की जा सकती है।"
+                            if v_dir == "बुलिश V-शेप": action_idea = f"एंट्री दिशा: LONG (Buy) @ ${px:,.1f}\nस्टॉप लॉस: स्विंग लो के नीचे @ ${eng['swing_low'] - 40:,.1f}\nटारगेट: +250 पॉइंट्स, दूसरा +400 पॉइंट्स"
+                            else: action_idea = f"एंट्री दिशा: SHORT (Sell) @ ${px:,.1f}\nस्टॉप लॉस: स्विंग हाई के ऊपर @ ${eng['swing_high'] + 40:,.1f}\nटारगेट: +250 पॉइंट्स, दूसरा +400 पॉइंट्स"
 
-                    # Action Idea Generation
-                    if v_score >= 7:
-                        v_danger = "कोई बड़ा खतरा नहीं। रिस्क मैनेज करके एंट्री की जा सकती है।"
-                        if v_dir == "बुलिश V-शेप":
-                            action_idea = f"एंट्री दिशा: LONG (Buy) @ ${px:,.1f}\nस्टॉप लॉस: स्विंग लो के नीचे @ ${eng['swing_low'] - 40:,.1f}\nटारगेट: +250 पॉइंट्स, दूसरा +400 पॉइंट्स"
-                        else:
-                            action_idea = f"एंट्री दिशा: SHORT (Sell) @ ${px:,.1f}\nस्टॉप लॉस: स्विंग हाई के ऊपर @ ${eng['swing_high'] + 40:,.1f}\nटारगेट: +250 पॉइंट्स, दूसरा +400 पॉइंट्स"
+                    eng["v_engine"] = {"dir": v_dir, "prob": v_prob, "score": v_score, "reasons": v_reasons, "danger": v_danger, "action": action_idea}
 
-                eng["v_engine"] = {
-                    "dir": v_dir, "prob": v_prob, "score": v_score, 
-                    "reasons": v_reasons, "danger": v_danger, "action": action_idea
-                }
-
-                # ICEBERG SCORE
                 eng["iceberg_score"] = eng.get("iceberg_score", 0.0) * 0.985
                 imbalance_delta = buy_pressure - 50.0
-                if abs(imbalance_delta) >= 12.0 and abs(px_diff) <= 5.0:
-                    eng["iceberg_score"] += (imbalance_delta * 0.18)
+                if abs(imbalance_delta) >= 12.0 and abs(px_diff) <= 5.0: eng["iceberg_score"] += (imbalance_delta * 0.18)
                 eng["iceberg_score"] = max(-300.0, min(300.0, eng["iceberg_score"]))
 
-                # SWEEP & ZONE ABSORPTION
                 sh, sl = eng["swing_high"], eng["swing_low"]
                 if sh > 0 and sl > 0:
                     if px <= sl + 10.0: eng["sweep_status"] = -2; eng["lowest_sweep_px"] = min(eng.get("lowest_sweep_px", px), px)
@@ -227,7 +190,8 @@ def background_sniper_worker(eng, worker_id):
                     elif eng["sweep_status"] == 2 and px <= eng.get("highest_sweep_px", sh) - 12.0: eng["sweep_status"] = -1; eng["sweep_latch_time"] = now_ts
                     if eng["sweep_status"] in [1, -1] and (now_ts - eng["sweep_latch_time"] > 300): eng["sweep_status"] = 0
 
-                # 4. MASTER SIGNAL CONFLUENCE (Connected to V-Engine)
+                # MASTER SIGNAL CONFLUENCE (Connected to V-Engine)
+                new_master_sig = None; master_sig_reason = ""
                 if not eng["track_signal"]:
                     if eng["v_engine"]["score"] >= 8 and eng["v_engine"]["dir"] == "बुलिश V-शेप":
                         new_master_sig = "BUY"; master_sig_reason = "🚀 बुलिश V-शेप (हाई कन्विक्शन)"
@@ -238,10 +202,9 @@ def background_sniper_worker(eng, worker_id):
                     eng["track_signal"] = new_master_sig; eng["track_entry_px"] = px; eng["track_max_fav"] = px; eng["track_status"] = "Tracking"
                     eng["active_trade_obj"] = {"open_time": now_ist_str, "close_time": "", "type": new_master_sig, "entry": px, "status": "Tracking", "max_pnl": 0.0, "live_pnl": 0.0, "final_pnl": 0.0, "reason": master_sig_reason}
 
-                # 5. SMART POST-SIGNAL TRAILING TRACKER (Fee-Proof)
+                # POST-SIGNAL TRAILING TRACKER
                 if eng["track_status"] == "Tracking" and eng["active_trade_obj"]:
                     t_type = eng["track_signal"]; t_entry = eng["track_entry_px"]
-                    
                     if t_type == "BUY":
                         live_pnl = px - t_entry; eng["track_max_fav"] = max(eng["track_max_fav"], px); max_pnl = eng["track_max_fav"] - t_entry
                         if max_pnl >= 600.0: trail_sl_px = eng["track_max_fav"] - 150.0 
@@ -251,12 +214,9 @@ def background_sniper_worker(eng, worker_id):
 
                         if px <= trail_sl_px:
                             eng["track_status"] = "Closed"; final_pnl = live_pnl
-                            if final_pnl < 0: sts_text = f"🛑 स्टॉप-लॉस हिट ({final_pnl:+.0f}p)"
-                            elif final_pnl < 150: sts_text = f"🛡️ फीस+प्रॉफिट सेफ पर निकला (+{final_pnl:,.0f}p)"
-                            else: sts_text = f"✅ बड़ा प्रॉफिट लॉक (+{final_pnl:,.0f}p) [हाई: +{max_pnl:,.0f}p]"
+                            sts_text = f"🛑 SL हिट ({final_pnl:+.0f}p)" if final_pnl < 0 else (f"🛡️ सेफ एक्जिट (+{final_pnl:,.0f}p)" if final_pnl < 150 else f"✅ बड़ा प्रॉफिट (+{final_pnl:,.0f}p) [हाई: +{max_pnl:,.0f}p]")
                             eng["active_trade_obj"]["status"] = sts_text; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
                             eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None; eng["track_signal"] = None
-
                     elif t_type == "SELL":
                         live_pnl = t_entry - px; eng["track_max_fav"] = min(eng["track_max_fav"], px); max_pnl = t_entry - eng["track_max_fav"]
                         if max_pnl >= 600.0: trail_sl_px = eng["track_max_fav"] + 150.0 
@@ -266,50 +226,44 @@ def background_sniper_worker(eng, worker_id):
 
                         if px >= trail_sl_px:
                             eng["track_status"] = "Closed"; final_pnl = live_pnl
-                            if final_pnl < 0: sts_text = f"🛑 स्टॉप-लॉस हिट ({final_pnl:+.0f}p)"
-                            elif final_pnl < 150: sts_text = f"🛡️ फीस+प्रॉफिट सेफ पर निकला (+{final_pnl:,.0f}p)"
-                            else: sts_text = f"✅ बड़ा प्रॉफिट लॉक (+{final_pnl:,.0f}p) [हाई: +{max_pnl:,.0f}p]"
+                            sts_text = f"🛑 SL हिट ({final_pnl:+.0f}p)" if final_pnl < 0 else (f"🛡️ सेफ एक्जिट (+{final_pnl:,.0f}p)" if final_pnl < 150 else f"✅ बड़ा प्रॉफिट (+{final_pnl:,.0f}p) [हाई: +{max_pnl:,.0f}p]")
                             eng["active_trade_obj"]["status"] = sts_text; eng["active_trade_obj"]["final_pnl"] = final_pnl; eng["active_trade_obj"]["close_time"] = now_ist_str
                             eng["closed_trades_ledger"].insert(0, eng["active_trade_obj"]); eng["active_trade_obj"] = None; eng["track_signal"] = None
-
+                    
                     if eng["track_status"] == "Tracking" and eng["active_trade_obj"]:
                         eng["active_trade_obj"]["live_pnl"] = live_pnl; eng["active_trade_obj"]["max_pnl"] = max_pnl
 
-                eng["closed_trades_ledger"] = eng["closed_trades_ledger"][:30]
         except Exception as e: eng["last_err"] = str(e)
         time.sleep(2)
 
 @st.cache_resource
-def get_persistent_sniper_v3_5():
+def get_persistent_sniper_v3_6():
     worker_id = int(time.time() * 1000)
     eng = {
         "worker_id": worker_id, "ema_initialized": False, "px": 0.0, "buy_pressure": 50.0, "ask_pct": 50.0,
         "current_spread": 0.0, "last_update_ist": "--:--:--", "fast_ema": 50.0, "slow_ema": 50.0, "signal_line": 0.0,
-        "obi_histogram": 0.0, "macd_diff": 0.0, "bull_confirm_ticks": 0, "bear_confirm_ticks": 0, "last_px": 0.0,
-        "px_diff": 0.0, "spike_active": 0, "max_spread": 0.0, "max_spread_time": "--", "swing_high": 0.0, "swing_low": 0.0,
+        "max_spread": 0.0, "max_spread_time": "--", "swing_high": 0.0, "swing_low": 0.0,
         "lowest_sweep_px": 999999.0, "highest_sweep_px": 0.0, "sweep_latch_time": 0.0, "sweep_status": 0,
         "htf_trend": "NONE", "htf_sma": 0.0, "buy_pct_history": [],
         "iceberg_score": 0.0, "v_engine": {"dir": "तलाश जारी...", "prob": "-", "score": 0, "reasons": [], "danger": "-", "action": "-"},
         "active_trade_obj": None, "closed_trades_ledger": [], "track_signal": None, "track_entry_px": 0.0, 
-        "track_max_fav": 0.0, "track_status": "Idle", "last_err": None
+        "track_max_fav": 0.0, "track_status": "Idle", "last_err": None, "last_kline_fetch": 0.0
     }
     threading.Thread(target=background_sniper_worker, args=(eng, worker_id), daemon=True).start()
     return eng
 
-eng = get_persistent_sniper_v3_5()
+eng = get_persistent_sniper_v3_6()
 
 # ============================================================================
 # RENDER DASHBOARD
 # ============================================================================
 if eng["px"] > 0:
-    px, buy_pressure, sh, sl = eng["px"], eng["buy_pressure"], eng["swing_high"], eng["swing_low"]
-    
-    st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PRO QUANT TRADER (V3.5 V-SHAPE ENGINE) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
+    px = eng["px"]
+    st.markdown(f"<h3 style='color:#38bdf8; font-weight:800; margin-top:0;'>⚡ PRO QUANT TRADER (V3.6) - BTC: ${px:,.1f}</h3>", unsafe_allow_html=True)
     
     # 1. NEW V-SHAPE REVERSAL ENGINE BOX (EXACT USER FORMAT)
     v = eng["v_engine"]
     score_col = "#22c55e" if v["score"] >= 7 else ("#facc15" if v["score"] >= 5 else "#ef4444")
-    
     reasons_html = "".join([f"<li>{r}</li>" for r in v["reasons"]]) if v["reasons"] else "<li>कोई ठोस कारण नहीं (ट्रेंड जारी है)</li>"
     
     st.markdown(f"""
@@ -349,6 +303,9 @@ if eng["px"] > 0:
     time.sleep(2)
     st.rerun()
 else:
-    st.warning("⏳ 24x7 V3.5 (V-Shape Engine) स्टार्ट हो रहा है... 2 सेकंड प्रतीक्षा करें।")
+    st.warning("⏳ 24x7 V3.6 (V-Shape Engine) स्टार्ट हो रहा है... 2 सेकंड प्रतीक्षा करें।")
+    if eng.get("last_err"):
+        st.error(f"🔴 सिस्टम में दिक्कत मिली: {eng['last_err']}")
+        st.info("API सर्वर बिजी हो सकता है, कोड अपने आप इसे ठीक करने की कोशिश कर रहा है...")
     time.sleep(2)
     st.rerun()
