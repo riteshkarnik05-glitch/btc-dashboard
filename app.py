@@ -1,11 +1,17 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import time
 import threading
+import io
+import wave
+import struct
+import math
+import base64
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V9.4 - Zero-503 AI War Room", layout="wide")
+st.set_page_config(page_title="Pro Quant V9.5 - Auto AI & Sound War Room", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -23,12 +29,61 @@ st.markdown("""<style>
 .verdict-bull { background: #064e3b30; border-left: 4px solid #22c55e; padding: 12px; border-radius: 6px; margin-top: 15px; font-size: 16px; font-weight: bold; color: #4ade80; }
 .verdict-bear { background: #7f1d1d30; border-left: 4px solid #ef4444; padding: 12px; border-radius: 6px; margin-top: 15px; font-size: 16px; font-weight: bold; color: #f87171; }
 .verdict-neutral { background: #42200630; border-left: 4px solid #facc15; padding: 12px; border-radius: 6px; margin-top: 15px; font-size: 16px; font-weight: bold; color: #facc15; }
-div.stButton > button { background-color: #334155 !important; color: #f8fafc !important; border: 1px solid #c084fc !important; border-radius: 8px !important; font-weight: bold !important; }
-div.stButton > button:hover { background-color: #c084fc !important; color: #020617 !important; }
+div.stButton > button { background-color: #334155 !important; color: #f8fafc !important; border: 1px solid #38bdf8 !important; border-radius: 8px !important; font-weight: bold !important; }
+div.stButton > button:hover { background-color: #38bdf8 !important; color: #020617 !important; }
 </style>""", unsafe_allow_html=True)
 
 # ============================================================================
-# API FETCHERS & ZERO-503 MULTI-FLASH AI ENGINE
+# IN-BUILT SOUND ALERT SYNTHESIZER (NO EXTERNAL MP3 NEEDED)
+# ============================================================================
+def create_sound_b64(tone_type="BULL"):
+    """Generates a clean WAV audio tone in memory and returns base64 string"""
+    sample_rate = 22050
+    buf = io.BytesIO()
+
+    if tone_type == "BULL":
+        # Upward double chime for Bullish Signal
+        notes = [(880, 0.16), (0, 0.04), (1175, 0.25)]
+    elif tone_type == "BEAR":
+        # Downward double alert for Bearish Signal
+        notes = [(587, 0.18), (0, 0.04), (440, 0.28)]
+    elif tone_type == "VOID":
+        # Quick high sonar ping for big Liquidity Void
+        notes = [(1046, 0.14)]
+    else:
+        # Neutral single soft beep
+        notes = [(660, 0.18)]
+
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        frames = bytearray()
+        for freq, dur in notes:
+            n_samples = int(sample_rate * dur)
+            for i in range(n_samples):
+                if freq == 0:
+                    val = 0
+                else:
+                    fade = 1.0 - (i / n_samples) * 0.6
+                    val = int(16000.0 * fade * math.sin(2.0 * math.pi * freq * (i / sample_rate)))
+                frames.extend(struct.pack('<h', val))
+        wf.writeframes(bytes(frames))
+
+    return base64.b64encode(buf.getvalue()).decode('ascii')
+
+def trigger_browser_audio(tone_type="BULL"):
+    """Plays sound directly in browser using HTML5 Audio"""
+    b64_wav = create_sound_b64(tone_type)
+    audio_html = f"""
+        <audio autoplay="true" style="display:none;">
+            <source src="data:audio/wav;base64,{b64_wav}" type="audio/wav">
+        </audio>
+    """
+    components.html(audio_html, height=0, width=0)
+
+# ============================================================================
+# API FETCHERS & SILENT AUTO-FAILOVER AI ENGINE
 # ============================================================================
 HYPERLIQUID_URL = "https://api.hyperliquid.xyz/info"
 
@@ -115,23 +170,21 @@ def fetch_oi_and_vwap():
     return None
 
 def generate_local_quant_fallback(r, vwap):
-    """Generates an instant HFT opinion if all Google servers are temporarily 503 overloaded"""
     tb = r["tape_buy"]
     lb = r["l2_buy"]
     chg = r["px_chg"]
     if tb >= 56 and chg > 0:
-        return f"⚡ [In-Built Quant Engine]: असली सौदों (Tape: {tb:.0f}%) और ऑर्डरबुक ({lb:.0f}%) दोनों में खरीदार आक्रामक हैं। जब तक प्राइस VWAP (${vwap:,.0f}) के ऊपर है, हर छोटे डिप पर सिर्फ LONG (Buy) की तलाश करें, शॉर्ट की गलती न करें।"
+        return f"असली सौदों (Tape: {tb:.0f}%) और ऑर्डरबुक ({lb:.0f}%) दोनों में खरीदार आक्रामक हैं। जब तक प्राइस VWAP (${vwap:,.0f}) के ऊपर है, हर छोटे डिप पर सिर्फ LONG (Buy) की तलाश करें।"
     elif tb <= 44 and chg < 0:
-        return f"⚡ [In-Built Quant Engine]: मार्केट में सेलर सीधे सौदे मार रहे हैं (Tape Sell: {100-tb:.0f}%) और L2 दीवारें भी कमज़ोर हैं। किसी भी छोटे उछाल (Rally) पर रेजिस्टेंस के पास SHORT (Sell) देखना सुरक्षित रहेगा।"
+        return f"मार्केट में सेलर सीधे सौदे मार रहे हैं (Tape Sell: {100-tb:.0f}%) और L2 दीवारें भी कमज़ोर हैं। किसी भी छोटे उछाल (Rally) पर रेजिस्टेंस के पास SHORT (Sell) देखना सुरक्षित रहेगा।"
     elif tb >= 56 and chg < 0:
-        return f"⚡ [In-Built Quant Engine]: सावधान! मार्केट बाइंग ({tb:.0f}%) के बावजूद प्राइस ${abs(chg):.0f} पॉइंट्स गिरा है—यानी ऊपर बड़ी व्हेल लिमिट ऑर्डर लगाकर माल बेच (Absorb) रही है। बाउंस फेल होने पर शॉर्ट का मौका मिलेगा।"
+        return f"सावधान! मार्केट बाइंग ({tb:.0f}%) के बावजूद प्राइस ${abs(chg):.0f} पॉइंट्स गिरा है—यानी ऊपर बड़ी व्हेल लिमिट ऑर्डर लगाकर माल बेच (Absorb) रही है। बाउंस फेल होने पर शॉर्ट का मौका मिलेगा।"
     elif tb <= 44 and chg > 0:
-        return f"⚡ [In-Built Quant Engine]: भारी मार्केट सेलिंग ({100-tb:.0f}%) के बावजूद प्राइस ऊपर टिका है—नीचे व्हेल सारा बिकवाली का माल सोख (Bull Iceberg) रही है। सपोर्ट के पास LONG एंट्री फायदेमंद रहेगी।"
+        return f"भारी मार्केट सेलिंग ({100-tb:.0f}%) के बावजूद प्राइस ऊपर टिका है—नीचे व्हेल सारा बिकवाली का माल सोख (Bull Iceberg) रही है। सपोर्ट के पास LONG एंट्री फायदेमंद रहेगी।"
     else:
-        return f"⚡ [In-Built Quant Engine]: अभी बायर ({tb:.0f}%) और सेलर ({100-tb:.0f}%) के बीच बराबरी की खींचतान है। रेंज (${r['low']:,.0f} - ${r['high']:,.0f}) टूटने तक शांत बैठें और अपनी फीस बचाएं।"
+        return f"अभी बायर ({tb:.0f}%) और सेलर ({100-tb:.0f}%) के बीच बराबरी की खींचतान है। रेंज (${r['low']:,.0f} - ${r['high']:,.0f}) टूटने तक शांत बैठें और अपनी फीस बचाएं।"
 
 def discover_available_flash_models(api_key):
-    """Fetches exact Flash models enabled for this API key"""
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
         r = requests.get(url, timeout=4)
@@ -149,7 +202,7 @@ def discover_available_flash_models(api_key):
     return []
 
 def update_ai_opinion_thread(api_key, report_data, eng):
-    """Tries preferred free Flash model first, with automatic multi-model 503 failover"""
+    """Fully silent background model rotation & fallback"""
     prompt = f"""
     तुम एक वॉल स्ट्रीट के HFT क्वांट एनालिस्ट हो। पिछले 30 मिनट का BTCUSDT माइक्रोस्ट्रक्चर डेटा यह है:
     - प्राइस बदलाव: {report_data['px_chg']:.1f} Pts (High: ${report_data['high']:,.0f}, Low: ${report_data['low']:,.0f})
@@ -164,9 +217,7 @@ def update_ai_opinion_thread(api_key, report_data, eng):
     """
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    # Build priority queue: User's selected model first, then low-traffic Flash-Lite / 8B models
-    preferred = eng.get("preferred_model", "Auto (Zero-503 Free Flash)")
-    default_queue = [
+    models_to_try = [
         "gemini-2.0-flash-lite",
         "gemini-1.5-flash-8b",
         "gemini-1.5-flash",
@@ -174,39 +225,27 @@ def update_ai_opinion_thread(api_key, report_data, eng):
         "gemini-2.5-flash-lite",
         "gemini-2.5-flash"
     ]
-
-    discovered = discover_available_flash_models(api_key)
-    for d_mod in discovered:
-        if d_mod not in default_queue:
-            default_queue.append(d_mod)
-
-    if preferred and preferred != "Auto (Zero-503 Free Flash)":
-        models_to_try = [preferred] + [m for m in default_queue if m != preferred]
-    else:
-        models_to_try = default_queue
+    for d_mod in discover_available_flash_models(api_key):
+        if d_mod not in models_to_try:
+            models_to_try.append(d_mod)
 
     for model_name in models_to_try:
-        for attempt in range(2): # 2 quick attempts per model if 503 occurs
+        for _ in range(2):
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
                 res = requests.post(url, json=payload, timeout=7)
-
                 if res.status_code == 200:
                     data = res.json()
-                    text_out = data['candidates'][0]['content']['parts'][0]['text'].strip()
-                    eng["ai_model_used"] = model_name
-                    eng["ai_opinion"] = text_out
+                    eng["ai_opinion"] = data['candidates'][0]['content']['parts'][0]['text'].strip()
                     return
                 elif res.status_code == 503:
-                    time.sleep(1.5) # Brief pause before switching/retrying
+                    time.sleep(1.2)
                     continue
                 else:
-                    break # 404 or other model-specific issue -> immediately jump to next Flash model
+                    break
             except Exception:
                 break
 
-    # If all external models are temporarily 503 overloaded, provide instant local quant analysis
-    eng["ai_model_used"] = "Local Quant Backup (Server 503 Bypass)"
     eng["ai_opinion"] = generate_local_quant_fallback(report_data, eng.get("vwap", report_data["high"]))
 
 def build_report_now(eng, now_ts, ist_str):
@@ -256,10 +295,13 @@ def build_report_now(eng, now_ts, ist_str):
 
     if score >= 3:
         verdict = {"title": "🔥 बायर्स पूरी तरह से हावी हैं (Bullish Dominance)", "cls": "verdict-bull", "txt": "पिछले 30 मिनट में स्मार्ट मनी लगातार खरीदारी कर रही है। डिप (Dip) पर BUY करने के मौके ढूँढें।"}
+        eng["sound_event"] = {"id": now_ts, "type": "BULL"}
     elif score <= -3:
         verdict = {"title": "🩸 सेलर्स पूरी तरह से हावी हैं (Bearish Dominance)", "cls": "verdict-bear", "txt": "पिछले 30 मिनट में स्मार्ट मनी लगातार माल बेच रही है। उछाल (Pump) पर SELL करने के मौके ढूँढें।"}
+        eng["sound_event"] = {"id": now_ts, "type": "BEAR"}
     else:
         verdict = {"title": "⚖️ दोनों तरफ की भयानक टक्कर (No-Man's Land / Choppy)", "cls": "verdict-neutral", "txt": "बायर्स और सेलर्स लगभग बराबर ताकत लगा रहे हैं। ब्रेकआउट या ब्रेकडाउन का इंतजार करें, अभी एंट्री न लें।"}
+        eng["sound_event"] = {"id": now_ts, "type": "NEUTRAL"}
 
     report_data = {
         "time": ist_str, "px_chg": px_change, "high": high_px, "low": low_px,
@@ -272,13 +314,13 @@ def build_report_now(eng, now_ts, ist_str):
 
     api_key = eng.get("api_key", "").strip()
     if api_key:
-        eng["ai_opinion"] = "🤖 फ्री Flash मॉडल से डेटा स्कैन हो रहा है..."
+        eng["ai_opinion"] = "🤖 AI पिछले 30 मिनट का डेटा स्कैन कर रहा है..."
         threading.Thread(target=update_ai_opinion_thread, args=(api_key, report_data, eng), daemon=True).start()
     else:
         eng["ai_opinion"] = generate_local_quant_fallback(report_data, eng.get("vwap", high_px))
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (V9.4 ZERO-503 WAR ROOM)
+# 24x7 BACKGROUND WORKER (V9.5 SILENT AI + SOUND ENGINE)
 # ============================================================================
 def background_worker(eng, worker_id):
     SPREAD_VOID_THRESHOLD = 4.0
@@ -321,6 +363,9 @@ def background_worker(eng, worker_id):
                     if not eng["voids"] or eng["voids"][0]["time"] != ist_str:
                         eng["voids"].insert(0, void_obj)
                         eng["voids"] = eng["voids"][:40]
+                        # Trigger quick ping sound if a big spread void (>= $5.0) hits
+                        if spread >= 5.0:
+                            eng["sound_event"] = {"id": now_ts, "type": "VOID"}
 
                 if now_ts - eng["last_kline_ts"] > 15:
                     kdata = fetch_oi_and_vwap()
@@ -339,20 +384,20 @@ def background_worker(eng, worker_id):
         time.sleep(2)
 
 @st.cache_resource
-def get_master_engine_v9_4():
+def get_master_engine_v9_5():
     wid = int(time.time() * 1000)
     eng = {
         "worker_id": wid, "px": 0.0, "last_update": "--:--:--",
         "vault": [], "voids": [], "last_kline_ts": 0.0, "last_report_ts": 0.0,
         "vwap": 0.0, "oi_start": 0.0, "oi_chg": 0.0,
         "report": None, "ai_opinion": "⏳ पहली रिपोर्ट बनते ही AI अपना सुझाव देगा...",
-        "ai_model_used": "Auto Free Flash", "preferred_model": "Auto (Zero-503 Free Flash)",
+        "sound_event": {"id": 0.0, "type": "BULL"},
         "api_key": "", "last_err": None
     }
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v9_4()
+eng = get_master_engine_v9_5()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -360,45 +405,40 @@ try:
 except Exception:
     pass
 
+if "last_played_sound_id" not in st.session_state:
+    st.session_state["last_played_sound_id"] = 0.0
+
 # ============================================================================
-# RENDER V9.4 DASHBOARD UI
+# RENDER V9.5 DASHBOARD UI
 # ============================================================================
 if eng["px"] > 0:
-    sec_status = "🟢 Secrets Connected" if eng.get("api_key") else "🔴 Key Missing in Secrets"
     st.markdown(f"""
     <div class='top-header'>
-        <div><span style='font-size:24px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V9.4 (ZERO-503 FLASH AI WAR ROOM)</span></div>
+        <div><span style='font-size:24px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V9.5 (AI WAR ROOM)</span></div>
         <div>
-            <span style='font-size:13px; color:#c084fc; margin-right:15px; font-weight:bold;'>{sec_status}</span>
             <span style='font-size:24px; font-weight:900; color:#f8fafc; margin-right:20px;'>BTC: ${eng['px']:,.1f}</span>
             <span style='color:#4ade80; font-size:14px; font-weight:bold;'>● Live: {eng['last_update']}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    ctrl_c1, ctrl_c2, ctrl_c3 = st.columns([0.28, 0.36, 0.36])
-    with ctrl_c1:
-        if st.button("⚡ अभी रिपोर्ट और AI टेस्ट करें"):
+    # Clean Top Action & Sound Controls (No AI Model Dropdowns)
+    c_btn1, c_btn2, c_btn3 = st.columns([0.28, 0.22, 0.50])
+    with c_btn1:
+        if st.button("⚡ अभी रिपोर्ट अपडेट करें"):
             build_report_now(eng, time.time(), get_ist_time_str())
             st.rerun()
-    with ctrl_c2:
-        model_choice = st.selectbox(
-            "फ्री Flash मॉडल चुनें:",
-            [
-                "Auto (Zero-503 Free Flash)",
-                "gemini-2.0-flash-lite",
-                "gemini-1.5-flash-8b",
-                "gemini-1.5-flash",
-                "gemini-2.0-flash",
-                "gemini-2.5-flash-lite"
-            ],
-            label_visibility="collapsed"
-        )
-        eng["preferred_model"] = model_choice
-    with ctrl_c3:
-        custom_mod = st.text_input("या अपना मॉडल नाम लिखें (Optional):", placeholder="जैसे: gemini-1.5-flash-8b", label_visibility="collapsed")
-        if custom_mod.strip():
-            eng["preferred_model"] = custom_mod.strip()
+    with c_btn2:
+        if st.button("🔔 साउंड टेस्ट करें"):
+            trigger_browser_audio("BULL")
+    with c_btn3:
+        sound_enabled = st.checkbox("🔊 सिग्नल और नई रिपोर्ट पर साउंड अलर्ट (ON/OFF)", value=True)
+
+    # Play Audio Automatically when a new Report or Big Void event arrives
+    curr_snd = eng.get("sound_event", {"id": 0.0, "type": "BULL"})
+    if sound_enabled and curr_snd["id"] > 0 and curr_snd["id"] != st.session_state["last_played_sound_id"]:
+        st.session_state["last_played_sound_id"] = curr_snd["id"]
+        trigger_browser_audio(curr_snd["type"])
 
     r_left, r_right = st.columns([0.65, 0.35])
 
@@ -452,8 +492,8 @@ if eng["px"] > 0:
             </div>
             <div class='ai-box'>
                 <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #c084fc50; padding-bottom:8px; margin-bottom:12px;'>
-                    <div style='font-size:16px; font-weight:bold; color:#c084fc;'>🤖 AI Quant Opinion ({eng['ai_model_used']}):</div>
-                    <div style='font-size:12px; color:#94a3b8;'>{sec_status}</div>
+                    <div style='font-size:16px; font-weight:bold; color:#c084fc;'>🤖 AI Quant Opinion:</div>
+                    <div style='font-size:12px; color:#4ade80; font-weight:bold;'>● Auto-Active</div>
                 </div>
                 <div style='font-size:16px; line-height:1.6; color:#f8fafc; white-space:pre-line;'>{eng['ai_opinion']}</div>
             </div>
@@ -464,7 +504,7 @@ if eng["px"] > 0:
             <div class='report-box' style='text-align:center; padding:60px 20px;'>
                 <div style='font-size:24px; font-weight:bold; color:#38bdf8; margin-bottom:15px;'>⏳ पहली स्मार्ट मनी रिपोर्ट तैयार हो रही है...</div>
                 <div style='color:#94a3b8; font-size:16px;'>वॉर रूम डेटाबेस में शुरुआती डेटा जमा हो रहा है ({pct}% पूरा)।</div>
-                <div style='margin-top:10px; color:#facc15; font-size:14px;'>या ऊपर दिए गए '⚡ अभी रिपोर्ट और AI टेस्ट करें' बटन को दबाएं।</div>
+                <div style='margin-top:10px; color:#facc15; font-size:14px;'>या ऊपर दिए गए '⚡ अभी रिपोर्ट अपडेट करें' बटन को दबाएं।</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -480,7 +520,7 @@ if eng["px"] > 0:
     st.rerun()
 
 else:
-    st.warning("⏳ 24x7 V9.4 (Zero-503 AI War Room) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+    st.warning("⏳ 24x7 V9.5 (Auto AI & Sound War Room) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
     if eng.get("last_err"):
         st.error(f"🔴 API Error: {eng['last_err']}")
     time.sleep(2)
