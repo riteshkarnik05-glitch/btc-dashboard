@@ -5,7 +5,7 @@ import threading
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V8.0 - Microstructure War Room", layout="wide")
+st.set_page_config(page_title="Pro Quant V8.1 - Microstructure War Room", layout="wide")
 
 st.markdown("""<style>
 .stApp { background-color: #0b0e14; color: #f8fafc; font-family: sans-serif; }
@@ -45,7 +45,6 @@ def fetch_microstructure_snapshot():
         best_bid, best_ask = float(bids[0]["px"]), float(asks[0]["px"])
         mid_px = (best_bid + best_ask) / 2.0; spread = best_ask - best_bid
 
-        # Distance-Weighted L2
         weights = [1.0]*5 + [0.5]*5 + [0.2]*10
         w_bid = sum(float(b["sz"]) * weights[i] for i, b in enumerate(bids))
         w_ask = sum(float(a["sz"]) * weights[i] for i, a in enumerate(asks))
@@ -92,12 +91,12 @@ def fetch_oi_and_vwap():
     return None
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER (V8.0 WAR ROOM ENGINE)
+# 24x7 BACKGROUND WORKER (V8.1 WAR ROOM ENGINE)
 # ============================================================================
 def background_worker(eng, worker_id):
     SPREAD_VOID_THRESHOLD = 4.0
-    REPORT_INTERVAL_SEC = 180 # 3 Minutes
-    VAULT_MEMORY_SEC = 1800 # 30 Minutes
+    REPORT_INTERVAL_SEC = 180
+    VAULT_MEMORY_SEC = 1800
 
     while True:
         if eng.get("worker_id") != worker_id: break
@@ -110,7 +109,6 @@ def background_worker(eng, worker_id):
                 px = snap["px"]
                 eng["px"] = px; eng["last_update"] = ist_str
 
-                # 1. 30-MINUTE DATA VAULT
                 eng["vault"].append({
                     "ts": now_ts, "px": px,
                     "w_bid": snap["w_bid"], "w_ask": snap["w_ask"],
@@ -118,7 +116,6 @@ def background_worker(eng, worker_id):
                 })
                 eng["vault"] = [d for d in eng["vault"] if (now_ts - d["ts"]) <= VAULT_MEMORY_SEC]
 
-                # 2. LIQUIDITY VOID LOGGER (Spread > $4.0)
                 spread = snap["spread"]
                 if spread >= SPREAD_VOID_THRESHOLD:
                     t_pct = (snap["t_buy"] / (snap["t_buy"] + snap["t_sell"]) * 100) if (snap["t_buy"] + snap["t_sell"]) > 0 else 50
@@ -129,21 +126,18 @@ def background_worker(eng, worker_id):
                     void_obj = {"time": ist_str, "spread": spread, "act": act, "cls": cls, "px": px}
                     if not eng["voids"] or eng["voids"][0]["time"] != ist_str:
                         eng["voids"].insert(0, void_obj)
-                        eng["voids"] = eng["voids"][:40] # Keep recent voids
+                        eng["voids"] = eng["voids"][:40]
 
-                # Fetch VWAP & OI every 15s
                 if now_ts - eng["last_kline_ts"] > 15:
                     kdata = fetch_oi_and_vwap()
                     if kdata:
                         eng["vwap"] = kdata["vwap"]
-                        if not eng["oi_start"]: eng["oi_start"] = kdata["oi"] # Anchor OI at startup
+                        if not eng["oi_start"]: eng["oi_start"] = kdata["oi"]
                         eng["oi_chg"] = kdata["oi"] - eng["oi_start"]
                     eng["last_kline_ts"] = now_ts
 
-                # 3. THE 3-MINUTE PRO REPORT GENERATOR
                 if now_ts - eng["last_report_ts"] >= REPORT_INTERVAL_SEC and len(eng["vault"]) > 30:
                     vault = eng["vault"]
-                    # Calculate 30-Minute Totals
                     tot_t_buy = sum(d["t_buy"] for d in vault)
                     tot_t_sell = sum(d["t_sell"] for d in vault)
                     tot_w_bid = sum(d["w_bid"] for d in vault)
@@ -156,7 +150,6 @@ def background_worker(eng, worker_id):
                     tape_buy_pct = (tot_t_buy / (tot_t_buy + tot_t_sell) * 100) if (tot_t_buy + tot_t_sell) > 0 else 50
                     l2_buy_pct = (tot_w_bid / (tot_w_bid + tot_w_ask) * 100) if (tot_w_bid + tot_w_ask) > 0 else 50
 
-                    # PRO LOGIC: Absorption & Spoofing Analysis
                     spoof_alert = ""
                     if tape_buy_pct > 55 and l2_buy_pct < 45: spoof_alert = "⚠️ स्पूफिंग अलर्ट: ऑर्डरबुक में नकली सेलिंग दीवारें हैं, लेकिन असली सौदों (Tape) में लोग खरीद रहे हैं।"
                     elif tape_buy_pct < 45 and l2_buy_pct > 55: spoof_alert = "⚠️ स्पूफिंग अलर्ट: ऑर्डरबुक में नकली बाइंग दीवारें हैं, लेकिन असली सौदों (Tape) में लोग बेच रहे हैं।"
@@ -165,12 +158,10 @@ def background_worker(eng, worker_id):
                     if tape_buy_pct > 58 and px_change < 0: absorption_alert = "🧊 बियरिश अब्जॉर्प्शन (Bear Iceberg): भारी मार्केट बाइंग के बावजूद प्राइस गिर रहा है। व्हेल्स ऊपर से माल चिपका रहे हैं!"
                     elif tape_buy_pct < 42 and px_change > 0: absorption_alert = "🧊 बुलिश अब्जॉर्प्शन (Bull Iceberg): भारी मार्केट सेलिंग के बावजूद प्राइस बढ़ रहा है। व्हेल्स नीचे से माल सोख रहे हैं!"
 
-                    # Void Analysis (Last 30 mins only)
                     voids_30m = [v for v in eng["voids"] if (datetime.strptime(ist_str, '%I:%M:%S %p') - datetime.strptime(v["time"], '%I:%M:%S %p')).seconds <= 1800]
                     bull_voids = sum(1 for v in voids_30m if v["cls"] == "void-bull")
                     bear_voids = sum(1 for v in voids_30m if v["cls"] == "void-bear")
 
-                    # FINAL VERDICT LOGIC
                     score = 0
                     if tape_buy_pct >= 54: score += 2
                     elif tape_buy_pct <= 46: score -= 2
@@ -197,7 +188,7 @@ def background_worker(eng, worker_id):
         time.sleep(2)
 
 @st.cache_resource
-def get_master_engine_v8_0():
+def get_master_engine_v8_1():
     wid = int(time.time() * 1000)
     eng = {
         "worker_id": wid, "px": 0.0, "last_update": "--:--:--",
@@ -208,15 +199,15 @@ def get_master_engine_v8_0():
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v8_0()
+eng = get_master_engine_v8_1()
 
 # ============================================================================
-# RENDER V8.0 DASHBOARD UI
+# RENDER V8.1 DASHBOARD UI
 # ============================================================================
 if eng["px"] > 0:
     st.markdown(f"""
     <div class='top-header'>
-        <div><span style='font-size:24px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V8.0 (MICROSTRUCTURE WAR ROOM)</span></div>
+        <div><span style='font-size:24px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V8.1 (MICROSTRUCTURE WAR ROOM)</span></div>
         <div>
             <span style='font-size:24px; font-weight:900; color:#f8fafc; margin-right:20px;'>BTC: ${eng['px']:,.1f}</span>
             <span style='color:#4ade80; font-size:14px; font-weight:bold;'>● Live: {eng['last_update']}</span>
@@ -230,20 +221,19 @@ if eng["px"] > 0:
         if eng["report"]:
             r = eng["report"]
             chg_col = "#4ade80" if r['px_chg'] >= 0 else "#f87171"
-            oi_col = "#4ade80" if r['oi_chg'] >= 0 else "#f87171"
             
             alerts_html = ""
             if r['spoof']: alerts_html += f"<div style='background:#42200650; color:#facc15; padding:10px; border-left:4px solid #eab308; border-radius:6px; margin-top:10px; font-weight:bold;'>{r['spoof']}</div>"
             if r['absorb']: alerts_html += f"<div style='background:#0c4a6e50; color:#38bdf8; padding:10px; border-left:4px solid #0284c7; border-radius:6px; margin-top:10px; font-weight:bold;'>{r['absorb']}</div>"
             if not alerts_html: alerts_html = "<div style='color:#94a3b8; font-size:14px; margin-top:10px;'>मार्केट में कोई स्पूफिंग या छुपकर अब्जॉर्प्शन नहीं हो रहा है, वॉल्यूम असली है।</div>"
 
+            # Single contiguous HTML block for the whole report box
             st.markdown(f"""
             <div class='report-box'>
                 <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:15px;'>
                     <div class='report-title' style='border:none; margin:0; padding:0;'>📋 पिछले 30-मिनट की स्मार्ट मनी रिपोर्ट</div>
                     <div style='color:#94a3b8; font-size:14px;'>अपडेट समय: <b style='color:#fff;'>{r['time']}</b> (अगली रिपोर्ट 3 मिनट में)</div>
                 </div>
-                
                 <div class='metric-row'>
                     <div class='metric-card'>
                         <div style='font-size:12px; color:#94a3b8; font-weight:bold; margin-bottom:5px;'>प्राइस बदलाव (30m)</div>
@@ -266,10 +256,8 @@ if eng["px"] > 0:
                         <div style='font-size:11.5px; color:#cbd5e1; margin-top:3px;'>अचानक फटे बड़े स्प्रेड</div>
                     </div>
                 </div>
-
                 <div style='margin-top:20px; font-size:16px; font-weight:bold; color:#38bdf8;'>🔎 प्रो-क्वांट विश्लेषण (Pro Logic Analysis):</div>
                 {alerts_html}
-                
                 <div class='{r['verdict']['cls']}'>
                     <div style='font-size:18px; margin-bottom:5px;'>{r['verdict']['title']}</div>
                     <div style='font-size:14px; font-weight:normal; color:#f8fafc;'>{r['verdict']['txt']} (VWAP बेस: ${eng['vwap']:,.1f})</div>
@@ -277,7 +265,7 @@ if eng["px"] > 0:
             </div>
             """, unsafe_allow_html=True)
         else:
-            pct = min(100, int((len(eng["vault"]) / 15) * 100)) # Approx 30s to get initial 15 ticks for first report
+            pct = min(100, int((len(eng["vault"]) / 15) * 100))
             st.markdown(f"""
             <div class='report-box' style='text-align:center; padding:60px 20px;'>
                 <div style='font-size:24px; font-weight:bold; color:#38bdf8; margin-bottom:15px;'>⏳ पहली स्मार्ट मनी रिपोर्ट तैयार हो रही है...</div>
@@ -298,7 +286,7 @@ if eng["px"] > 0:
     st.rerun()
 
 else:
-    st.warning("⏳ 24x7 V8.0 (Microstructure War Room) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+    st.warning("⏳ 24x7 V8.1 (Microstructure War Room) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
     if eng.get("last_err"): st.error(f"🔴 API Error: {eng['last_err']}")
     time.sleep(2)
     st.rerun()
