@@ -13,7 +13,7 @@ import base64
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V14.1 - Instant SL & Dynamic AI Engine", layout="wide")
+st.set_page_config(page_title="Pro Quant V14.2 - Zero-Blink Dynamic AI Engine", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML inside a single slot without ghost boxes"""
@@ -23,6 +23,13 @@ st.markdown(clean_html("""
 <style>
 .stApp { background-color: #090d16; color: #f8fafc; font-family: 'Inter', sans-serif; }
 .block-container { padding-top: 4.2rem !important; padding-bottom: 1.5rem !important; max-width: 98% !important; }
+/* ZERO-BLINK & ANTI-FLICKER LOCK */
+[data-stale="true"], .element-container, .stMarkdown, [data-testid="stAppViewBlockContainer"] * {
+    opacity: 1 !important;
+    transition: none !important;
+    animation: none !important;
+    filter: none !important;
+}
 .top-bar { background: #111827; border: 1px solid #1f2937; border-bottom: 2px solid #38bdf8; padding: 12px 16px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .main-grid { display: grid; grid-template-columns: 1.65fr 1fr; gap: 14px; align-items: start; }
 @media (max-width: 1000px) { .main-grid { grid-template-columns: 1fr; } }
@@ -836,7 +843,7 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v14_1():
+def get_master_engine_v14_2():
     wid = int(time.time() * 1000)
     eng = {
         "worker_id": wid, "px": 0.0, "best_bid": 0.0, "best_ask": 0.0, "spread": 0.0,
@@ -865,7 +872,7 @@ def get_master_engine_v14_1():
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v14_1()
+eng = get_master_engine_v14_2()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -877,7 +884,7 @@ if "last_played_sound_id" not in st.session_state:
     st.session_state["last_played_sound_id"] = 0.0
 
 # ============================================================================
-# STATIC CONTROLS & SINGLE-CONTAINER ZERO-GHOST RENDERER (SAFE TOP MARGIN)
+# STATIC CONTROLS & ZERO-BLINK IN-PLACE LIVE STREAMING LOOP
 # ============================================================================
 c_act1, c_act2, c_act3 = st.columns([0.34, 0.20, 0.46])
 with c_act1:
@@ -893,201 +900,200 @@ audio_slot = st.empty()
 
 if test_snd:
     b64 = create_sound_b64("BULL")
+    audio_slot.empty()
     with audio_slot:
         components.html(f'<audio autoplay="true"><source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>', height=0, width=0)
 
-curr_snd = eng.get("sound_event", {"id": 0.0, "type": "BULL"})
-if sound_enabled and curr_snd["id"] > 0 and curr_snd["id"] != st.session_state["last_played_sound_id"]:
-    st.session_state["last_played_sound_id"] = curr_snd["id"]
-    b64 = create_sound_b64(curr_snd["type"])
-    with audio_slot:
-        components.html(f'<audio autoplay="true"><source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>', height=0, width=0)
+# Continuous in-place DOM update loop (No st.rerun() -> ZERO screen blinking)
+while True:
+    curr_snd = eng.get("sound_event", {"id": 0.0, "type": "BULL"})
+    if sound_enabled and curr_snd["id"] > 0 and curr_snd["id"] != st.session_state["last_played_sound_id"]:
+        st.session_state["last_played_sound_id"] = curr_snd["id"]
+        b64 = create_sound_b64(curr_snd["type"])
+        audio_slot.empty()
+        with audio_slot:
+            components.html(f'<audio autoplay="true"><source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>', height=0, width=0)
 
-if eng["px"] > 0:
-    mem_min = (time.time() - eng["vault"][0]["ts"]) / 60.0 if len(eng["vault"]) > 1 else 0.0
-    next_sec = max(0, int(180 - (time.time() - eng["last_report_ts"]))) if eng["last_report_ts"] > 0 else 0
+    if eng["px"] > 0:
+        mem_min = (time.time() - eng["vault"][0]["ts"]) / 60.0 if len(eng["vault"]) > 1 else 0.0
+        next_sec = max(0, int(180 - (time.time() - eng["last_report_ts"]))) if eng["last_report_ts"] > 0 else 0
 
-    hist_cards = ""
-    for h in eng["signal_history"]:
-        h_cls = "ic-bull" if h["type"] == "BUY" else "ic-bear"
-        h_col = "#4ade80" if h["type"] == "BUY" else "#f87171"
-        p_col = "#4ade80" if h["live_pts"] >= 0 else "#f87171"
-        is_act = "ACTIVE" in h["status"]
-        sts_badge = "🟢 AI ACTIVE (1s SL Guard)" if is_act else f"🏁 {h['status']}"
-        sl_pts_val = h.get("sl_pts", 0.0)
-        trail_info = (
-            f"शुरुआती SL: ${h['initial_sl']:,.1f} ➔ एक्टिव SL: <b style='color:#facc15;'>${h['sl_px']:,.1f} ({sl_pts_val:+.1f}p)</b> (ट्रेल: {h['trail_count']}x)"
-        )
-        latest_trail_note = f"<br><span style='color:#fde047; font-size:11.8px;'>🔄 {h['trail_log'][0]}</span>" if h.get("trail_log") else ""
+        hist_cards = ""
+        for h in eng["signal_history"]:
+            h_cls = "ic-bull" if h["type"] == "BUY" else "ic-bear"
+            h_col = "#4ade80" if h["type"] == "BUY" else "#f87171"
+            p_col = "#4ade80" if h["live_pts"] >= 0 else "#f87171"
+            is_act = "ACTIVE" in h["status"]
+            sts_badge = "🟢 AI ACTIVE (1s SL Guard)" if is_act else f"🏁 {h['status']}"
+            sl_pts_val = h.get("sl_pts", 0.0)
+            trail_info = (
+                f"शुरुआती SL: ${h['initial_sl']:,.1f} ➔ एक्टिव SL: <b style='color:#facc15;'>${h['sl_px']:,.1f} ({sl_pts_val:+.1f}p)</b> (ट्रेल: {h['trail_count']}x)"
+            )
+            latest_trail_note = f"<br><span style='color:#fde047; font-size:11.8px;'>🔄 {h['trail_log'][0]}</span>" if h.get("trail_log") else ""
 
-        hist_cards += f"""
-        <div class='item-card {h_cls}' style='display:flex; justify-content:space-between; align-items:center;'>
-            <div>
-                <b style='color:{h_col}; font-size:13.5px;'>{h["open_time"]} — AI {h["type"]} @ ${h["entry"]:,.1f} (Prob: {h["prob"]}%)</b>
-                <span style='font-size:11.5px; color:#facc15; margin-left:6px;'>[{sts_badge}]</span><br>
-                <span style='color:#cbd5e1; font-size:12px;'>एंट्री: {h["entry_reason"]}</span><br>
-                <span style='color:#38bdf8; font-size:11.8px;'>🛡️ {trail_info} | {h["exit_reason"]}</span>
-                {latest_trail_note}
-            </div>
-            <div style='text-align:right; min-width:105px;'>
-                <div style='font-size:15px; font-weight:900; color:{p_col};'>{h["live_pts"]:+.1f}p</div>
-                <div style='font-size:11px; color:#94a3b8;'>Peak: +{h["peak_pts"]:.1f}p</div>
-            </div>
-        </div>
-        """
-    if not hist_cards:
-        hist_cards = "<div style='text-align:center; color:#64748b; padding-top:75px;'>अभी तक AI ने कोई ट्रेड लॉक नहीं किया है (संभावना 75%+ होने पर ही ट्रेड लॉक होगा)।</div>"
-
-    live_cluster = analyze_void_cluster([v for v in eng["voids"] if (time.time() - v.get("ts", time.time())) <= 1800], eng["px"])
-    cluster_banner = f"""
-    <div style='background:#1e293b; border:1px solid #475569; border-left:4px solid #38bdf8; padding:8px 10px; border-radius:6px; margin-bottom:9px; font-size:12.2px; color:#f8fafc;'>
-        <b>📊 पिछले {live_cluster["count"]} स्प्रेड्स का क्लस्टर पैटर्न:</b><br>
-        <span style='color:#fde047;'>{live_cluster["pattern_summary"]}</span>
-    </div>
-    """
-
-    void_cards = ""
-    for idx, v in enumerate(eng["voids"], 1):
-        j_col = "#4ade80" if v["px_jump"] >= 0 else "#f87171"
-        s_col = "#4ade80" if v["l2_shift"] >= 0 else "#f87171"
-        in_ai_tag = "<span style='color:#c084fc; font-size:10.5px; margin-left:4px;'>[AI Cluster Top-10]</span>" if idx <= 10 else ""
-        void_cards += f"""
-        <div class='item-card {v["cls"]}'>
-            <div style='display:flex; justify-content:space-between; font-weight:800; color:#f8fafc;'>
-                <span>#{idx} 🕒 {v["time"]} | Spread: <b style='color:#facc15;'>${v["spread"]:.1f}</b> {in_ai_tag}</span>
-                <span style='color:{j_col};'>Jump: {v["px_jump"]:+.1f}$</span>
-            </div>
-            <div style='color:#cbd5e1; margin-top:3px;'>
-                <b>L2 बदलाव:</b> {v["l2_before"]:.0f}% ➔ <b>{v["l2_after"]:.0f}% Bid</b> (<span style='color:{s_col}; font-weight:bold;'>{v["l2_shift"]:+.0f}%</span>) | <b>Tape:</b> {v["tape_pct"]:.0f}% B
-            </div>
-            <div style='color:#38bdf8; font-size:11.8px; margin-top:2px; font-weight:600;'>{v["ob_reaction"]}</div>
-        </div>
-        """
-    if not void_cards:
-        void_cards = "<div style='text-align:center; color:#64748b; padding-top:160px;'>अभी $4.0 से बड़ा कोई स्प्रेड नहीं फटा है।</div>"
-
-    if eng["report"]:
-        r = eng["report"]
-        m30 = r["m30"]
-        m5 = r["m5"]
-        aj = eng["ai_json_view"]
-        c30_col = "#4ade80" if m30["px_chg"] >= 0 else "#f87171"
-        c5_col = "#4ade80" if m5["px_chg"] >= 0 else "#f87171"
-
-        act_tr = eng.get("active_trade")
-        if act_tr:
-            right_stat_label = f"LIVE PNL (SL: {act_tr['sl_pts']:+.1f}p)"
-            right_stat_val = f"{act_tr['live_pts']:+.1f} Pts"
-            right_stat_col = "#4ade80" if act_tr["live_pts"] >= 0 else "#f87171"
-        else:
-            right_stat_label = "AI CYCLE TIMER"
-            right_stat_val = f"{next_sec}s"
-            right_stat_col = "#38bdf8"
-
-        left_body = f"""
-        <div class='lock-banner {r["lock_cls"]}'>
-            <div>
-                <div style='font-size:18px; font-weight:900;'>{r["lock_title"]}</div>
-                <div style='font-size:12.5px; margin-top:3px; opacity:0.92;'>{r["lock_sub"]}</div>
-            </div>
-            <div style='text-align:right; min-width:145px;'>
-                <div style='font-size:11px; text-transform:uppercase; opacity:0.85;'>{right_stat_label}</div>
-                <div style='font-size:23px; font-weight:900; color:{right_stat_col};'>{right_stat_val}</div>
-                <div style='font-size:11px; opacity:0.8;'>अपडेट: {r["time"]}</div>
-            </div>
-        </div>
-
-        <div class='ai-sharp-box'>
-            <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #3b0764; padding-bottom:6px; margin-bottom:8px;'>
-                <span style='font-size:15px; font-weight:900; color:#c084fc;'>🧠 100% डायनामिक AI डिसीजन एवं 1-सेकंड SL गार्ड</span>
-                <span style='font-size:11.5px; color:#4ade80; font-weight:bold;'>{eng["ai_status"]}</span>
-            </div>
-            <div>
-                <span class='json-pill'>{aj["badge_1"]}</span>
-                <span class='json-pill'>{aj["badge_2"]}</span>
-                <span class='json-pill'>{aj["badge_3"]}</span>
-                <span class='json-pill'>{aj["badge_4"]}</span>
-            </div>
-            <div style='font-size:14px; line-height:1.65; color:#f8fafc; margin-top:10px;'>
-                <div>🎯 <b>AI फैसला:</b> {aj["headline"]}</div>
-                <div style='margin-top:4px;'>⚡ <b>30m बनाम 5m/1m विश्लेषण:</b> {aj["macro_vs_micro"]}</div>
-                <div style='margin-top:4px;'>🌪️ <b>10-स्प्रेड क्लस्टर निष्कर्ष:</b> {aj["void_forensics"]}</div>
-            </div>
-            {aj.get("trail_box_html", "")}
-        </div>
-
-        <div class='sub-grid'>
-            <div class='card-box'>
-                <div class='card-title'>
-                    <span>🏛️ 1. पूरे {r["span_min"]:.0f}m का मैक्रो बेस</span>
-                    <span style='color:{c30_col};'>{m30["px_chg"]:+.1f} Pts</span>
+            hist_cards += f"""
+            <div class='item-card {h_cls}' style='display:flex; justify-content:space-between; align-items:center;'>
+                <div>
+                    <b style='color:{h_col}; font-size:13.5px;'>{h["open_time"]} — AI {h["type"]} @ ${h["entry"]:,.1f} (Prob: {h["prob"]}%)</b>
+                    <span style='font-size:11.5px; color:#facc15; margin-left:6px;'>[{sts_badge}]</span><br>
+                    <span style='color:#cbd5e1; font-size:12px;'>एंट्री: {h["entry_reason"]}</span><br>
+                    <span style='color:#38bdf8; font-size:11.8px;'>🛡️ {trail_info} | {h["exit_reason"]}</span>
+                    {latest_trail_note}
                 </div>
-                <div class='stat-row'><span>30m Taker Tape:</span><b><span style='color:#4ade80;'>{m30["tape_buy"]:.0f}% Buy</span> / <span style='color:#f87171;'>{100-m30["tape_buy"]:.0f}% Sell</span></b></div>
-                <div class='stat-row'><span>30m L2 Orderbook:</span><b><span style='color:#4ade80;'>{m30["l2_buy"]:.0f}% Bid</span> / <span style='color:#f87171;'>{100-m30["l2_buy"]:.0f}% Ask</span></b></div>
-                <div class='stat-row' style='border:none;'><span>30m रेंज एवं VWAP:</span><b>${m30["low"]:,.0f}–${m30["high"]:,.0f} (VWAP: ${r["vwap"]:,.0f})</b></div>
-            </div>
-
-            <div class='card-box'>
-                <div class='card-title'>
-                    <span>⚡ 2. आखिरी 5m ट्रिगर और L2 वॉल्स</span>
-                    <span style='color:{c5_col};'>{m5["px_chg"]:+.1f} Pts</span>
+                <div style='text-align:right; min-width:105px;'>
+                    <div style='font-size:15px; font-weight:900; color:{p_col};'>{h["live_pts"]:+.1f}p</div>
+                    <div style='font-size:11px; color:#94a3b8;'>Peak: +{h["peak_pts"]:.1f}p</div>
                 </div>
-                <div class='stat-row'><span>आखिरी 5m Taker Tape:</span><b><span style='color:#4ade80;'>{m5["tape_buy"]:.0f}% Buy</span> ({m5["tape_buy"]-m30["tape_buy"]:+.0f}% Shift)</b></div>
-                <div class='stat-row'><span>L2 सबसे बड़ी Bid/Ask दीवार:</span><b><span style='color:#4ade80;'>${eng["bid_wall_px"]:,.0f}</span> / <span style='color:#f87171;'>${eng["ask_wall_px"]:,.0f}</span></b></div>
-                <div class='stat-row' style='border:none;'><span>5m हाई / लो रेंज:</span><b>${m5["low"]:,.0f} — ${m5["high"]:,.0f}</b></div>
             </div>
-        </div>
-        """
-    else:
-        pct = min(100, int((len(eng["vault"]) / 12) * 100))
-        left_body = f"""
-        <div class='card-box' style='text-align:center; padding:45px 20px; margin-bottom:12px;'>
-            <div style='font-size:20px; font-weight:800; color:#38bdf8; margin-bottom:8px;'>⏳ डायनामिक AI इंजन के लिए शुरुआती डेटा जमा हो रहा है... ({pct}%)</div>
-            <div style='font-size:14px; color:#94a3b8;'>तुरंत AI से फैसला लेने के लिए ऊपर <b>'🤖 अभी AI से डायनामिक फैसला / SL जांच कराएं'</b> बटन दबाएं।</div>
+            """
+        if not hist_cards:
+            hist_cards = "<div style='text-align:center; color:#64748b; padding-top:75px;'>अभी तक AI ने कोई ट्रेड लॉक नहीं किया है (संभावना 75%+ होने पर ही ट्रेड लॉक होगा)।</div>"
+
+        live_cluster = analyze_void_cluster([v for v in eng["voids"] if (time.time() - v.get("ts", time.time())) <= 1800], eng["px"])
+        cluster_banner = f"""
+        <div style='background:#1e293b; border:1px solid #475569; border-left:4px solid #38bdf8; padding:8px 10px; border-radius:6px; margin-bottom:9px; font-size:12.2px; color:#f8fafc;'>
+            <b>📊 पिछले {live_cluster["count"]} स्प्रेड्स का क्लस्टर पैटर्न:</b><br>
+            <span style='color:#fde047;'>{live_cluster["pattern_summary"]}</span>
         </div>
         """
 
-    dashboard_slot.markdown(clean_html(f"""
-    <div>
-        <div class='top-bar'>
-            <div>
-                <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V14.1 (DYNAMIC AI & 1s INSTANT SL)</div>
-                <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b></div>
+        void_cards = ""
+        for idx, v in enumerate(eng["voids"], 1):
+            j_col = "#4ade80" if v["px_jump"] >= 0 else "#f87171"
+            s_col = "#4ade80" if v["l2_shift"] >= 0 else "#f87171"
+            in_ai_tag = "<span style='color:#c084fc; font-size:10.5px; margin-left:4px;'>[AI Cluster Top-10]</span>" if idx <= 10 else ""
+            void_cards += f"""
+            <div class='item-card {v["cls"]}'>
+                <div style='display:flex; justify-content:space-between; font-weight:800; color:#f8fafc;'>
+                    <span>#{idx} 🕒 {v["time"]} | Spread: <b style='color:#facc15;'>${v["spread"]:.1f}</b> {in_ai_tag}</span>
+                    <span style='color:{j_col};'>Jump: {v["px_jump"]:+.1f}$</span>
+                </div>
+                <div style='color:#cbd5e1; margin-top:3px;'>
+                    <b>L2 बदलाव:</b> {v["l2_before"]:.0f}% ➔ <b>{v["l2_after"]:.0f}% Bid</b> (<span style='color:{s_col}; font-weight:bold;'>{v["l2_shift"]:+.0f}%</span>) | <b>Tape:</b> {v["tape_pct"]:.0f}% B
+                </div>
+                <div style='color:#38bdf8; font-size:11.8px; margin-top:2px; font-weight:600;'>{v["ob_reaction"]}</div>
             </div>
-            <div style='text-align:right;'>
-                <div style='font-size:21px; font-weight:900; color:#f8fafc;'>BTC: ${eng['px']:,.1f}</div>
-                <div style='color:#4ade80; font-size:12px; font-weight:bold;'>● {eng['last_update']}</div>
-            </div>
-        </div>
+            """
+        if not void_cards:
+            void_cards = "<div style='text-align:center; color:#64748b; padding-top:160px;'>अभी $4.0 से बड़ा कोई स्प्रेड नहीं फटा है।</div>"
 
-        <div class='main-grid'>
-            <div>
-                {left_body}
-                <div class='history-panel'>
-                    <div style='font-size:14px; font-weight:900; color:#4ade80; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
-                        📜 AI ट्रेड एवं डायनामिक स्टॉप-लॉस हिस्ट्री (Initial SL ➔ Trailed SL Price & Points सहित)
+        if eng["report"]:
+            r = eng["report"]
+            m30 = r["m30"]
+            m5 = r["m5"]
+            aj = eng["ai_json_view"]
+            c30_col = "#4ade80" if m30["px_chg"] >= 0 else "#f87171"
+            c5_col = "#4ade80" if m5["px_chg"] >= 0 else "#f87171"
+
+            act_tr = eng.get("active_trade")
+            if act_tr:
+                right_stat_label = f"LIVE PNL (SL: {act_tr['sl_pts']:+.1f}p)"
+                right_stat_val = f"{act_tr['live_pts']:+.1f} Pts"
+                right_stat_col = "#4ade80" if act_tr["live_pts"] >= 0 else "#f87171"
+            else:
+                right_stat_label = "AI CYCLE TIMER"
+                right_stat_val = f"{next_sec}s"
+                right_stat_col = "#38bdf8"
+
+            left_body = f"""
+            <div class='lock-banner {r["lock_cls"]}'>
+                <div>
+                    <div style='font-size:18px; font-weight:900;'>{r["lock_title"]}</div>
+                    <div style='font-size:12.5px; margin-top:3px; opacity:0.92;'>{r["lock_sub"]}</div>
+                </div>
+                <div style='text-align:right; min-width:145px;'>
+                    <div style='font-size:11px; text-transform:uppercase; opacity:0.85;'>{right_stat_label}</div>
+                    <div style='font-size:23px; font-weight:900; color:{right_stat_col};'>{right_stat_val}</div>
+                    <div style='font-size:11px; opacity:0.8;'>अपडेट: {r["time"]}</div>
+                </div>
+            </div>
+
+            <div class='ai-sharp-box'>
+                <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #3b0764; padding-bottom:6px; margin-bottom:8px;'>
+                    <span style='font-size:15px; font-weight:900; color:#c084fc;'>🧠 100% डायनामिक AI डिसीजन एवं 1-सेकंड SL गार्ड</span>
+                    <span style='font-size:11.5px; color:#4ade80; font-weight:bold;'>{eng["ai_status"]}</span>
+                </div>
+                <div>
+                    <span class='json-pill'>{aj["badge_1"]}</span>
+                    <span class='json-pill'>{aj["badge_2"]}</span>
+                    <span class='json-pill'>{aj["badge_3"]}</span>
+                    <span class='json-pill'>{aj["badge_4"]}</span>
+                </div>
+                <div style='font-size:14px; line-height:1.65; color:#f8fafc; margin-top:10px;'>
+                    <div>🎯 <b>AI फैसला:</b> {aj["headline"]}</div>
+                    <div style='margin-top:4px;'>⚡ <b>30m बनाम 5m/1m विश्लेषण:</b> {aj["macro_vs_micro"]}</div>
+                    <div style='margin-top:4px;'>🌪️ <b>10-स्प्रेड क्लस्टर निष्कर्ष:</b> {aj["void_forensics"]}</div>
+                </div>
+                {aj.get("trail_box_html", "")}
+            </div>
+
+            <div class='sub-grid'>
+                <div class='card-box'>
+                    <div class='card-title'>
+                        <span>🏛️ 1. पूरे {r["span_min"]:.0f}m का मैक्रो बेस</span>
+                        <span style='color:{c30_col};'>{m30["px_chg"]:+.1f} Pts</span>
                     </div>
-                    {hist_cards}
+                    <div class='stat-row'><span>30m Taker Tape:</span><b><span style='color:#4ade80;'>{m30["tape_buy"]:.0f}% Buy</span> / <span style='color:#f87171;'>{100-m30["tape_buy"]:.0f}% Sell</span></b></div>
+                    <div class='stat-row'><span>30m L2 Orderbook:</span><b><span style='color:#4ade80;'>{m30["l2_buy"]:.0f}% Bid</span> / <span style='color:#f87171;'>{100-m30["l2_buy"]:.0f}% Ask</span></b></div>
+                    <div class='stat-row' style='border:none;'><span>30m रेंज एवं VWAP:</span><b>${m30["low"]:,.0f}–${m30["high"]:,.0f} (VWAP: ${r["vwap"]:,.0f})</b></div>
+                </div>
+
+                <div class='card-box'>
+                    <div class='card-title'>
+                        <span>⚡ 2. आखिरी 5m ट्रिगर और L2 वॉल्स</span>
+                        <span style='color:{c5_col};'>{m5["px_chg"]:+.1f} Pts</span>
+                    </div>
+                    <div class='stat-row'><span>आखिरी 5m Taker Tape:</span><b><span style='color:#4ade80;'>{m5["tape_buy"]:.0f}% Buy</span> ({m5["tape_buy"]-m30["tape_buy"]:+.0f}% Shift)</b></div>
+                    <div class='stat-row'><span>L2 सबसे बड़ी Bid/Ask दीवार:</span><b><span style='color:#4ade80;'>${eng["bid_wall_px"]:,.0f}</span> / <span style='color:#f87171;'>${eng["ask_wall_px"]:,.0f}</span></b></div>
+                    <div class='stat-row' style='border:none;'><span>5m हाई / लो रेंज:</span><b>${m5["low"]:,.0f} — ${m5["high"]:,.0f}</b></div>
+                </div>
+            </div>
+            """
+        else:
+            pct = min(100, int((len(eng["vault"]) / 12) * 100))
+            left_body = f"""
+            <div class='card-box' style='text-align:center; padding:45px 20px; margin-bottom:12px;'>
+                <div style='font-size:20px; font-weight:800; color:#38bdf8; margin-bottom:8px;'>⏳ डायनामिक AI इंजन के लिए शुरुआती डेटा जमा हो रहा है... ({pct}%)</div>
+                <div style='font-size:14px; color:#94a3b8;'>तुरंत AI से फैसला लेने के लिए ऊपर <b>'🤖 अभी AI से डायनामिक फैसला / SL जांच कराएं'</b> बटन दबाएं।</div>
+            </div>
+            """
+
+        dashboard_slot.markdown(clean_html(f"""
+        <div>
+            <div class='top-bar'>
+                <div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V14.2 (ZERO-BLINK DYNAMIC AI)</div>
+                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b></div>
+                </div>
+                <div style='text-align:right;'>
+                    <div style='font-size:21px; font-weight:900; color:#f8fafc;'>BTC: ${eng['px']:,.1f}</div>
+                    <div style='color:#4ade80; font-size:12px; font-weight:bold;'>● {eng['last_update']}</div>
                 </div>
             </div>
 
-            <div class='void-panel'>
-                <div style='font-size:14.5px; font-weight:900; color:#facc15; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
-                    🌪️ स्प्रेड क्लस्टर एवं ऑर्डरबुक पोस्टमार्टम (Top-10 AI Analyzed)
+            <div class='main-grid'>
+                <div>
+                    {left_body}
+                    <div class='history-panel'>
+                        <div style='font-size:14px; font-weight:900; color:#4ade80; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
+                            📜 AI ट्रेड एवं डायनामिक स्टॉप-लॉस हिस्ट्री (Initial SL ➔ Trailed SL Price & Points सहित)
+                        </div>
+                        {hist_cards}
+                    </div>
                 </div>
-                {cluster_banner}
-                {void_cards}
+
+                <div class='void-panel'>
+                    <div style='font-size:14.5px; font-weight:900; color:#facc15; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
+                        🌪️ स्प्रेड क्लस्टर एवं ऑर्डरबुक पोस्टमार्टम (Top-10 AI Analyzed)
+                    </div>
+                    {cluster_banner}
+                    {void_cards}
+                </div>
             </div>
         </div>
-    </div>
-    """), unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
+
+    else:
+        dashboard_slot.warning("⏳ 24x7 V14.2 (Zero-Blink Dynamic AI Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
 
     time.sleep(1.5)
-    st.rerun()
-
-else:
-    dashboard_slot.warning("⏳ 24x7 V14.1 (Dynamic AI & Instant 1s SL Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
-    if eng.get("last_err"):
-        st.error(f"🔴 API Error: {eng['last_err']}")
-    time.sleep(1.5)
-    st.rerun()
