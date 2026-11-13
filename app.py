@@ -13,7 +13,7 @@ import base64
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V14.0 - Instant SL & Dynamic AI Engine", layout="wide")
+st.set_page_config(page_title="Pro Quant V14.1 - Instant SL & Dynamic AI Engine", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML inside a single slot without ghost boxes"""
@@ -22,15 +22,16 @@ def clean_html(raw_html: str) -> str:
 st.markdown(clean_html("""
 <style>
 .stApp { background-color: #090d16; color: #f8fafc; font-family: 'Inter', sans-serif; }
-.block-container { padding-top: 1rem !important; padding-bottom: 1rem !important; max-width: 98% !important; }
-.top-bar { background: #111827; border: 1px solid #1f2937; border-bottom: 2px solid #38bdf8; padding: 12px 18px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.block-container { padding-top: 4.2rem !important; padding-bottom: 1.5rem !important; max-width: 98% !important; }
+.top-bar { background: #111827; border: 1px solid #1f2937; border-bottom: 2px solid #38bdf8; padding: 12px 16px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .main-grid { display: grid; grid-template-columns: 1.65fr 1fr; gap: 14px; align-items: start; }
 @media (max-width: 1000px) { .main-grid { grid-template-columns: 1fr; } }
-.lock-banner { padding: 14px 18px; border-radius: 10px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+.lock-banner { padding: 14px 16px; border-radius: 10px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
 .lock-buy { background: #052e16; border: 2px solid #22c55e; color: #4ade80; }
 .lock-sell { background: #450a0a; border: 2px solid #ef4444; color: #f87171; }
 .lock-wait { background: #1e293b; border: 2px dashed #64748b; color: #cbd5e1; }
 .sub-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+@media (max-width: 768px) { .sub-grid { grid-template-columns: 1fr; } }
 .card-box { background: #111827; border: 1px solid #334155; border-radius: 10px; padding: 13px 15px; }
 .card-title { font-size: 12.5px; font-weight: 800; color: #38bdf8; text-transform: uppercase; margin-bottom: 8px; border-bottom: 1px solid #1f2937; padding-bottom: 5px; display: flex; justify-content: space-between; }
 .stat-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-bottom: 1px dashed #1f2937; }
@@ -43,7 +44,7 @@ st.markdown(clean_html("""
 .ic-bull { border-left: 4px solid #22c55e; }
 .ic-bear { border-left: 4px solid #ef4444; }
 .ic-warn { border-left: 4px solid #facc15; }
-div.stButton > button { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #38bdf8 !important; border-radius: 7px !important; font-weight: 700 !important; width: 100%; }
+div.stButton > button { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #38bdf8 !important; border-radius: 7px !important; font-weight: 700 !important; width: 100%; margin-top: 2px; }
 div.stButton > button:hover { background-color: #38bdf8 !important; color: #090d16 !important; }
 </style>
 """), unsafe_allow_html=True)
@@ -111,7 +112,6 @@ def fetch_microstructure_snapshot():
         w_bid = sum(float(b["sz"]) * weights[i] for i, b in enumerate(bids))
         w_ask = sum(float(a["sz"]) * weights[i] for i, a in enumerate(asks))
 
-        # Find heaviest L2 Bid Support Wall & L2 Ask Resistance Wall for Dynamic AI SL placement
         top_bid_node = max(bids, key=lambda x: float(x["sz"]))
         top_ask_node = max(asks, key=lambda x: float(x["sz"]))
         bid_wall_px, bid_wall_sz = float(top_bid_node["px"]), float(top_bid_node["sz"])
@@ -238,7 +238,6 @@ def analyze_void_cluster(void_list, current_px):
 # INSTANT HARD-SL / TRAILED-SL CLOSER (SHARED BY 1s WORKER & AI THREAD)
 # ============================================================================
 def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_title, detailed_reason):
-    """Closes active trade immediately and updates both top banner and AI JSON box so UI never lags"""
     move = (exit_px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - exit_px)
     active_tr["live_pts"] = move
     active_tr["peak_pts"] = max(active_tr["peak_pts"], move)
@@ -279,7 +278,6 @@ def parse_ai_json_safely(raw_text: str):
     return None
 
 def dynamic_microstructure_backup_brain(ctx, active_trade):
-    """100% Structure-based dynamic calculation (using L2 walls, 1m/5m swings & VWAP) if API is 503"""
     m30 = ctx["m30"]
     m5 = ctx["m5"]
     m1 = ctx["m1"]
@@ -287,7 +285,6 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
     vwap = ctx["vwap"] if ctx["vwap"] > 0 else px
     vc = ctx["void_cluster"]
 
-    # Dynamic structural levels from live market (no fixed point constants)
     bull_struct_support = min(m5["low"], vwap, ctx["bid_wall_px"]) - max(8.0, ctx["spread"] * 3.0)
     bear_struct_resist = max(m5["high"], vwap, ctx["ask_wall_px"]) + max(8.0, ctx["spread"] * 3.0)
     dynamic_range = max(40.0, m30["high"] - m30["low"])
@@ -345,7 +342,6 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
                     "macro_vs_micro": f"5m बाइंग गिरकर {m5['tape_buy']:.0f}% और 1m बाइंग {m1['tape_buy']:.0f}% रह गई है।",
                     "void_forensics": vc["pattern_summary"]
                 }
-            # Dynamic structural trailing based on 1m low, 5m low, L2 bid wall & VWAP
             candidates = [lvl for lvl in [m5["low"] - 5.0, m1["low"] - 8.0, ctx["bid_wall_px"] - 4.0, vwap - 6.0] if curr_sl < lvl < px - 2.0]
             new_sl = round(max(candidates), 1) if candidates else curr_sl
             reason_txt = (
@@ -461,8 +457,6 @@ def call_gemini_json_engine(api_key, ctx, active_trade):
 डायनामिक निर्णय के सख्त निर्देश:
 1. अगर ऑर्डरफ्लो (1m/5m Tape या Spread Cluster) हमारे ट्रेड के खिलाफ पलट चुका है या बड़ा प्रॉफिट बनने के बाद मोमेंटम टूट रहा है, तो बिना इंतज़ार किए `"action": "EXIT"` चुनो।
 2. अगर `"action": "HOLD"` चुनते हो, तो तुम पूरी तरह स्वतंत्र हो कि डेटा के हिसाब से `trailing_sl` (प्राइस में, जैसे 73501.0) को कितना टाइट या स्ट्रक्चरल रखना है:
-   - अगर मोमेंटम धीमा पड़ रहा है और अच्छा प्रॉफिट चल रहा है, तो तुम `trailing_sl` को वर्तमान प्राइस (${px:,.1f}) के बिल्कुल पास (5-12 पॉइंट्स की दूरी पर या 1m Low/High के पास) भी ला सकते हो ताकि प्रॉफिट हाथ से न जाए।
-   - अगर ट्रेंड तेज़ है, तो उसे 5m Low/High, VWAP या L2 Bid/Ask Wall के ठीक पीछे रख सकते हो।
    - ध्यान रहे: BUY ट्रेड में `trailing_sl` हमेशा पुराने SL (${curr_sl:,.1f}) के बराबर या उससे ऊपर होना चाहिए (और वर्तमान प्राइस ${px:,.1f} से नीचे)। SELL ट्रेड में पुराने SL के बराबर या उससे नीचे होना चाहिए (और वर्तमान प्राइस ${px:,.1f} से ऊपर)।
 3. केवल शुद्ध JSON में जवाब दो:
 {{
@@ -545,26 +539,19 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         eng["ai_status"] = status_str
         eng["last_report_ts"] = time.time()
 
-        # CRITICAL RACE-CONDITION GUARD:
-        # Check if the 1-second SL worker already closed the trade while AI was thinking!
         current_live_tr = eng.get("active_trade")
         if snapshot_trade_id is not None and (current_live_tr is None or current_live_tr["open_ts"] != snapshot_trade_id):
-            # Trade was already exited by 1-second Hard SL guard during AI call -> DO NOT overwrite back to HOLD!
             return
 
         live_px_now = eng["px"]
         ist_now_str = get_ist_time_str()
 
-        # --------------------------------------------------------------------
-        # CASE 1: NO ACTIVE TRADE -> CHECK IF AI CONFIRMS AN ENTRY (>=75% PROB)
-        # --------------------------------------------------------------------
         if current_live_tr is None:
             dec = str(ai_json.get("decision", "WAIT")).upper()
             prob = int(ai_json.get("probability", 50))
             raw_sl = float(ai_json.get("sl_price", live_px_now - 90.0 if dec == "BUY" else live_px_now + 90.0))
             tp_px = float(ai_json.get("target_price", live_px_now + 280.0 if dec == "BUY" else live_px_now - 280.0))
 
-            # Ensure initial SL is on the valid side of live price (dynamic distance allowed from 15p to 250p)
             if dec == "BUY":
                 sl_px = min(live_px_now - 15.0, max(live_px_now - 250.0, raw_sl))
             elif dec == "SELL":
@@ -624,16 +611,12 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
             ctx["lock_sub"] = lock_sub
             eng["report"] = ctx
 
-        # --------------------------------------------------------------------
-        # CASE 2: ACTIVE TRADE RUNNING -> DYNAMIC SL TRAIL OR IMMEDIATE EXIT
-        # --------------------------------------------------------------------
         else:
             act = str(ai_json.get("action", "HOLD")).upper()
             conf = int(ai_json.get("confidence", 80))
             raw_ai_sl = float(ai_json.get("trailing_sl", current_live_tr["sl_px"]))
             trail_reason = str(ai_json.get("sl_trail_reason", "ऑर्डरबुक और प्राइस स्ट्रक्चर के अनुसार डायनामिक SL अपडेट।")).strip()
 
-            # Smart Normalization: If AI ever returned trailing_sl as points (e.g. 501) instead of price (e.g. 73501), convert it!
             if 0 < abs(raw_ai_sl) < 5000:
                 ai_trail_sl = (current_live_tr["entry"] + raw_ai_sl) if current_live_tr["type"] == "BUY" else (current_live_tr["entry"] - raw_ai_sl)
             else:
@@ -648,9 +631,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
 
             old_sl = current_live_tr["sl_px"]
 
-            # CHECK IF AI TRAILED SL FURTHER IN FAVORABLE DIRECTION:
             if current_live_tr["type"] == "BUY" and ai_trail_sl > old_sl + 0.5:
-                # If live price has ALREADY dropped to or below the new SL that AI wanted to set (e.g., AI said SL 501, live is already 490) -> EXIT IMMEDIATELY!
                 if live_px_now <= ai_trail_sl:
                     current_live_tr["sl_px"] = round(ai_trail_sl, 1)
                     current_live_tr["sl_pts"] = round(ai_trail_sl - current_live_tr["entry"], 1)
@@ -783,10 +764,6 @@ def background_worker(eng, worker_id):
                 eng["ask_wall_sz"] = snap["ask_wall_sz"]
                 eng["last_update"] = ist_str
 
-                # ============================================================
-                # 1-SECOND REAL-TIME HARD SL & TRAILED SL EXECUTION
-                # (Exits immediately within 1s if Price OR Points touch SL!)
-                # ============================================================
                 active_tr = eng.get("active_trade")
                 if active_tr is not None:
                     move = (px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - px)
@@ -856,10 +833,10 @@ def background_worker(eng, worker_id):
 
         except Exception as e:
             eng["last_err"] = str(e)
-        time.sleep(1) # 1-Second Ultra-Fast Tick & SL Check
+        time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v14_0():
+def get_master_engine_v14_1():
     wid = int(time.time() * 1000)
     eng = {
         "worker_id": wid, "px": 0.0, "best_bid": 0.0, "best_ask": 0.0, "spread": 0.0,
@@ -888,7 +865,7 @@ def get_master_engine_v14_0():
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v14_0()
+eng = get_master_engine_v14_1()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -900,9 +877,9 @@ if "last_played_sound_id" not in st.session_state:
     st.session_state["last_played_sound_id"] = 0.0
 
 # ============================================================================
-# STATIC CONTROLS & SINGLE-CONTAINER ZERO-GHOST RENDERER
+# STATIC CONTROLS & SINGLE-CONTAINER ZERO-GHOST RENDERER (SAFE TOP MARGIN)
 # ============================================================================
-c_act1, c_act2, c_act3 = st.columns([0.32, 0.18, 0.50])
+c_act1, c_act2, c_act3 = st.columns([0.34, 0.20, 0.46])
 with c_act1:
     if st.button("🤖 अभी AI से डायनामिक फैसला / SL जांच कराएं"):
         threading.Thread(target=execute_ai_cycle_thread, args=(eng, time.time(), get_ist_time_str()), daemon=True).start()
@@ -930,7 +907,6 @@ if eng["px"] > 0:
     mem_min = (time.time() - eng["vault"][0]["ts"]) / 60.0 if len(eng["vault"]) > 1 else 0.0
     next_sec = max(0, int(180 - (time.time() - eng["last_report_ts"]))) if eng["last_report_ts"] > 0 else 0
 
-    # 1. Build AI Signal, Dynamic SL Trail & Trade History HTML
     hist_cards = ""
     for h in eng["signal_history"]:
         h_cls = "ic-bull" if h["type"] == "BUY" else "ic-bear"
@@ -962,7 +938,6 @@ if eng["px"] > 0:
     if not hist_cards:
         hist_cards = "<div style='text-align:center; color:#64748b; padding-top:75px;'>अभी तक AI ने कोई ट्रेड लॉक नहीं किया है (संभावना 75%+ होने पर ही ट्रेड लॉक होगा)।</div>"
 
-    # 2. Build Void Postmortem + 10-Void Cluster Summary HTML
     live_cluster = analyze_void_cluster([v for v in eng["voids"] if (time.time() - v.get("ts", time.time())) <= 1800], eng["px"])
     cluster_banner = f"""
     <div style='background:#1e293b; border:1px solid #475569; border-left:4px solid #38bdf8; padding:8px 10px; border-radius:6px; margin-bottom:9px; font-size:12.2px; color:#f8fafc;'>
@@ -991,7 +966,6 @@ if eng["px"] > 0:
     if not void_cards:
         void_cards = "<div style='text-align:center; color:#64748b; padding-top:160px;'>अभी $4.0 से बड़ा कोई स्प्रेड नहीं फटा है।</div>"
 
-    # 3. Build Left Main Section
     if eng["report"]:
         r = eng["report"]
         m30 = r["m30"]
@@ -1013,12 +987,12 @@ if eng["px"] > 0:
         left_body = f"""
         <div class='lock-banner {r["lock_cls"]}'>
             <div>
-                <div style='font-size:18.5px; font-weight:900;'>{r["lock_title"]}</div>
+                <div style='font-size:18px; font-weight:900;'>{r["lock_title"]}</div>
                 <div style='font-size:12.5px; margin-top:3px; opacity:0.92;'>{r["lock_sub"]}</div>
             </div>
-            <div style='text-align:right; min-width:155px;'>
+            <div style='text-align:right; min-width:145px;'>
                 <div style='font-size:11px; text-transform:uppercase; opacity:0.85;'>{right_stat_label}</div>
-                <div style='font-size:24px; font-weight:900; color:{right_stat_col};'>{right_stat_val}</div>
+                <div style='font-size:23px; font-weight:900; color:{right_stat_col};'>{right_stat_val}</div>
                 <div style='font-size:11px; opacity:0.8;'>अपडेट: {r["time"]}</div>
             </div>
         </div>
@@ -1077,12 +1051,12 @@ if eng["px"] > 0:
     <div>
         <div class='top-bar'>
             <div>
-                <span style='font-size:21px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V14.0 (DYNAMIC AI & 1s INSTANT SL ENGINE)</span>
-                <span style='font-size:13px; color:#94a3b8; margin-left:14px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b></span>
+                <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V14.1 (DYNAMIC AI & 1s INSTANT SL)</div>
+                <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b></div>
             </div>
-            <div>
-                <span style='font-size:22px; font-weight:900; color:#f8fafc; margin-right:16px;'>BTC: ${eng['px']:,.1f}</span>
-                <span style='color:#4ade80; font-size:13px; font-weight:bold;'>● {eng['last_update']}</span>
+            <div style='text-align:right;'>
+                <div style='font-size:21px; font-weight:900; color:#f8fafc;'>BTC: ${eng['px']:,.1f}</div>
+                <div style='color:#4ade80; font-size:12px; font-weight:bold;'>● {eng['last_update']}</div>
             </div>
         </div>
 
@@ -1112,7 +1086,7 @@ if eng["px"] > 0:
     st.rerun()
 
 else:
-    dashboard_slot.warning("⏳ 24x7 V14.0 (Dynamic AI & Instant 1s SL Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+    dashboard_slot.warning("⏳ 24x7 V14.1 (Dynamic AI & Instant 1s SL Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
     if eng.get("last_err"):
         st.error(f"🔴 API Error: {eng['last_err']}")
     time.sleep(1.5)
