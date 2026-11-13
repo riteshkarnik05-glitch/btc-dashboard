@@ -3,6 +3,8 @@ import streamlit.components.v1 as components
 import requests
 import time
 import threading
+import json
+import re
 import io
 import wave
 import struct
@@ -11,10 +13,10 @@ import base64
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V11.0 - Zero-Ghost Command Center", layout="wide")
+st.set_page_config(page_title="Pro Quant V12.0 - Autonomous AI JSON Engine", layout="wide")
 
 def clean_html(raw_html: str) -> str:
-    """Strips leading spaces so Streamlit renders pure HTML without breaking or duplicating"""
+    """Strips leading spaces so Streamlit renders pure HTML inside a single slot without ghost boxes"""
     return "\n".join(line.lstrip() for line in raw_html.splitlines() if line.strip())
 
 st.markdown(clean_html("""
@@ -33,8 +35,9 @@ st.markdown(clean_html("""
 .card-title { font-size: 12.5px; font-weight: 800; color: #38bdf8; text-transform: uppercase; margin-bottom: 8px; border-bottom: 1px solid #1f2937; padding-bottom: 5px; display: flex; justify-content: space-between; }
 .stat-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-bottom: 1px dashed #1f2937; }
 .ai-sharp-box { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); border: 1px solid #a855f7; border-left: 5px solid #c084fc; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
-.history-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #22c55e; border-radius: 10px; padding: 12px 14px; height: 245px; overflow-y: auto; }
-.void-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #facc15; border-radius: 10px; padding: 12px 14px; height: 615px; overflow-y: auto; }
+.json-pill { background: #090d16; border: 1px solid #4c1d95; padding: 4px 10px; border-radius: 6px; font-size: 12px; color: #e9d5ff; font-weight: 700; display: inline-block; margin-right: 8px; margin-top: 6px; }
+.history-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #22c55e; border-radius: 10px; padding: 12px 14px; height: 255px; overflow-y: auto; }
+.void-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #facc15; border-radius: 10px; padding: 12px 14px; height: 635px; overflow-y: auto; }
 .item-card { background: #090d16; border: 1px solid #1f2937; padding: 9px 11px; border-radius: 7px; margin-bottom: 7px; font-size: 12.5px; line-height: 1.45; }
 .ic-bull { border-left: 4px solid #22c55e; }
 .ic-bear { border-left: 4px solid #ef4444; }
@@ -45,7 +48,7 @@ div.stButton > button:hover { background-color: #38bdf8 !important; color: #090d
 """), unsafe_allow_html=True)
 
 # ============================================================================
-# IN-BUILT SOUND SYNTHESIZER
+# IN-BUILT SOUND SYNTHESIZER (ENTRY, EXIT & VOID TONES)
 # ============================================================================
 def create_sound_b64(tone_type="BULL"):
     sample_rate = 22050
@@ -54,6 +57,8 @@ def create_sound_b64(tone_type="BULL"):
         notes = [(784, 0.13), (0, 0.03), (1046, 0.15), (0, 0.03), (1318, 0.22)]
     elif tone_type == "BEAR":
         notes = [(659, 0.14), (0, 0.03), (523, 0.14), (0, 0.03), (392, 0.24)]
+    elif tone_type == "EXIT":
+        notes = [(880, 0.12), (0, 0.04), (660, 0.12), (0, 0.04), (880, 0.18)]
     else:
         notes = [(1175, 0.11)]
 
@@ -71,7 +76,7 @@ def create_sound_b64(tone_type="BULL"):
     return base64.b64encode(buf.getvalue()).decode('ascii')
 
 # ============================================================================
-# MARKET DATA FETCHERS
+# HYPERLIQUID MARKET DATA FETCHERS
 # ============================================================================
 HYPERLIQUID_URL = "https://api.hyperliquid.xyz/info"
 
@@ -156,97 +161,6 @@ def fetch_oi_and_vwap():
         pass
     return None
 
-# ============================================================================
-# SHORT, PUNCHY & DYNAMIC AI VERDICT ENGINE
-# ============================================================================
-def build_sharp_dynamic_verdict(rep):
-    """Creates a crisp, non-boring 3-line actionable flash note from live microstructure"""
-    m30 = rep["m30"]
-    m5 = rep["m5"]
-    px = rep["px"]
-    vwap = rep["vwap"] if rep["vwap"] > 0 else px
-    score = rep["score"]
-    v_list = rep["recent_voids"]
-    tape_shift = m5["tape_buy"] - m30["tape_buy"]
-
-    # Line 1: Direct Action Call
-    if rep["lock_state"] == "BUY":
-        call_line = f"🎯 **स्पष्ट सिग्नल — BUY (LONG) @ ${px:,.0f}:** 30m और 5m दोनों में बायर लॉक हैं (स्कोर: {score:+d})। स्टॉप-लॉस ${min(vwap-40, m5['low']-25):,.0f} के नीचे रखें, टारगेट +200 से +350 पॉइंट्स।"
-    elif rep["lock_state"] == "SELL":
-        call_line = f"🎯 **स्पष्ट सिग्नल — SELL (SHORT) @ ${px:,.0f}:** मार्केट पर सेलर्स का सीधा कब्ज़ा है (स्कोर: {score:+d})। स्टॉप-लॉस ${max(vwap+40, m5['high']+25):,.0f} के ऊपर रखें, टारगेट +200 से +350 पॉइंट्स।"
-    else:
-        need_pts = 45 - abs(score)
-        if abs(tape_shift) >= 8:
-            call_line = f"✋ **स्पष्ट सिग्नल — WAIT (अभी ट्रेड न लें):** 30m और आखिरी 5m की दिशा आपस में टकरा रही है ({tape_shift:+.0f}% Shift)। कन्फर्म सिग्नल लॉक होने के लिए {need_pts} पॉइंट्स की मजबूती और चाहिए।"
-        else:
-            call_line = f"✋ **स्पष्ट सिग्नल — NO TRADE (शांत बैठें):** अभी मार्केट रेंज (${m5['low']:,.0f} – ${m5['high']:,.0f}) में फँसा है। फीस बचाएं, ब्रेकआउट पर ही सिग्नल लॉक होगा।"
-
-    # Line 2: 5m vs 30m Dynamic Action
-    if m5["tape_buy"] >= 58 and m5["px_chg"] < -10:
-        flow_line = f"🧊 **व्हेल ट्रैप पकड़ा गया:** आखिरी 5m में {m5['tape_buy']:.0f}% मार्केट बाइंग के बावजूद प्राइस {m5['px_chg']:+.0f}$ गिरा—ऊपर व्हेल्स माल चिपका रही हैं!"
-    elif m5["tape_buy"] <= 42 and m5["px_chg"] > 10:
-        flow_line = f"🧊 **व्हेल अब्जॉर्प्शन पकड़ा गया:** आखिरी 5m में {100-m5['tape_buy']:.0f}% मार्केट सेलिंग के बावजूद प्राइस {m5['px_chg']:+.0f}$ चढ़ा—नीचे व्हेल्स सारा माल बटोर रही हैं!"
-    elif tape_shift >= 6:
-        flow_line = f"⚡ **ताज़ा हमला:** आखिरी 5 मिनट में अचानक बाइंग {m30['tape_buy']:.0f}% से उछलकर {m5['tape_buy']:.0f}% पर आ गई है (5m मूव: {m5['px_chg']:+.0f} Pts)।"
-    elif tape_shift <= -6:
-        flow_line = f"⚡ **ताज़ा बिकवाली:** आखिरी 5 मिनट में सेलिंग प्रेशर अचानक तेज़ हुआ है (Buy Tape गिरकर {m5['tape_buy']:.0f}% रह गया, 5m मूव: {m5['px_chg']:+.0f} Pts)।"
-    else:
-        flow_line = f"⚡ **फ्लो स्टेटस:** 30m Tape ({m30['tape_buy']:.0f}% Buy) और 5m Tape ({m5['tape_buy']:.0f}% Buy) स्थिर हैं | VWAP (${vwap:,.0f}) से दूरी: {px-vwap:+.0f} Pts।"
-
-    # Line 3: Spread & Orderbook Reaction
-    if v_list:
-        lv = v_list[0]
-        void_line = f"🌪️ **स्प्रेड एक्स-रे ({lv['time']}):** ${lv['spread']:.1f} का स्प्रेड फटा (प्राइस {lv['px_jump']:+.1f}$), L2 Bids {lv['l2_before']:.0f}% से {lv['l2_after']:.0f}% हुईं — {lv['ob_reaction']}।"
-    else:
-        void_line = f"🌪️ **स्प्रेड एक्स-रे:** हाल में $4+ का कोई स्प्रेड नहीं फटा; L2 ऑर्डरबुक में अभी {m5['l2_buy']:.0f}% Bids बनाम {100-m5['l2_buy']:.0f}% Asks खड़ी हैं।"
-
-    return f"{call_line}\n{flow_line}\n{void_line}"
-
-def run_ai_forensic_analysis(api_key, rep, eng):
-    m30 = rep["m30"]
-    m5 = rep["m5"]
-    lv_txt = "कोई बड़ा स्प्रेड नहीं"
-    if rep["recent_voids"]:
-        lv = rep["recent_voids"][0]
-        lv_txt = f"{lv['time']} पर Spread ${lv['spread']:.1f}, Price Jump {lv['px_jump']:+.1f}$, L2 Bids {lv['l2_before']:.0f}% से {lv['l2_after']:.0f}% ({lv['ob_reaction']})"
-
-    prompt = f"""
-तुम एक शार्प इंट्राडे BTC क्वांट कमांडर हो। बोरिंग या लंबी भाषा बिल्कुल मत लिखना।
-लाइव डेटा:
-- वर्तमान प्राइस: ${rep['px']:,.1f} | VWAP: ${rep['vwap']:,.1f} | सिस्टम लॉक स्टेटस: {rep['lock_state']} (स्कोर: {rep['score']:+d}/100)
-- पूरे 30m डेटा: Price {m30['px_chg']:+.1f}p | Taker Buy {m30['tape_buy']:.0f}% | L2 Bids {m30['l2_buy']:.0f}%
-- आखिरी 5m डेटा: Price {m5['px_chg']:+.1f}p (High: ${m5['high']:,.0f}, Low: ${m5['low']:,.0f}) | Taker Buy {m5['tape_buy']:.0f}% | L2 Bids {m5['l2_buy']:.0f}%
-- आखिरी बड़ा स्प्रेड: {lv_txt}
-
-सिर्फ 3 छोटी, पंचिंग लाइनों में जवाब दो (हर लाइन अधिकतम 20-25 शब्द):
-🎯 **सीधा सिग्नल:** (साफ लिखो: 'कन्फर्म BUY करें', 'कन्फर्म SELL करें', या 'अभी कोई ट्रेड मत लो - WAIT' + सटीक लेवल)
-⚡ **5m बनाम 30m हलचल:** (आखिरी 5 मिनट में व्हेल्स ने क्या बदला?)
-🌪️ **स्प्रेड और ऑर्डरबुक असर:** (स्प्रेड और L2 दीवारों से क्या पता चला?)
-"""
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.45, "maxOutputTokens": 220}
-    }
-
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
-    for mod in models:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
-            res = requests.post(url, json=payload, timeout=7)
-            if res.status_code == 200:
-                txt = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-                eng["ai_opinion"] = txt
-                eng["ai_status"] = f"🟢 Live AI ({mod})"
-                return
-        except Exception:
-            continue
-
-    eng["ai_opinion"] = build_sharp_dynamic_verdict(rep)
-    eng["ai_status"] = "⚡ Instant Quant Flash"
-
-# ============================================================================
-# REPORT BUILDER & CONFIRMED SIGNAL HISTORY TRACKER
-# ============================================================================
 def compute_slice_metrics(slice_data):
     if not slice_data:
         return {"px_chg": 0.0, "high": 0.0, "low": 0.0, "tape_buy": 50.0, "l2_buy": 50.0}
@@ -262,117 +176,366 @@ def compute_slice_metrics(slice_data):
         "l2_buy": (w_b / (w_b + w_a) * 100.0) if (w_b + w_a) > 0 else 50.0
     }
 
-def build_report_now(eng, now_ts, ist_str):
-    vault = eng["vault"]
-    if len(vault) < 5:
-        return
+# ============================================================================
+# AI JSON PARSER & FALLBACK QUANT BRAIN (WHEN API HAS 503 OVERLOAD)
+# ============================================================================
+def parse_ai_json_safely(raw_text: str):
+    """Extracts JSON object cleanly even if wrapped in markdown code blocks"""
+    try:
+        cleaned = re.sub(r"```json|```", "", raw_text).strip()
+        start_idx = cleaned.find("{")
+        end_idx = cleaned.rfind("}")
+        if start_idx != -1 and end_idx != -1:
+            return json.loads(cleaned[start_idx:end_idx+1])
+    except Exception:
+        pass
+    return None
 
-    px = eng["px"]
-    span_min = max(0.5, (now_ts - vault[0]["ts"]) / 60.0)
-    vault_5m = [d for d in vault if (now_ts - d["ts"]) <= 300.0]
+def fallback_quant_json_decision(ctx, active_trade):
+    """Generates exact JSON decision if external Gemini server is temporarily 503 busy"""
+    m30 = ctx["m30"]
+    m5 = ctx["m5"]
+    px = ctx["px"]
+    vwap = ctx["vwap"] if ctx["vwap"] > 0 else px
+    v_list = ctx["recent_voids"]
 
-    m30 = compute_slice_metrics(vault)
-    m5 = compute_slice_metrics(vault_5m)
+    void_line = (
+        f"आखिरी बड़ा स्प्रेड {v_list[0]['time']} पर ${v_list[0]['spread']:.1f} का फटा (L2 Bids {v_list[0]['l2_before']:.0f}% से {v_list[0]['l2_after']:.0f}% हुईं — {v_list[0]['ob_reaction']})।"
+        if v_list else
+        f"हाल में $4+ का कोई स्प्रेड नहीं फटा; L2 ऑर्डरबुक में {m5['l2_buy']:.0f}% Bids बनाम {100-m5['l2_buy']:.0f}% Asks हैं।"
+    )
 
-    score = 0
-    score += int(max(-25.0, min(25.0, (m30["tape_buy"] - 50.0) * 1.8)))
-    score += int(max(-15.0, min(15.0, (m30["l2_buy"] - 50.0) * 1.1)))
-    score += int(max(-20.0, min(20.0, (m5["tape_buy"] - 50.0) * 1.5)))
-    score += int(max(-15.0, min(15.0, (m5["l2_buy"] - 50.0) * 1.0)))
+    if active_trade is None:
+        # Mode A: Evaluate New Entry
+        bull_align = (m30["tape_buy"] >= 53.5 and m5["tape_buy"] >= 55.0 and px >= vwap)
+        bear_align = (m30["tape_buy"] <= 46.5 and m5["tape_buy"] <= 45.0 and px <= vwap)
 
-    if eng["vwap"] > 0:
-        if px > eng["vwap"] + 15 and m5["px_chg"] >= 0:
-            score += 15
-        elif px < eng["vwap"] - 15 and m5["px_chg"] <= 0:
-            score -= 15
-
-    voids_30m = [v for v in eng["voids"] if (now_ts - v.get("ts", now_ts)) <= 1800]
-    bull_voids = sum(1 for v in voids_30m if v["cls"] == "ic-bull")
-    bear_voids = sum(1 for v in voids_30m if v["cls"] == "ic-bear")
-    if bull_voids >= bear_voids + 2:
-        score += 10
-    elif bear_voids >= bull_voids + 2:
-        score -= 10
-
-    score = max(-100, min(100, score))
-
-    # HYSTERESIS SIGNAL LOCKING
-    prev_lock = eng.get("lock_state", "WAIT")
-    new_lock = prev_lock
-
-    has_min_data = (span_min >= 1.5)
-    both_bull = (m30["tape_buy"] >= 53.0 and m5["tape_buy"] >= 54.0 and px >= eng["vwap"])
-    both_bear = (m30["tape_buy"] <= 47.0 and m5["tape_buy"] <= 46.0 and px <= eng["vwap"])
-
-    if not has_min_data:
-        new_lock = "WAIT"
-    elif prev_lock == "BUY":
-        if score < 15 or m5["tape_buy"] <= 43.0:
-            new_lock = "SELL" if (score <= -45 and both_bear) else "WAIT"
-    elif prev_lock == "SELL":
-        if score > -15 or m5["tape_buy"] >= 57.0:
-            new_lock = "BUY" if (score >= 45 and both_bull) else "WAIT"
-    else:
-        if score >= 45 and both_bull:
-            new_lock = "BUY"
-        elif score <= -45 and both_bear:
-            new_lock = "SELL"
+        if bull_align and ctx["span_min"] >= 1.5:
+            prob = min(92, int(55 + (m5["tape_buy"] - 50) * 1.8 + (m30["tape_buy"] - 50) * 1.2))
+            return {
+                "decision": "BUY",
+                "probability": max(76, prob),
+                "sl_price": round(px - 140.0, 1),
+                "target_price": round(px + 320.0, 1),
+                "headline": f"कन्फर्म BUY सिग्नल (${px:,.0f}) — 30m और 5m दोनों में स्मार्ट मनी की तगड़ी बाइंग है।",
+                "macro_vs_micro": f"30m Tape ({m30['tape_buy']:.0f}% Buy) के साथ आखिरी 5m में बाइंग बढ़कर {m5['tape_buy']:.0f}% पर पहुँची है।",
+                "void_forensics": void_line
+            }
+        elif bear_align and ctx["span_min"] >= 1.5:
+            prob = min(92, int(55 + (50 - m5["tape_buy"]) * 1.8 + (50 - m30["tape_buy"]) * 1.2))
+            return {
+                "decision": "SELL",
+                "probability": max(76, prob),
+                "sl_price": round(px + 140.0, 1),
+                "target_price": round(px - 320.0, 1),
+                "headline": f"कन्फर्म SELL सिग्नल (${px:,.0f}) — 30m और 5m दोनों में सेलर्स आक्रामक रूप से हावी हैं।",
+                "macro_vs_micro": f"30m Sell Tape ({100-m30['tape_buy']:.0f}%) के बाद आखिरी 5m में भी {100-m5['tape_buy']:.0f}% बिकवाली जारी है।",
+                "void_forensics": void_line
+            }
         else:
-            new_lock = "WAIT"
-
-    # RECORD CONFIRMED SIGNAL HISTORY WHEN A NEW SIGNAL LOCKS
-    if new_lock != prev_lock:
-        # Close previous active signal in history if any
-        if eng["signal_history"] and eng["signal_history"][0]["status"] == "ACTIVE":
-            eng["signal_history"][0]["status"] = f"CLOSED ({ist_str})"
-
-        if new_lock in ["BUY", "SELL"]:
-            eng["sound_event"] = {"id": now_ts, "type": "BULL" if new_lock == "BUY" else "BEAR"}
-            sig_reason = f"30m Tape {m30['tape_buy']:.0f}% | 5m Tape {m5['tape_buy']:.0f}% | Score {score:+d}"
-            eng["signal_history"].insert(0, {
-                "time": ist_str,
-                "type": new_lock,
-                "entry": px,
-                "score": score,
-                "reason": sig_reason,
-                "live_pts": 0.0,
-                "peak_pts": 0.0,
-                "status": "ACTIVE"
-            })
-            eng["signal_history"] = eng["signal_history"][:30]
-
-    eng["lock_state"] = new_lock
-
-    if new_lock == "BUY":
-        lock_title = "🟢 कन्फर्म BUY सिग्नल लॉक (CONFIRMED LONG)"
-        lock_cls = "lock-buy"
-        lock_sub = f"30m और 5m दोनों में बायर हावी हैं। जब तक स्कोर +15 के ऊपर है, यह सिग्नल नहीं पलटेगा।"
-    elif new_lock == "SELL":
-        lock_title = "🔴 कन्फर्म SELL सिग्नल लॉक (CONFIRMED SHORT)"
-        lock_cls = "lock-sell"
-        lock_sub = f"30m और 5m दोनों में सेलर हावी हैं। जब तक स्कोर -15 के नीचे है, यह सिग्नल नहीं पलटेगा।"
+            prob = int(45 + abs(m5["tape_buy"] - 50) * 1.1)
+            return {
+                "decision": "WAIT",
+                "probability": min(68, prob),
+                "sl_price": round(px - 140.0, 1),
+                "target_price": round(px + 250.0, 1),
+                "headline": "WAIT (अभी कोई ट्रेड न लें) — 30m और 5m के डेटा में 75%+ वाली एकतरफा मजबूती नहीं है।",
+                "macro_vs_micro": f"30m Tape में {m30['tape_buy']:.0f}% बाइंग है जबकि आखिरी 5m में {m5['tape_buy']:.0f}% बाइंग है (खींचतान जारी)।",
+                "void_forensics": void_line
+            }
     else:
-        lock_title = "⚪ कोई कन्फर्म सिग्नल नहीं (WAIT — शांत बैठें)"
-        lock_cls = "lock-wait"
-        lock_sub = f"कन्फर्म सिग्नल तभी लॉक होगा जब स्कोर ±45 पार करेगा (अभी स्कोर: {score:+d}/100)।"
+        # Mode B: Manage Active Trade (HOLD vs EXIT)
+        t_type = active_trade["type"]
+        live_pts = active_trade["live_pts"]
+        peak_pts = active_trade["peak_pts"]
+        curr_sl = active_trade["sl_px"]
 
-    rep_obj = {
-        "time": ist_str, "px": px, "vwap": eng["vwap"], "span_min": span_min,
-        "m30": m30, "m5": m5, "score": score,
-        "lock_state": new_lock, "lock_title": lock_title, "lock_cls": lock_cls, "lock_sub": lock_sub,
-        "bull_voids": bull_voids, "bear_voids": bear_voids, "recent_voids": voids_30m[:8]
-    }
-    eng["report"] = rep_obj
-    eng["last_report_ts"] = now_ts
-
-    # Update Sharp Verdict Immediately + Trigger Live AI if key exists
-    eng["ai_opinion"] = build_sharp_dynamic_verdict(rep_obj)
-    api_key = eng.get("api_key", "").strip()
-    if api_key:
-        threading.Thread(target=run_ai_forensic_analysis, args=(api_key, rep_obj, eng), daemon=True).start()
+        if t_type == "BUY":
+            # Exit if 5m flow flips strongly bearish OR big giveback from peak
+            if m5["tape_buy"] <= 42.0 or (peak_pts >= 140.0 and live_pts <= peak_pts * 0.45):
+                return {
+                    "action": "EXIT",
+                    "confidence": 85,
+                    "trailing_sl": curr_sl,
+                    "headline": f"🚨 EXIT LONG @ ${px:,.0f} ({live_pts:+.1f}p) — आखिरी 5m में बाइंग मोमेंटम टूट गया है!",
+                    "macro_vs_micro": f"आखिरी 5 मिनट में Taker बाइंग गिरकर {m5['tape_buy']:.0f}% रह गई है और सेलर्स हावी हो रहे हैं।",
+                    "void_forensics": void_line
+                }
+            else:
+                new_sl = round(max(curr_sl, active_trade["entry"] + 40.0 if peak_pts >= 120 else curr_sl), 1)
+                return {
+                    "action": "HOLD",
+                    "confidence": 80,
+                    "trailing_sl": new_sl,
+                    "headline": f"✅ HOLD LONG ({live_pts:+.1f}p) — बाइंग फ्लो मजबूत है, ट्रेड में बने रहें (SL: ${new_sl:,.0f})।",
+                    "macro_vs_micro": f"30m ({m30['tape_buy']:.0f}% B) और 5m ({m5['tape_buy']:.0f}% B) दोनों अभी आपके LONG ट्रेड के पक्ष में हैं।",
+                    "void_forensics": void_line
+                }
+        else:
+            if m5["tape_buy"] >= 58.0 or (peak_pts >= 140.0 and live_pts <= peak_pts * 0.45):
+                return {
+                    "action": "EXIT",
+                    "confidence": 85,
+                    "trailing_sl": curr_sl,
+                    "headline": f"🚨 EXIT SHORT @ ${px:,.0f} ({live_pts:+.1f}p) — आखिरी 5m में नीचे से तेज बाइंग आ रही है!",
+                    "macro_vs_micro": f"आखिरी 5 मिनट में Taker बाइंग उछलकर {m5['tape_buy']:.0f}% हो गई है, शॉर्ट कवरिंग का खतरा है।",
+                    "void_forensics": void_line
+                }
+            else:
+                new_sl = round(min(curr_sl, active_trade["entry"] - 40.0 if peak_pts >= 120 else curr_sl), 1)
+                return {
+                    "action": "HOLD",
+                    "confidence": 80,
+                    "trailing_sl": new_sl,
+                    "headline": f"✅ HOLD SHORT ({live_pts:+.1f}p) — सेलिंग प्रेशर बरकरार है, ट्रेड होल्ड करें (SL: ${new_sl:,.0f})।",
+                    "macro_vs_micro": f"30m ({100-m30['tape_buy']:.0f}% S) और 5m ({100-m5['tape_buy']:.0f}% S) दोनों आपके SHORT ट्रेड को सपोर्ट कर रहे हैं।",
+                    "void_forensics": void_line
+                }
 
 # ============================================================================
-# 24x7 BACKGROUND WORKER
+# GEMINI JSON DECISION ENGINE (ENTRY & ACTIVE TRADE EXIT MANAGER)
+# ============================================================================
+def call_gemini_json_engine(api_key, ctx, active_trade):
+    m30 = ctx["m30"]
+    m5 = ctx["m5"]
+    px = ctx["px"]
+    vwap = ctx["vwap"]
+
+    void_str = "कोई बड़ा स्प्रेड नहीं फटा"
+    if ctx["recent_voids"]:
+        void_str = "; ".join([
+            f"{v['time']} पर Spread ${v['spread']:.1f} (Jump {v['px_jump']:+.1f}$, L2 Bids {v['l2_before']:.0f}%->{v['l2_after']:.0f}%, Tape {v['tape_pct']:.0f}%B, {v['ob_reaction']})"
+            for v in ctx["recent_voids"][:3]
+        ])
+
+    if active_trade is None:
+        prompt = f"""
+तुम एक स्वायत्त (Autonomous) इंट्राडे BTCUSDT AI ट्रेडिंग इंजन हो। नीचे दिए गए 30-मिनट मैक्रो, 5-मिनट माइक्रो और स्प्रेड ऑर्डरबुक डेटा को पढ़कर तय करो कि अभी नया ट्रेड लेना चाहिए या शांत रहना चाहिए (WAIT)।
+
+लाइव मार्केट डेटा:
+- वर्तमान BTC प्राइस: ${px:,.1f} | सेशन VWAP: ${vwap:,.1f} | डेटा मेमोरी: {ctx['span_min']:.1f} मिनट
+- पूरे 30m का डेटा: प्राइस बदलाव {m30['px_chg']:+.1f} Pts (High: ${m30['high']:,.0f}, Low: ${m30['low']:,.0f}) | 30m Taker Tape: {m30['tape_buy']:.1f}% Buy / {100-m30['tape_buy']:.1f}% Sell | 30m L2 Orderbook: {m30['l2_buy']:.1f}% Bids
+- आखिरी 5m का ताज़ा डेटा: प्राइस बदलाव {m5['px_chg']:+.1f} Pts (High: ${m5['high']:,.0f}, Low: ${m5['low']:,.0f}) | 5m Taker Tape: {m5['tape_buy']:.1f}% Buy ({m5['tape_buy']-m30['tape_buy']:+.1f}% Shift) | 5m L2 Orderbook: {m5['l2_buy']:.1f}% Bids
+- बड़े स्प्रेड्स (Spread > $4.0) और उस समय ऑर्डरबुक में हुआ बदलाव: {void_str}
+
+सख्त नियम:
+1. "BUY" या "SELL" केवल तभी चुनो जब 30m का बेस और आखिरी 5m का मोमेंटम दोनों मजबूत हों और तुम्हारी सफलता की संभावना (probability) 75 से 95 के बीच हो।
+2. अगर 30m और 5m में विरोधाभास है या मार्केट रेंज में है, तो "WAIT" चुनो और probability 70 से कम रखो।
+3. जवाब केवल नीचे दिए गए शुद्ध JSON फॉर्मेट में दो (हिंदी टेक्स्ट एकदम शॉर्ट, पंचिंग और स्पष्ट रखो):
+{{
+  "decision": "BUY" या "SELL" या "WAIT",
+  "probability": 0 से 100 के बीच पूर्णांक (int),
+  "sl_price": संख्या (float - एंट्री से 120 से 160 पॉइंट्स दूर लॉजिकल स्टॉप-लॉस),
+  "target_price": संख्या (float - एंट्री से 250 से 400 पॉइंट्स दूर टारगेट),
+  "headline": "1 तीखी लाइन में स्पष्ट सिग्नल और कारण (हिंदी में)",
+  "macro_vs_micro": "1 लाइन में 30m बनाम आखिरी 5m की तुलना (हिंदी में)",
+  "void_forensics": "1 लाइन में बड़े स्प्रेड और L2 ऑर्डरबुक का निचोड़ (हिंदी में)"
+}}
+"""
+    else:
+        t_type = active_trade["type"]
+        t_entry = active_trade["entry"]
+        live_pts = active_trade["live_pts"]
+        peak_pts = active_trade["peak_pts"]
+        curr_sl = active_trade["sl_px"]
+        dur_min = (time.time() - active_trade["open_ts"]) / 60.0
+
+        prompt = f"""
+तुम एक स्वायत्त (Autonomous) इंट्राडे BTCUSDT AI ट्रेड मैनेजर हो। अभी हमारा एक ट्रेड चालू (ACTIVE) है। पिछले 3 मिनट का ताज़ा डेटा देखकर तय करो कि इस ट्रेड को होल्ड ("HOLD") करना है या तुरंत निकलना ("EXIT") है।
+
+चालू ट्रेड की स्थिति:
+- ट्रेड दिशा: {t_type} | एंट्री प्राइस: ${t_entry:,.1f} | वर्तमान प्राइस: ${px:,.1f}
+- वर्तमान प्रॉफिट/लॉस: {live_pts:+.1f} Points | अब तक का अधिकतम प्रॉफिट (Peak): +{peak_pts:.1f} Points
+- वर्तमान स्टॉप-लॉस: ${curr_sl:,.1f} | ट्रेड चलते हुए समय: {dur_min:.1f} मिनट
+
+ताज़ा मार्केट डेटा:
+- पूरे 30m का डेटा: Taker Tape {m30['tape_buy']:.1f}% Buy | L2 Orderbook {m30['l2_buy']:.1f}% Bids | VWAP: ${vwap:,.1f}
+- आखिरी 5m का ताज़ा बदलाव: प्राइस {m5['px_chg']:+.1f} Pts | 5m Taker Tape: {m5['tape_buy']:.1f}% Buy | 5m L2 Orderbook: {m5['l2_buy']:.1f}% Bids
+- बड़े स्प्रेड्स और ऑर्डरबुक प्रतिक्रिया: {void_str}
+
+सख्त नियम:
+1. अगर आखिरी 5 मिनट में हमारे ट्रेड के खिलाफ भारी वॉल्यूम/टेप आ गया है, या स्प्रेड में व्हेल ट्रैप दिख रहा है, या अच्छा प्रॉफिट (+120p+) बनने के बाद मोमेंटम खत्म हो रहा है, तो तुरंत "EXIT" चुनो।
+2. अगर फ्लो अभी भी हमारे ट्रेड की दिशा में है, तो "HOLD" चुनो और अगर ट्रेड +100 पॉइंट्स से ज़्यादा प्रॉफिट में है तो `trailing_sl` को कॉस्ट या प्रॉफिट में लॉक करो।
+3. जवाब केवल नीचे दिए गए शुद्ध JSON फॉर्मेट में दो:
+{{
+  "action": "HOLD" या "EXIT",
+  "confidence": 0 से 100 के बीच पूर्णांक (int),
+  "trailing_sl": संख्या (float - अपडेटेड स्टॉप-लॉस प्राइस),
+  "headline": "1 तीखी लाइन में HOLD या EXIT का स्पष्ट आदेश (हिंदी में)",
+  "macro_vs_micro": "1 लाइन में बताओ कि आखिरी 5m के डेटा का हमारे चालू ट्रेड पर क्या असर है (हिंदी में)",
+  "void_forensics": "1 लाइन में स्प्रेड और L2 ऑर्डरबुक का हमारे ट्रेड पर असर (हिंदी में)"
+}}
+"""
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.25,
+            "maxOutputTokens": 320,
+            "responseMimeType": "application/json"
+        }
+    }
+
+    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+    for mod in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
+            res = requests.post(url, json=payload, timeout=9)
+            if res.status_code == 200:
+                raw_txt = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+                parsed = parse_ai_json_safely(raw_txt)
+                if parsed:
+                    return parsed, f"🟢 Autonomous AI ({mod})"
+        except Exception:
+            continue
+
+    return fallback_quant_json_decision(ctx, active_trade), "⚡ Quant Backup JSON Engine"
+
+# ============================================================================
+# CORE EXECUTION CYCLE (RUNS EVERY 3 MINS OR ON MANUAL TRIGGER)
+# ============================================================================
+def execute_ai_cycle_thread(eng, now_ts, ist_str):
+    if eng.get("ai_busy"):
+        return
+    eng["ai_busy"] = True
+    try:
+        vault = eng["vault"]
+        if len(vault) < 5:
+            return
+
+        px = eng["px"]
+        span_min = max(0.5, (now_ts - vault[0]["ts"]) / 60.0)
+        vault_5m = [d for d in vault if (now_ts - d["ts"]) <= 300.0]
+
+        m30 = compute_slice_metrics(vault)
+        m5 = compute_slice_metrics(vault_5m)
+        voids_30m = [v for v in eng["voids"] if (now_ts - v.get("ts", now_ts)) <= 1800]
+        bull_voids = sum(1 for v in voids_30m if v["cls"] == "ic-bull")
+        bear_voids = sum(1 for v in voids_30m if v["cls"] == "ic-bear")
+
+        ctx = {
+            "time": ist_str, "px": px, "vwap": eng["vwap"] if eng["vwap"] > 0 else px,
+            "span_min": span_min, "m30": m30, "m5": m5,
+            "bull_voids": bull_voids, "bear_voids": bear_voids,
+            "recent_voids": voids_30m[:6]
+        }
+
+        api_key = eng.get("api_key", "").strip()
+        active_tr = eng.get("active_trade")
+
+        if api_key:
+            ai_json, status_str = call_gemini_json_engine(api_key, ctx, active_tr)
+        else:
+            ai_json, status_str = fallback_quant_json_decision(ctx, active_tr), "🟡 Local JSON Engine (No API Key)"
+
+        eng["ai_status"] = status_str
+        eng["last_report_ts"] = now_ts
+
+        # --------------------------------------------------------------------
+        # CASE 1: NO ACTIVE TRADE -> CHECK IF AI CONFIRMS AN ENTRY (>=75% PROB)
+        # --------------------------------------------------------------------
+        if active_tr is None:
+            dec = str(ai_json.get("decision", "WAIT")).upper()
+            prob = int(ai_json.get("probability", 50))
+            sl_px = float(ai_json.get("sl_price", px - 150.0 if dec == "BUY" else px + 150.0))
+            tp_px = float(ai_json.get("target_price", px + 300.0 if dec == "BUY" else px - 300.0))
+
+            # Enforce safety bounds on AI SL (between 60 and 180 points)
+            if dec == "BUY":
+                sl_px = min(px - 60.0, max(px - 180.0, sl_px))
+            elif dec == "SELL":
+                sl_px = max(px + 60.0, min(px + 180.0, sl_px))
+
+            if dec in ["BUY", "SELL"] and prob >= 75 and span_min >= 1.2:
+                new_trade = {
+                    "open_ts": now_ts,
+                    "open_time": ist_str,
+                    "close_time": "",
+                    "type": dec,
+                    "entry": px,
+                    "prob": prob,
+                    "sl_px": round(sl_px, 1),
+                    "tp_px": round(tp_px, 1),
+                    "live_pts": 0.0,
+                    "peak_pts": 0.0,
+                    "status": "ACTIVE (AI MANAGING)",
+                    "entry_reason": ai_json.get("headline", "AI Confirmed Entry"),
+                    "exit_reason": "अभी ट्रेड चालू है — हर 3 मिनट में AI निगरानी कर रहा है"
+                }
+                eng["active_trade"] = new_trade
+                eng["signal_history"].insert(0, new_trade)
+                eng["signal_history"] = eng["signal_history"][:30]
+                eng["sound_event"] = {"id": now_ts, "type": "BULL" if dec == "BUY" else "BEAR"}
+
+                lock_title = f"🟢 AI ने नया {dec} ट्रेड लॉक किया! (संभावना: {prob}%)" if dec == "BUY" else f"🔴 AI ने नया {dec} ट्रेड लॉक किया! (संभावना: {prob}%)"
+                lock_cls = "lock-buy" if dec == "BUY" else "lock-sell"
+                lock_sub = f"एंट्री: ${px:,.1f} | AI स्टॉप-लॉस: ${sl_px:,.1f} | टारगेट: ${tp_px:,.1f} (अगली एग्जिट जांच 3 मिनट में)"
+            else:
+                lock_title = f"⚪ AI का फैसला: WAIT — कोई ट्रेड नहीं (संभावना सिर्फ {prob}%)"
+                lock_cls = "lock-wait"
+                lock_sub = "कन्फर्म एंट्री के लिए AI की संभावना 75% या उससे ऊपर होना अनिवार्य है।"
+
+            eng["ai_json_view"] = {
+                "mode": "ENTRY_SCAN",
+                "badge_1": f"AI Decision: {dec}",
+                "badge_2": f"Probability: {prob}%",
+                "badge_3": f"Suggested SL: ${sl_px:,.0f}",
+                "badge_4": f"Target: ${tp_px:,.0f}",
+                "headline": ai_json.get("headline", ""),
+                "macro_vs_micro": ai_json.get("macro_vs_micro", ""),
+                "void_forensics": ai_json.get("void_forensics", "")
+            }
+
+        # --------------------------------------------------------------------
+        # CASE 2: ACTIVE TRADE RUNNING -> AI DECIDES HOLD OR EXIT
+        # --------------------------------------------------------------------
+        else:
+            act = str(ai_json.get("action", "HOLD")).upper()
+            conf = int(ai_json.get("confidence", 75))
+            ai_trail_sl = float(ai_json.get("trailing_sl", active_tr["sl_px"]))
+
+            if act == "EXIT":
+                active_tr["close_time"] = ist_str
+                active_tr["status"] = f"AI EXIT @ ${px:,.1f} ({ist_str})"
+                active_tr["exit_reason"] = f"🤖 AI Exit: {ai_json.get('headline', 'मोमेंटम समाप्त')}"
+                eng["active_trade"] = None
+                eng["sound_event"] = {"id": now_ts, "type": "EXIT"}
+
+                lock_title = f"🚨 AI ने ट्रेड EXIT कर दिया! ({active_tr['live_pts']:+.1f} Pts बुक)"
+                lock_cls = "lock-wait"
+                lock_sub = f"{active_tr['type']} ट्रेड ${px:,.1f} पर बंद किया गया। कारण: {ai_json.get('headline', '')}"
+            else:
+                # Tighten trailing SL in favorable direction only
+                if active_tr["type"] == "BUY" and ai_trail_sl > active_tr["sl_px"] and ai_trail_sl < px:
+                    active_tr["sl_px"] = round(ai_trail_sl, 1)
+                elif active_tr["type"] == "SELL" and ai_trail_sl < active_tr["sl_px"] and ai_trail_sl > px:
+                    active_tr["sl_px"] = round(ai_trail_sl, 1)
+
+                lock_title = f"{'🟢' if active_tr['type']=='BUY' else '🔴'} AI ने {active_tr['type']} ट्रेड को HOLD रखा है ({active_tr['live_pts']:+.1f} Pts)"
+                lock_cls = "lock-buy" if active_tr["type"] == "BUY" else "lock-sell"
+                lock_sub = f"एंट्री: ${active_tr['entry']:,.1f} | Peak: +{active_tr['peak_pts']:.1f}p | अपडेटेड AI SL: ${active_tr['sl_px']:,.1f} (AI भरोसा: {conf}%)"
+
+            eng["ai_json_view"] = {
+                "mode": "TRADE_MANAGER",
+                "badge_1": f"AI Command: {act}",
+                "badge_2": f"Hold Confidence: {conf}%",
+                "badge_3": f"Active SL: ${active_tr['sl_px']:,.0f}",
+                "badge_4": f"Live PnL: {active_tr['live_pts']:+.1f}p",
+                "headline": ai_json.get("headline", ""),
+                "macro_vs_micro": ai_json.get("macro_vs_micro", ""),
+                "void_forensics": ai_json.get("void_forensics", "")
+            }
+
+        ctx["lock_title"] = lock_title
+        ctx["lock_cls"] = lock_cls
+        ctx["lock_sub"] = lock_sub
+        eng["report"] = ctx
+
+    finally:
+        eng["ai_busy"] = False
+
+# ============================================================================
+# 24x7 BACKGROUND WORKER (DATA COLLECTION + 2s EMERGENCY SL GUARD)
 # ============================================================================
 def background_worker(eng, worker_id):
     SPREAD_VOID_THRESHOLD = 4.0
@@ -409,12 +572,27 @@ def background_worker(eng, worker_id):
                 eng["px"] = px
                 eng["last_update"] = ist_str
 
-                # Update Live Points on Active Confirmed Signal in History
-                if eng["signal_history"] and eng["signal_history"][0]["status"] == "ACTIVE":
-                    top_sig = eng["signal_history"][0]
-                    move = (px - top_sig["entry"]) if top_sig["type"] == "BUY" else (top_sig["entry"] - px)
-                    top_sig["live_pts"] = move
-                    top_sig["peak_pts"] = max(top_sig["peak_pts"], move)
+                # ------------------------------------------------------------
+                # 2-SECOND LIVE PNL & EMERGENCY STOP-LOSS GUARD FOR ACTIVE TRADE
+                # ------------------------------------------------------------
+                active_tr = eng.get("active_trade")
+                if active_tr is not None:
+                    move = (px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - px)
+                    active_tr["live_pts"] = move
+                    active_tr["peak_pts"] = max(active_tr["peak_pts"], move)
+
+                    # Check Hard / Trailing SL Breach
+                    sl_hit = (active_tr["type"] == "BUY" and px <= active_tr["sl_px"]) or (active_tr["type"] == "SELL" and px >= active_tr["sl_px"])
+                    if sl_hit:
+                        active_tr["close_time"] = ist_str
+                        active_tr["status"] = f"SL HIT @ ${px:,.1f} ({ist_str})"
+                        active_tr["exit_reason"] = f"🛡️ स्टॉप-लॉस (${active_tr['sl_px']:,.1f}) हिट हुआ | फाइनल: {move:+.1f}p"
+                        eng["active_trade"] = None
+                        eng["sound_event"] = {"id": now_ts, "type": "EXIT"}
+                        if eng["report"]:
+                            eng["report"]["lock_title"] = f"🛡️ स्टॉप-लॉस सेफ्टी एग्जिट ({move:+.1f} Pts)"
+                            eng["report"]["lock_cls"] = "lock-wait"
+                            eng["report"]["lock_sub"] = f"प्राइस ने स्टॉप-लॉस (${active_tr['sl_px']:,.1f}) को छू लिया, इसलिए सुरक्षा के लिए ट्रेड क्लोज कर दिया गया।"
 
                 eng["vault"].append({
                     "ts": now_ts, "px": px,
@@ -460,30 +638,42 @@ def background_worker(eng, worker_id):
                         eng["oi_chg"] = kdata["oi"] - eng["oi_start"]
                     eng["last_kline_ts"] = now_ts
 
-                if now_ts - eng["last_report_ts"] >= REPORT_INTERVAL_SEC and len(eng["vault"]) >= 10:
-                    build_report_now(eng, now_ts, ist_str)
+                # Trigger Autonomous AI Decision Cycle every 3 minutes
+                if now_ts - eng["last_report_ts"] >= REPORT_INTERVAL_SEC and len(eng["vault"]) >= 12 and not eng.get("ai_busy"):
+                    threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
 
         except Exception as e:
             eng["last_err"] = str(e)
         time.sleep(2)
 
 @st.cache_resource
-def get_master_engine_v11_0():
+def get_master_engine_v12_0():
     wid = int(time.time() * 1000)
     eng = {
         "worker_id": wid, "px": 0.0, "last_update": "--:--:--",
         "vault": [], "voids": [], "signal_history": [],
+        "active_trade": None, "ai_busy": False,
         "last_kline_ts": 0.0, "last_report_ts": 0.0,
         "vwap": 0.0, "oi_start": 0.0, "oi_chg": 0.0,
-        "lock_state": "WAIT", "report": None,
-        "ai_opinion": "⏳ पहली रिपोर्ट बनते ही शॉर्ट और सटीक सिग्नल रिपोर्ट यहाँ दिखेगी...",
-        "ai_status": "⚡ Auto-Active", "sound_event": {"id": 0.0, "type": "BULL"},
+        "report": None,
+        "ai_json_view": {
+            "mode": "INIT",
+            "badge_1": "AI Status: Waiting",
+            "badge_2": "Probability: --%",
+            "badge_3": "SL: --",
+            "badge_4": "Target: --",
+            "headline": "⏳ पहली 3-मिनट रिपोर्ट बनते ही AI JSON इंजन खुद एंट्री या WAIT का फैसला लेगा...",
+            "macro_vs_micro": "डेटा बफर तैयार हो रहा है...",
+            "void_forensics": "स्प्रेड और ऑर्डरबुक पर नज़र रखी जा रही है..."
+        },
+        "ai_status": "🤖 Autonomous JSON Mode",
+        "sound_event": {"id": 0.0, "type": "BULL"},
         "api_key": "", "last_err": None
     }
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v11_0()
+eng = get_master_engine_v12_0()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -497,16 +687,15 @@ if "last_played_sound_id" not in st.session_state:
 # ============================================================================
 # STATIC CONTROLS & SINGLE-CONTAINER ZERO-GHOST RENDERER
 # ============================================================================
-c_act1, c_act2, c_act3 = st.columns([0.26, 0.22, 0.52])
+c_act1, c_act2, c_act3 = st.columns([0.28, 0.22, 0.50])
 with c_act1:
-    if st.button("🔄 अभी रिपोर्ट और AI रिफ्रेश करें"):
-        build_report_now(eng, time.time(), get_ist_time_str())
+    if st.button("🤖 अभी AI से फैसला लें (Entry / Exit Check)"):
+        threading.Thread(target=execute_ai_cycle_thread, args=(eng, time.time(), get_ist_time_str()), daemon=True).start()
 with c_act2:
     test_snd = st.button("🔔 साउंड टेस्ट करें")
 with c_act3:
-    sound_enabled = st.checkbox("🔊 कन्फर्म सिग्नल लॉक होने पर साउंड अलर्ट बजाएं", value=True)
+    sound_enabled = st.checkbox("🔊 AI एंट्री (75%+), AI एग्जिट और बड़े स्प्रेड पर साउंड बजाएं", value=True)
 
-# Fixed placeholders so DOM tree NEVER shifts or creates ghost duplicate boxes on scroll
 dashboard_slot = st.empty()
 audio_slot = st.empty()
 
@@ -524,29 +713,32 @@ if sound_enabled and curr_snd["id"] > 0 and curr_snd["id"] != st.session_state["
 
 if eng["px"] > 0:
     mem_min = (time.time() - eng["vault"][0]["ts"]) / 60.0 if len(eng["vault"]) > 1 else 0.0
+    next_sec = max(0, int(180 - (time.time() - eng["last_report_ts"]))) if eng["last_report_ts"] > 0 else 0
 
-    # 1. Build Confirmed Signal History HTML
+    # 1. Build AI Signal & Trade History HTML
     hist_cards = ""
     for h in eng["signal_history"]:
         h_cls = "ic-bull" if h["type"] == "BUY" else "ic-bear"
         h_col = "#4ade80" if h["type"] == "BUY" else "#f87171"
         p_col = "#4ade80" if h["live_pts"] >= 0 else "#f87171"
-        sts_badge = "🟢 ACTIVE" if h["status"] == "ACTIVE" else f"🏁 {h['status']}"
+        is_act = "ACTIVE" in h["status"]
+        sts_badge = "🟢 AI ACTIVE (Monitoring)" if is_act else f"🏁 {h['status']}"
         hist_cards += f"""
         <div class='item-card {h_cls}' style='display:flex; justify-content:space-between; align-items:center;'>
             <div>
-                <b style='color:{h_col}; font-size:13.5px;'>{h["time"]} — CONFIRMED {h["type"]} @ ${h["entry"]:,.1f}</b>
+                <b style='color:{h_col}; font-size:13.5px;'>{h["open_time"]} — AI {h["type"]} @ ${h["entry"]:,.1f} (Prob: {h["prob"]}%)</b>
                 <span style='font-size:11.5px; color:#facc15; margin-left:6px;'>[{sts_badge}]</span><br>
-                <span style='color:#94a3b8; font-size:12px;'>{h["reason"]}</span>
+                <span style='color:#cbd5e1; font-size:12px;'>एंट्री: {h["entry_reason"]}</span><br>
+                <span style='color:#38bdf8; font-size:11.8px;'>एग्जिट/स्टेटस: {h["exit_reason"]} (SL: ${h["sl_px"]:,.0f})</span>
             </div>
-            <div style='text-align:right;'>
-                <div style='font-size:14.5px; font-weight:900; color:{p_col};'>{h["live_pts"]:+.1f}p</div>
-                <div style='font-size:11px; color:#38bdf8;'>Peak: +{h["peak_pts"]:.1f}p</div>
+            <div style='text-align:right; min-width:95px;'>
+                <div style='font-size:15px; font-weight:900; color:{p_col};'>{h["live_pts"]:+.1f}p</div>
+                <div style='font-size:11px; color:#94a3b8;'>Peak: +{h["peak_pts"]:.1f}p</div>
             </div>
         </div>
         """
     if not hist_cards:
-        hist_cards = "<div style='text-align:center; color:#64748b; padding-top:65px;'>अभी तक कोई कन्फर्म सिग्नल (Score ±45) लॉक नहीं हुआ है।<br>जैसे ही पक्का सिग्नल आएगा, उसका समय और प्राइस यहाँ दर्ज हो जाएगा।</div>"
+        hist_cards = "<div style='text-align:center; color:#64748b; padding-top:70px;'>अभी तक AI ने कोई ट्रेड लॉक नहीं किया है (संभावना 75%+ होने पर ही ट्रेड लॉक होगा)।</div>"
 
     # 2. Build Void Postmortem HTML
     void_cards = ""
@@ -573,9 +765,19 @@ if eng["px"] > 0:
         r = eng["report"]
         m30 = r["m30"]
         m5 = r["m5"]
-        sc_col = "#4ade80" if r["score"] >= 45 else ("#f87171" if r["score"] <= -45 else "#facc15")
+        aj = eng["ai_json_view"]
         c30_col = "#4ade80" if m30["px_chg"] >= 0 else "#f87171"
         c5_col = "#4ade80" if m5["px_chg"] >= 0 else "#f87171"
+
+        act_tr = eng.get("active_trade")
+        if act_tr:
+            right_stat_label = "LIVE TRADE PNL"
+            right_stat_val = f"{act_tr['live_pts']:+.1f} Pts"
+            right_stat_col = "#4ade80" if act_tr["live_pts"] >= 0 else "#f87171"
+        else:
+            right_stat_label = "AI CYCLE TIMER"
+            right_stat_val = f"{next_sec}s"
+            right_stat_col = "#38bdf8"
 
         left_body = f"""
         <div class='lock-banner {r["lock_cls"]}'>
@@ -583,25 +785,35 @@ if eng["px"] > 0:
                 <div style='font-size:18.5px; font-weight:900;'>{r["lock_title"]}</div>
                 <div style='font-size:12.5px; margin-top:3px; opacity:0.92;'>{r["lock_sub"]}</div>
             </div>
-            <div style='text-align:right; min-width:130px;'>
-                <div style='font-size:11px; text-transform:uppercase; opacity:0.8;'>Conviction Score</div>
-                <div style='font-size:24px; font-weight:900; color:{sc_col};'>{r["score"]:+d} / 100</div>
+            <div style='text-align:right; min-width:135px;'>
+                <div style='font-size:11px; text-transform:uppercase; opacity:0.8;'>{right_stat_label}</div>
+                <div style='font-size:24px; font-weight:900; color:{right_stat_col};'>{right_stat_val}</div>
                 <div style='font-size:11px; opacity:0.8;'>अपडेट: {r["time"]}</div>
             </div>
         </div>
 
         <div class='ai-sharp-box'>
             <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #3b0764; padding-bottom:6px; margin-bottom:8px;'>
-                <span style='font-size:15px; font-weight:900; color:#c084fc;'>🤖 शॉर्ट AI कमांड रिपोर्ट (30m + 5m + स्प्रेड निचोड़)</span>
+                <span style='font-size:15px; font-weight:900; color:#c084fc;'>🧠 AI JSON डिसीजन एवं ट्रेड मैनेजर (Autonomous Brain)</span>
                 <span style='font-size:11.5px; color:#4ade80; font-weight:bold;'>{eng["ai_status"]}</span>
             </div>
-            <div style='font-size:14.2px; line-height:1.65; color:#f8fafc; white-space:pre-line;'>{eng["ai_opinion"]}</div>
+            <div>
+                <span class='json-pill'>{aj["badge_1"]}</span>
+                <span class='json-pill'>{aj["badge_2"]}</span>
+                <span class='json-pill'>{aj["badge_3"]}</span>
+                <span class='json-pill'>{aj["badge_4"]}</span>
+            </div>
+            <div style='font-size:14px; line-height:1.65; color:#f8fafc; margin-top:10px;'>
+                <div>🎯 <b>AI फैसला:</b> {aj["headline"]}</div>
+                <div style='margin-top:4px;'>⚡ <b>30m बनाम 5m विश्लेषण:</b> {aj["macro_vs_micro"]}</div>
+                <div style='margin-top:4px;'>🌪️ <b>स्प्रेड और ऑर्डरबुक असर:</b> {aj["void_forensics"]}</div>
+            </div>
         </div>
 
         <div class='sub-grid'>
             <div class='card-box'>
                 <div class='card-title'>
-                    <span>🏛️ 1. पूरे {r["span_min"]:.0f}m का बेस डेटा</span>
+                    <span>🏛️ 1. पूरे {r["span_min"]:.0f}m का मैक्रो बेस</span>
                     <span style='color:{c30_col};'>{m30["px_chg"]:+.1f} Pts</span>
                 </div>
                 <div class='stat-row'><span>30m Taker Tape:</span><b><span style='color:#4ade80;'>{m30["tape_buy"]:.0f}% Buy</span> / <span style='color:#f87171;'>{100-m30["tape_buy"]:.0f}% Sell</span></b></div>
@@ -621,21 +833,20 @@ if eng["px"] > 0:
         </div>
         """
     else:
-        pct = min(100, int((len(eng["vault"]) / 10) * 100))
+        pct = min(100, int((len(eng["vault"]) / 12) * 100))
         left_body = f"""
         <div class='card-box' style='text-align:center; padding:45px 20px; margin-bottom:12px;'>
-            <div style='font-size:20px; font-weight:800; color:#38bdf8; margin-bottom:8px;'>⏳ शुरुआती डेटा जमा हो रहा है... ({pct}%)</div>
-            <div style='font-size:14px; color:#94a3b8;'>तुरंत रिपोर्ट देखने के लिए ऊपर <b>'🔄 अभी रिपोर्ट और AI रिफ्रेश करें'</b> बटन दबाएं।</div>
+            <div style='font-size:20px; font-weight:800; color:#38bdf8; margin-bottom:8px;'>⏳ AI JSON इंजन के लिए शुरुआती डेटा जमा हो रहा है... ({pct}%)</div>
+            <div style='font-size:14px; color:#94a3b8;'>तुरंत AI से फैसला लेने के लिए ऊपर <b>'🤖 अभी AI से फैसला लें'</b> बटन दबाएं।</div>
         </div>
         """
 
-    # Render EVERYTHING inside ONE single container so scrolling never duplicates boxes
     dashboard_slot.markdown(clean_html(f"""
     <div>
         <div class='top-bar'>
             <div>
-                <span style='font-size:21px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V11.0 (ZERO-GHOST WAR ROOM)</span>
-                <span style='font-size:13px; color:#94a3b8; margin-left:14px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b></span>
+                <span style='font-size:21px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V12.0 (AUTONOMOUS AI JSON ENGINE)</span>
+                <span style='font-size:13px; color:#94a3b8; margin-left:14px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b></span>
             </div>
             <div>
                 <span style='font-size:22px; font-weight:900; color:#f8fafc; margin-right:16px;'>BTC: ${eng['px']:,.1f}</span>
@@ -648,7 +859,7 @@ if eng["px"] > 0:
                 {left_body}
                 <div class='history-panel'>
                     <div style='font-size:14px; font-weight:900; color:#4ade80; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
-                        📜 कन्फर्म सिग्नल हिस्ट्री लॉग (कब आया, किस प्राइस पर, कितना चला)
+                        📜 AI सिग्नल एवं ट्रेड हिस्ट्री (एंट्री समय, संभावना %, लाइव/फाइनल पॉइंट्स और AI एग्जिट कारण)
                     </div>
                     {hist_cards}
                 </div>
@@ -668,7 +879,7 @@ if eng["px"] > 0:
     st.rerun()
 
 else:
-    dashboard_slot.warning("⏳ 24x7 V11.0 स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+    dashboard_slot.warning("⏳ 24x7 V12.0 (Autonomous AI Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
     if eng.get("last_err"):
         st.error(f"🔴 API Error: {eng['last_err']}")
     time.sleep(2)
