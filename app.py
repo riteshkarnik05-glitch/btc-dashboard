@@ -13,7 +13,7 @@ import base64
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V16.0 - Pro Swing Trader AI Engine", layout="wide")
+st.set_page_config(page_title="Pro Quant V16.1 - Pro Swing Trader AI Engine", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML inside a single slot without ghost boxes"""
@@ -58,7 +58,7 @@ div[data-baseweb="select"] > div { background-color: #1e293b !important; color: 
 """), unsafe_allow_html=True)
 
 # ============================================================================
-# IN-BUILT SOUND SYNTHESIZER (ENTRY, EXIT, TRAIL & VOID TONES)
+# IN-BUILT SOUND SYNTHESIZER
 # ============================================================================
 def create_sound_b64(tone_type="BULL"):
     sample_rate = 22050
@@ -284,7 +284,7 @@ def analyze_void_cluster(void_list, current_px):
     }
 
 # ============================================================================
-# INSTANT HARD-SL / TRAILED-SL CLOSER (SHARED BY 1s WORKER & AI THREAD)
+# INSTANT HARD-SL / TRAILED-SL CLOSER
 # ============================================================================
 def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_title, detailed_reason):
     move = (exit_px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - exit_px)
@@ -327,28 +327,25 @@ def parse_ai_json_safely(raw_text: str):
     return None
 
 def compute_pro_swing_sl_bounds(ctx, dec):
-    """Calculates institutional breathing-room SL floor so initial SL is never too tight"""
     m30 = ctx["m30"]
     m5 = ctx["m5"]
     px = ctx["px"]
     vwap = ctx["vwap"] if ctx["vwap"] > 0 else px
     range_30m = max(120.0, m30["high"] - m30["low"])
 
-    # Minimum breathing room: at least 115 pts OR 38% of 30m range (capped at 220 pts)
     min_breathing_pts = min(200.0, max(115.0, range_30m * 0.38))
     max_risk_pts = 280.0
 
     if dec == "BUY":
-        # Anchor below 30m/5m structural low or VWAP with buffer, enforcing min breathing room
         struct_anchor = min(m5["low"] - 35.0, vwap - 45.0, m30["low"] - 20.0)
-        max_allowed_sl = px - min_breathing_pts  # Cannot be tighter than this!
-        min_allowed_sl = px - max_risk_pts       # Cannot be wider than this!
+        max_allowed_sl = px - min_breathing_pts
+        min_allowed_sl = px - max_risk_pts
         ideal_sl = min(max_allowed_sl, max(min_allowed_sl, struct_anchor))
         return round(ideal_sl, 1), round(max_allowed_sl, 1), round(min_allowed_sl, 1)
     else:
         struct_anchor = max(m5["high"] + 35.0, vwap + 45.0, m30["high"] + 20.0)
-        min_allowed_sl = px + min_breathing_pts  # Cannot be tighter than this!
-        max_allowed_sl = px + max_risk_pts       # Cannot be wider than this!
+        min_allowed_sl = px + min_breathing_pts
+        max_allowed_sl = px + max_risk_pts
         ideal_sl = max(min_allowed_sl, min(max_allowed_sl, struct_anchor))
         return round(ideal_sl, 1), round(min_allowed_sl, 1), round(max_allowed_sl, 1)
 
@@ -409,7 +406,6 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
         curr_sl_pts = active_trade["sl_pts"]
 
         if t_type == "BUY":
-            # Exit only on genuine structural breakdown, not minor 1m noise
             if (m5["tape_buy"] <= 41.0 and m30["tape_buy"] <= 48.0) or (peak_pts >= 220.0 and live_pts <= peak_pts * 0.45 and m5["tape_buy"] <= 44.0):
                 return {
                     "action": "EXIT",
@@ -421,23 +417,18 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
                     "void_forensics": vc["pattern_summary"]
                 }
 
-            # PRO TRADER PATIENT TRAILING LOGIC:
-            # Stage 1: Under +135 pts profit -> DO NOT TOUCH INITIAL SL! Let the trade breathe.
             new_sl = curr_sl
-            reason_txt = (
-                f"प्रो-ट्रेडर नियम: अभी प्रॉफिट कुशन (+{live_pts:.0f}p) छोटा है; ट्रेड को बड़े मूव के लिए साँस लेने की जगह (Breathing Room) दी गई है इसलिए SL नहीं छेड़ा गया।"
-            )
-            # Stage 2: Profit >= +135 pts -> Move to Breakeven+20p or 5m structural swing low (if at least +35p improvement)
+            reason_txt = f"प्रो-ट्रेडर नियम: अभी प्रॉफिट कुशन (+{live_pts:.0f}p) छोटा है; ट्रेड को बड़े मूव के लिए ब्रीदिंग रूम दिया गया है इसलिए SL नहीं छेड़ा गया।"
             if live_pts >= 240.0:
-                struct_ candidate = max(entry_px + 110.0, min(m5["low"] - 35.0, px - 95.0))
+                struct_candidate = max(entry_px + 110.0, min(m5["low"] - 35.0, px - 95.0))
                 if struct_candidate >= curr_sl + 35.0:
                     new_sl = round(struct_candidate, 1)
-                    reason_txt = f"शानदार मोमेंटम (+{live_pts:.0f}p): 5m के नए स्विंग लो (${m5['low']:,.0f}) के नीचे SL को ट्रेल करके बड़ा प्रॉफिट लॉक किया गया।"
+                    reason_txt = f"शानदार मोमेंटम (+{live_pts:.0f}p): 5m के नए स्विंग लो (${m5['low']:,.0f}) के नीचे SL ट्रेल करके बड़ा प्रॉफिट लॉक किया गया।"
             elif live_pts >= 135.0 and curr_sl_pts < 0:
                 be_sl = round(max(entry_px + 20.0, min(m5["low"] - 40.0, px - 90.0)), 1)
                 if be_sl >= curr_sl + 35.0 and be_sl < px - 60.0:
                     new_sl = be_sl
-                    reason_txt = f"ट्रेड ने +{live_pts:.0f}p का मजबूत ब्रेकआउट कर लिया है, इसलिए रिस्क खत्म करने के लिए SL को कॉस्ट के ऊपर (${new_sl:,.1f}) शिफ्ट किया गया।"
+                    reason_txt = f"ट्रेड ने +{live_pts:.0f}p का ब्रेकआउट कर लिया है, रिस्क खत्म करने के लिए SL को कॉस्ट के ऊपर (${new_sl:,.1f}) शिफ्ट किया गया।"
 
             return {
                 "action": "HOLD",
@@ -461,9 +452,7 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
                 }
 
             new_sl = curr_sl
-            reason_txt = (
-                f"प्रो-ट्रेडर नियम: अभी प्रॉफिट कुशन (+{live_pts:.0f}p) छोटा है; शोर (Noise) से बचने के लिए शुरुआती SL को नहीं छेड़ा गया है।"
-            )
+            reason_txt = f"प्रो-ट्रेडर नियम: अभी प्रॉफिट कुशन (+{live_pts:.0f}p) छोटा है; शोर से बचने के लिए शुरुआती SL को नहीं छेड़ा गया है।"
             if live_pts >= 240.0:
                 struct_candidate = min(entry_px - 110.0, max(m5["high"] + 35.0, px + 95.0))
                 if struct_candidate <= curr_sl - 35.0:
@@ -473,7 +462,7 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
                 be_sl = round(min(entry_px - 20.0, max(m5["high"] + 40.0, px + 90.0)), 1)
                 if be_sl <= curr_sl - 35.0 and be_sl > px + 60.0:
                     new_sl = be_sl
-                    reason_txt = f"ट्रेड ने +{live_pts:.0f}p का मजबूत ब्रेकडाउन दे दिया है, इसलिए रिस्क ज़ीरो करने के लिए SL को कॉस्ट के नीचे (${new_sl:,.1f}) लॉक किया गया।"
+                    reason_txt = f"ट्रेड ने +{live_pts:.0f}p का ब्रेकडाउन दे दिया है, रिस्क ज़ीरो करने के लिए SL को कॉस्ट के नीचे (${new_sl:,.1f}) लॉक किया गया।"
 
             return {
                 "action": "HOLD",
@@ -504,7 +493,7 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
 - वर्तमान प्राइस: ${px:,.1f} (Spread: ${ctx['spread']:.1f}) | सेशन VWAP: ${vwap:,.1f}
 - ऑर्डरबुक की सबसे बड़ी बाइंग दीवार (Major L2 Bid Wall): ${ctx['bid_wall_px']:,.1f} ({ctx['bid_wall_sz']:.2f} BTC)
 - ऑर्डरबुक की सबसे बड़ी सेलिंग दीवार (Major L2 Ask Wall): ${ctx['ask_wall_px']:,.1f} ({ctx['ask_wall_sz']:.2f} BTC)
-- पूरे 30m का बड़ा स्ट्रक्चर: बदलाव {m30['px_chg']:+.1f} Pts (30m High: ${m30['high']:,.0f}, 30m Low: ${m30['low']:,.0f}, Range: ${m30['high']-m30['low']:,.0f}) | 30m Tape: {m30['tape_buy']:.1f}% Buy | 30m L2: {m30['l2_buy']:.1f}% Bids
+- पूरे 30m का बड़ा स्ट्रक्चर: बदलाव {m30['px_chg']:+.1f} Pts (30m High: ${m30['high']:,.0f}, 30m Low: ${m30['low']:,.0f}) | 30m Tape: {m30['tape_buy']:.1f}% Buy | 30m L2: {m30['l2_buy']:.1f}% Bids
 - आखिरी 5m का स्ट्रक्चर: बदलाव {m5['px_chg']:+.1f} Pts (5m High: ${m5['high']:,.0f}, 5m Low: ${m5['low']:,.0f}) | 5m Tape: {m5['tape_buy']:.1f}% Buy | 5m L2: {m5['l2_buy']:.1f}% Bids
 
 2. पिछले {vc['count']} बड़े स्प्रेड्स (Spread > $4.0) का क्लस्टर पैटर्न:
@@ -514,10 +503,10 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
 
 प्रो-ट्रेडर एंट्री और शुरुआती SL के सख्त नियम:
 1. "BUY" या "SELL" केवल तभी चुनो जब 30m, 5m और स्प्रेड क्लस्टर तीनों एक दिशा में हों और संभावना (probability) 75 से 95 के बीच हो।
-2. **शुरुआती स्टॉप-लॉस (sl_price) बहुत छोटा मत रखो!** BTC में 40-80 पॉइंट्स का शोर (Noise) सामान्य है। इसलिए शुरुआती SL हमेशा 30m/5m के मुख्य स्विंग हाई/लो या VWAP के पीछे कम से कम 115 से 220 पॉइंट्स की सुरक्षित दूरी पर रखो:
+2. **शुरुआती स्टॉप-लॉस (sl_price) बहुत छोटा मत रखो!** BTC में 40-80 पॉइंट्स का शोर सामान्य है। इसलिए शुरुआती SL हमेशा 30m/5m के मुख्य स्विंग हाई/लो या VWAP के पीछे कम से कम 115 से 220 पॉइंट्स की सुरक्षित दूरी पर रखो:
    - अगर BUY है, तो `sl_price` ${buy_max_tight:,.1f} या उससे नीचे (जैसे ${buy_ideal_sl:,.1f} के आसपास) होना चाहिए।
    - अगर SELL है, तो `sl_price` ${sell_min_tight:,.1f} या उससे ऊपर (जैसे ${sell_ideal_sl:,.1f} के आसपास) होना चाहिए।
-3. `target_price` कम से कम 300 से 550 पॉइंट्स दूर (1:2.5+ Risk-Reward) रखो।
+3. `target_price` कम से कम 300 से 550 पॉइंट्स दूर रखो।
 4. केवल शुद्ध JSON में जवाब दो:
 {{
   "decision": "BUY" या "SELL" या "WAIT",
@@ -541,11 +530,11 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
 
         prompt = f"""
 तुम एक अनुभवी 'प्रो इंट्राडे स्विंग ट्रेडर (Pro Institutional Swing Trader)' हो। अभी हमारा एक ट्रेड चालू (ACTIVE) है।
-एक प्रो ट्रेडर की सबसे बड़ी खूबी यह होती है कि वह **थोड़े से मुनाफे में डरकर तुरंत स्टॉप-लॉस को प्राइस के चिपकाकर ट्रेल नहीं करता**, बल्कि ट्रेड को बड़ा प्रॉफिट (+300 से +600 पॉइंट्स) बनाने के लिए होल्ड करता है और केवल तभी SL ट्रेल करता है जब वाकई एक नया मजबूत मार्केट स्ट्रक्चर बन जाए!
+एक प्रो ट्रेडर की सबसे बड़ी खूबी यह होती है कि वह थोड़े से मुनाफे में डरकर तुरंत स्टॉप-लॉस को प्राइस के चिपकाकर ट्रेल नहीं करता, बल्कि ट्रेड को बड़ा प्रॉफिट बनाने के लिए होल्ड करता है और केवल तभी SL ट्रेल करता है जब वाकई एक नया मजबूत मार्केट स्ट्रक्चर बन जाए!
 
 चालू ट्रेड की स्थिति:
 - ट्रेड दिशा: {t_type} | एंट्री प्राइस: ${t_entry:,.1f} | वर्तमान लाइव प्राइस: ${px:,.1f}
-- लाइव प्रॉफिट/लॉस: {live_pts:+.1f} Points | अब तक का अधिकतम प्रॉफिट (Peak): +{peak_pts:.1f} Points
+- लाइव प्रॉफिट/लॉस: {live_pts:+.1f} Points | अधिकतम प्रॉफिट (Peak): +{peak_pts:.1f} Points
 - शुरुआती SL: ${init_sl:,.1f} | वर्तमान एक्टिव SL: ${curr_sl:,.1f} (एंट्री से {curr_sl_pts:+.1f} Points पर) | समय: {dur_min:.1f} मिनट
 
 ताज़ा लाइव माइक्रोस्ट्रक्चर डेटा:
@@ -556,13 +545,11 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
 - पिछले {vc['count']} स्प्रेड्स का क्लस्टर पैटर्न: {vc['pattern_summary']}
 {vc['prompt_table']}
 
-प्रो-ट्रेडर के स्टॉप-लॉस ट्रेलिंग और एग्जिट के 4 सुनहरे नियम (सख्ती से पालन करो):
-1. **हर जांच पर SL ट्रेल करना ज़रूरी नहीं है!** अगर ट्रेड अभी छोटे मुनाफे में है (जैसे +130 पॉइंट्स से कम प्रॉफिट है) और ट्रेंड सही चल रहा है, तो पुराने SL (`{curr_sl:.1f}`) को **बिल्कुल मत बदलो**—`trailing_sl` में पुराना नंबर `{curr_sl:.1f}` ही वापस भेजो और `sl_trail_reason` में लिखो कि "बड़े मूव के लिए ट्रेड को ब्रीदिंग रूम दिया गया है, अभी SL ट्रेल करने की ज़रूरत नहीं है।"
-2. **SL कब ट्रेल करें?** केवल तब जब:
-   - (क) ट्रेड में +135 पॉइंट्स से ज़्यादा का ठोस प्रॉफिट आ चुका हो और हमें रिस्क खत्म करके SL को कॉस्ट (Breakeven) या नए 5m स्विंग सपोर्ट/रेजिस्टेंस के पीछे लाना हो, या
-   - (ख) ट्रेड +220 पॉइंट्स से ऊपर चल रहा हो और नया उच्चतर 5m स्विंग पिवट बन गया हो।
-3. **जब भी SL ट्रेल करो, तो वर्तमान प्राइस (${px:,.1f}) से कम से कम 75 से 110 पॉइंट्स की सुरक्षित दूरी (Buffer) ज़रूर रखो** ताकि नॉर्मल 1-मिनट के झटके से अच्छा-खासा ट्रेड बाहर न हो जाए!
-4. **EXIT कब करें?** केवल तब जब 5m और 30m दोनों का ऑर्डरफ्लो व स्प्रेड क्लस्टर हमारे ट्रेड के खिलाफ पूरी तरह पलट जाए (असली ट्रेंड रिवर्सल)। छोटे-मोटे पुलबैक पर पैनिक होकर EXIT मत करो।
+प्रो-ट्रेडर के स्टॉप-लॉस ट्रेलिंग और एग्जिट के 4 सुनहरे नियम:
+1. **हर जांच पर SL ट्रेल करना ज़रूरी नहीं है!** अगर ट्रेड अभी छोटे मुनाफे में है (+130 पॉइंट्स से कम प्रॉफिट है) और ट्रेंड सही चल रहा है, तो पुराने SL (`{curr_sl:.1f}`) को **बिल्कुल मत बदलो**—`trailing_sl` में पुराना नंबर `{curr_sl:.1f}` ही वापस भेजो और `sl_trail_reason` में लिखो कि "बड़े मूव के लिए ट्रेड को ब्रीदिंग रूम दिया गया है, अभी SL ट्रेल करने की ज़रूरत नहीं है।"
+2. **SL कब ट्रेल करें?** केवल तब जब ट्रेड में +135 पॉइंट्स से ज़्यादा का ठोस प्रॉफिट आ चुका हो और हमें रिस्क खत्म करके SL को कॉस्ट या नए स्विंग सपोर्ट/रेजिस्टेंस के पीछे लाना हो।
+3. **जब भी SL ट्रेल करो, तो वर्तमान प्राइस (${px:,.1f}) से कम से कम 75 से 110 पॉइंट्स की सुरक्षित दूरी (Buffer) ज़रूर रखो** ताकि नॉर्मल 1-मिनट के झटके से ट्रेड बाहर न हो जाए।
+4. **EXIT कब करें?** केवल तब जब 5m और 30m दोनों का ऑर्डरफ्लो व स्प्रेड क्लस्टर हमारे ट्रेड के खिलाफ पूरी तरह पलट जाए।
 
 केवल शुद्ध JSON में जवाब दो:
 {{
@@ -615,7 +602,7 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
     return dynamic_microstructure_backup_brain(ctx, active_trade), "⚡ Dynamic Pro-Swing Brain"
 
 # ============================================================================
-# CORE EXECUTION CYCLE (RUNS EVERY 3 MINS OR ON MANUAL TRIGGER)
+# CORE EXECUTION CYCLE
 # ============================================================================
 def execute_ai_cycle_thread(eng, now_ts, ist_str):
     if eng.get("ai_busy"):
@@ -669,9 +656,6 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         live_px_now = eng["px"]
         ist_now_str = get_ist_time_str()
 
-        # --------------------------------------------------------------------
-        # CASE 1: NO ACTIVE TRADE -> PRO SWING ENTRY WITH BREATHING ROOM SL
-        # --------------------------------------------------------------------
         if current_live_tr is None:
             dec = str(ai_json.get("decision", "WAIT")).upper()
             prob = int(ai_json.get("probability", 50))
@@ -679,7 +663,6 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
             raw_sl = float(ai_json.get("sl_price", ideal_sl))
             tp_px = float(ai_json.get("target_price", live_px_now + 360.0 if dec == "BUY" else live_px_now - 360.0))
 
-            # Enforce Pro Swing Breathing Room on Initial SL (Never allow ultra-tight 20-60pt initial SL!)
             if dec == "BUY":
                 sl_px = min(tight_bound, max(wide_bound, raw_sl))
                 tp_px = max(live_px_now + 260.0, tp_px)
@@ -741,9 +724,6 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
             ctx["lock_sub"] = lock_sub
             eng["report"] = ctx
 
-        # --------------------------------------------------------------------
-        # CASE 2: ACTIVE TRADE RUNNING -> PRO SWING PATIENT TRAILING & GUARD
-        # --------------------------------------------------------------------
         else:
             act = str(ai_json.get("action", "HOLD")).upper()
             conf = int(ai_json.get("confidence", 82))
@@ -763,31 +743,21 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
                 return
 
             old_sl = current_live_tr["sl_px"]
-            live_profit_now = current_live_tr["live_pts"]
             peak_profit_now = current_live_tr["peak_pts"]
             sl_trailed_now = False
             hold_note_override = ""
 
-            # ================================================================
-            # PRO-TRADER ANTI-CHOP & PATIENT TRAILING FILTER:
-            # 1. Do NOT trail at all until trade has achieved at least +120 pts peak cushion
-            # 2. Require a meaningful structural step (>= 30 pts shift) to trail
-            # 3. Always keep at least 70 pts breathing buffer from current live price
-            #    so normal 1-minute noise doesn't prematurely stop out a winning swing!
-            # ================================================================
             MIN_CUSHION_TO_START_TRAIL = 120.0
             MIN_STEP_TO_TRAIL = 30.0
             MIN_BREATHING_BUFFER_FROM_PX = 70.0
 
             if current_live_tr["type"] == "BUY" and ai_trail_sl > old_sl + 5.0:
                 if peak_profit_now < MIN_CUSHION_TO_START_TRAIL and current_live_tr["sl_pts"] < 0:
-                    # Reject premature micro-trailing! Keep initial SL intact.
                     hold_note_override = (
                         f"प्रो-स्विंग सुरक्षा: अभी अधिकतम मुनाफा (+{peak_profit_now:.0f}p) +120p के ब्रीदिंग ज़ोन से कम है, "
                         f"इसलिए छोटे फायदे में SL को छेड़ने के बजाय शुरुआती SL (${old_sl:,.1f}) को ही होल्ड रखा गया है।"
                     )
                 else:
-                    # Clamp proposed SL so it keeps at least 70 pts breathing buffer below live price
                     safe_capped_sl = min(ai_trail_sl, live_px_now - MIN_BREATHING_BUFFER_FROM_PX)
                     if safe_capped_sl >= old_sl + MIN_STEP_TO_TRAIL:
                         current_live_tr["sl_px"] = round(safe_capped_sl, 1)
@@ -795,7 +765,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
                         sl_trailed_now = True
                     else:
                         hold_note_override = (
-                            f"प्रो-स्विंग नियम: अभी नया सपोर्ट पुराने SL (${old_sl:,.1f}) से पर्याप्त ऊपर (30p+ बफर के साथ) नहीं बना है, "
+                            f"प्रो-स्विंग नियम: अभी नया सपोर्ट पुराने SL (${old_sl:,.1f}) से पर्याप्त ऊपर नहीं बना है, "
                             f"इसलिए ट्रेड को बड़ा चलने देने के लिए SL को नहीं बदला गया।"
                         )
 
@@ -813,7 +783,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
                         sl_trailed_now = True
                     else:
                         hold_note_override = (
-                            f"प्रो-स्विंग नियम: अभी नया रेजिस्टेंस पुराने SL (${old_sl:,.1f}) से पर्याप्त नीचे (30p+ बफर के साथ) नहीं बना है, "
+                            f"प्रो-स्विंग नियम: अभी नया रेजिस्टेंस पुराने SL (${old_sl:,.1f}) से पर्याप्त नीचे नहीं बना है, "
                             f"इसलिए ट्रेड को बड़ा चलने देने के लिए SL को नहीं बदला गया।"
                         )
 
@@ -846,7 +816,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
 
             trail_box_html = f"<div class='trail-banner'>{event_str}</div>"
 
-            lock_title = f"{'🟢' if current_live_tr['type']=='BUY' else '🔴'} AI ने {current_live_tr['type']} स्विंग ट्रेड को HOLD रखा है (Live: {live_profit_now:+.1f} Pts)"
+            lock_title = f"{'🟢' if current_live_tr['type']=='BUY' else '🔴'} AI ने {current_live_tr['type']} स्विंग ट्रेड को HOLD रखा है (Live: {current_live_tr['live_pts']:+.1f} Pts)"
             lock_cls = "lock-buy" if current_live_tr["type"] == "BUY" else "lock-sell"
             lock_sub = (
                 f"एंट्री: ${current_live_tr['entry']:,.1f} | "
@@ -875,7 +845,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         eng["ai_busy"] = False
 
 # ============================================================================
-# 24x7 1-SECOND BACKGROUND WORKER (INSTANT TICK-LEVEL SL EXECUTION)
+# 24x7 1-SECOND BACKGROUND WORKER
 # ============================================================================
 def background_worker(eng, worker_id):
     SPREAD_VOID_THRESHOLD = 4.0
@@ -991,7 +961,7 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v16_0():
+def get_master_engine_v16_1():
     wid = int(time.time() * 1000)
     eng = {
         "worker_id": wid, "px": 0.0, "best_bid": 0.0, "best_ask": 0.0, "spread": 0.0,
@@ -1023,7 +993,7 @@ def get_master_engine_v16_0():
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v16_0()
+eng = get_master_engine_v16_1()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -1039,7 +1009,7 @@ if "last_played_sound_id" not in st.session_state:
     st.session_state["last_played_sound_id"] = 0.0
 
 # ============================================================================
-# TOP CONTROL BAR (WITH LIVE API MODEL SELECTOR DROPDOWN)
+# TOP CONTROL BAR
 # ============================================================================
 c_mod, c_act1, c_act2, c_act3 = st.columns([0.28, 0.28, 0.16, 0.28])
 
@@ -1230,7 +1200,7 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V16.0 (PRO SWING TRADER AI ENGINE)</div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V16.1 (PRO SWING TRADER AI ENGINE)</div>
                     <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b> | 🧠 मोड: <b style='color:#c084fc;'>{mod_label_short}</b></div>
                 </div>
                 <div style='text-align:right;'>
@@ -1262,6 +1232,6 @@ while True:
         """), unsafe_allow_html=True)
 
     else:
-        dashboard_slot.warning("⏳ 24x7 V16.0 (Pro Swing Trader AI Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+        dashboard_slot.warning("⏳ 24x7 V16.1 (Pro Swing Trader AI Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
 
     time.sleep(1.5)
