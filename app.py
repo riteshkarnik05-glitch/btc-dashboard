@@ -13,7 +13,7 @@ import base64
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V14.2 - Zero-Blink Dynamic AI Engine", layout="wide")
+st.set_page_config(page_title="Pro Quant V15.0 - Smart Model Selector & Dynamic AI", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML inside a single slot without ghost boxes"""
@@ -53,6 +53,7 @@ st.markdown(clean_html("""
 .ic-warn { border-left: 4px solid #facc15; }
 div.stButton > button { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #38bdf8 !important; border-radius: 7px !important; font-weight: 700 !important; width: 100%; margin-top: 2px; }
 div.stButton > button:hover { background-color: #38bdf8 !important; color: #090d16 !important; }
+div[data-baseweb="select"] > div { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #c084fc !important; border-radius: 7px !important; font-weight: 700 !important; }
 </style>
 """), unsafe_allow_html=True)
 
@@ -85,6 +86,49 @@ def create_sound_b64(tone_type="BULL"):
                 frames.extend(struct.pack('<h', val))
         wf.writeframes(bytes(frames))
     return base64.b64encode(buf.getvalue()).decode('ascii')
+
+# ============================================================================
+# LIVE GEMINI API MODEL DISCOVERY (FETCHES MODELS AVAILABLE ON USER'S KEY)
+# ============================================================================
+AUTO_MODEL_LABEL = "🤖 Auto (Smart Best)"
+
+def fetch_available_api_models(api_key):
+    """Queries Google API to list all text/JSON-capable Gemini models available for this key"""
+    default_models = [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash"
+    ]
+    if not api_key:
+        return default_models
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        r = requests.get(url, timeout=4.0)
+        if r.status_code == 200:
+            models_data = r.json().get("models", [])
+            discovered = []
+            skip_keywords = ["embedding", "aqa", "imagen", "veo", "tts", "audio", "vision", "robotics", "computer-use", "learnlm"]
+            for m in models_data:
+                name = m.get("name", "").replace("models/", "")
+                methods = m.get("supportedGenerationMethods", [])
+                if "generateContent" in methods and "gemini" in name:
+                    if not any(kw in name for kw in skip_keywords):
+                        discovered.append(name)
+            if discovered:
+                # Sort so newest 2.5 / 2.0 Pro & Flash models appear right at the top
+                discovered.sort(key=lambda x: (
+                    0 if "2.5" in x else (1 if "2.0" in x else (2 if "1.5" in x else 3)),
+                    0 if "flash" in x else (1 if "pro" in x else 2),
+                    x
+                ))
+                return discovered
+    except Exception:
+        pass
+    return default_models
 
 # ============================================================================
 # HYPERLIQUID MARKET DATA & REAL L2 WALL DETECTOR
@@ -271,7 +315,7 @@ def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_titl
         )
 
 # ============================================================================
-# 100% DYNAMIC AI JSON ENGINE (NO FIXED POINT RULES)
+# 100% DYNAMIC AI JSON ENGINE (SUPPORTS MANUAL MODEL SELECTION + AUTO FALLBACK)
 # ============================================================================
 def parse_ai_json_safely(raw_text: str):
     try:
@@ -393,7 +437,7 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
                 "void_forensics": vc["pattern_summary"]
             }
 
-def call_gemini_json_engine(api_key, ctx, active_trade):
+def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, available_models):
     m30 = ctx["m30"]
     m5 = ctx["m5"]
     m1 = ctx["m1"]
@@ -481,20 +525,37 @@ def call_gemini_json_engine(api_key, ctx, active_trade):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 400
+            "maxOutputTokens": 420
         }
     }
 
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
-    for mod in models:
+    # Build execution queue: User-selected model first, followed by auto-fallback queue
+    auto_priority = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+    for m in (available_models or []):
+        if m not in auto_priority:
+            auto_priority.append(m)
+
+    if selected_model and selected_model != AUTO_MODEL_LABEL:
+        models_queue = [selected_model] + [m for m in auto_priority if m != selected_model]
+    else:
+        models_queue = auto_priority
+
+    for idx, mod in enumerate(models_queue):
         try:
+            # Give Pro models slightly longer timeout (12s) since they do deep reasoning
+            req_timeout = 12.0 if "pro" in mod else 8.0
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
-            res = requests.post(url, json=payload, timeout=8)
+            res = requests.post(url, json=payload, timeout=req_timeout)
             if res.status_code == 200:
                 raw_txt = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
                 parsed = parse_ai_json_safely(raw_txt)
                 if parsed:
-                    return parsed, f"🟢 Dynamic AI Brain ({mod})"
+                    if selected_model == AUTO_MODEL_LABEL:
+                        return parsed, f"🟢 Auto AI ({mod})"
+                    elif idx == 0:
+                        return parsed, f"🟢 Selected AI ({mod})"
+                    else:
+                        return parsed, f"🟡 Fallback ({mod}) [{selected_model} Busy]"
         except Exception:
             continue
 
@@ -535,11 +596,13 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         }
 
         api_key = eng.get("api_key", "").strip()
+        selected_mod = eng.get("selected_model", AUTO_MODEL_LABEL)
+        avail_mods = eng.get("available_models", [])
         active_tr_snapshot = eng.get("active_trade")
         snapshot_trade_id = active_tr_snapshot["open_ts"] if active_tr_snapshot else None
 
         if api_key:
-            ai_json, status_str = call_gemini_json_engine(api_key, ctx, active_tr_snapshot)
+            ai_json, status_str = call_gemini_json_engine(api_key, ctx, active_tr_snapshot, selected_mod, avail_mods)
         else:
             ai_json, status_str = dynamic_microstructure_backup_brain(ctx, active_tr_snapshot), "🟡 Local Dynamic Engine"
 
@@ -843,7 +906,7 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v14_2():
+def get_master_engine_v15_0():
     wid = int(time.time() * 1000)
     eng = {
         "worker_id": wid, "px": 0.0, "best_bid": 0.0, "best_ask": 0.0, "spread": 0.0,
@@ -854,6 +917,9 @@ def get_master_engine_v14_2():
         "last_kline_ts": 0.0, "last_report_ts": 0.0,
         "vwap": 0.0, "oi_start": 0.0, "oi_chg": 0.0,
         "report": None,
+        "available_models": [],
+        "models_fetched": False,
+        "selected_model": AUTO_MODEL_LABEL,
         "ai_json_view": {
             "mode": "INIT",
             "badge_1": "AI Status: Waiting",
@@ -865,14 +931,14 @@ def get_master_engine_v14_2():
             "void_forensics": "स्प्रेड क्लस्टर पर नज़र रखी जा रही है...",
             "trail_box_html": ""
         },
-        "ai_status": "🤖 100% Dynamic AI + 1s SL Guard",
+        "ai_status": "🤖 Auto AI + 1s SL Guard",
         "sound_event": {"id": 0.0, "type": "BULL"},
         "api_key": "", "last_err": None
     }
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v14_2()
+eng = get_master_engine_v15_0()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -880,20 +946,38 @@ try:
 except Exception:
     pass
 
+# Fetch available models from user's API key once on startup
+if not eng.get("models_fetched"):
+    eng["available_models"] = fetch_available_api_models(eng.get("api_key", ""))
+    eng["models_fetched"] = True
+
 if "last_played_sound_id" not in st.session_state:
     st.session_state["last_played_sound_id"] = 0.0
 
 # ============================================================================
-# STATIC CONTROLS & ZERO-BLINK IN-PLACE LIVE STREAMING LOOP
+# TOP CONTROL BAR (WITH LIVE API MODEL SELECTOR DROPDOWN)
 # ============================================================================
-c_act1, c_act2, c_act3 = st.columns([0.34, 0.20, 0.46])
+c_mod, c_act1, c_act2, c_act3 = st.columns([0.28, 0.28, 0.16, 0.28])
+
+with c_mod:
+    dropdown_options = [AUTO_MODEL_LABEL] + eng.get("available_models", [])
+    curr_sel = eng.get("selected_model", AUTO_MODEL_LABEL)
+    sel_idx = dropdown_options.index(curr_sel) if curr_sel in dropdown_options else 0
+    chosen_model = st.selectbox(
+        "🧠 AI मॉडल चुनें:",
+        options=dropdown_options,
+        index=sel_idx,
+        label_visibility="collapsed"
+    )
+    eng["selected_model"] = chosen_model
+
 with c_act1:
-    if st.button("🤖 अभी AI से डायनामिक फैसला / SL जांच कराएं"):
+    if st.button("🤖 अभी AI से फैसला / SL जांच कराएं"):
         threading.Thread(target=execute_ai_cycle_thread, args=(eng, time.time(), get_ist_time_str()), daemon=True).start()
 with c_act2:
-    test_snd = st.button("🔔 साउंड टेस्ट करें")
+    test_snd = st.button("🔔 साउंड टेस्ट")
 with c_act3:
-    sound_enabled = st.checkbox("🔊 AI एंट्री, डायनामिक SL ट्रेल और इंस्टेंट एग्जिट पर साउंड बजाएं", value=True)
+    sound_enabled = st.checkbox("🔊 साउंड अलर्ट (Entry/SL/Exit)", value=True)
 
 dashboard_slot = st.empty()
 audio_slot = st.empty()
@@ -904,7 +988,7 @@ if test_snd:
     with audio_slot:
         components.html(f'<audio autoplay="true"><source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>', height=0, width=0)
 
-# Continuous in-place DOM update loop (No st.rerun() -> ZERO screen blinking)
+# Continuous in-place DOM update loop (Zero screen blinking)
 while True:
     curr_snd = eng.get("sound_event", {"id": 0.0, "type": "BULL"})
     if sound_enabled and curr_snd["id"] > 0 and curr_snd["id"] != st.session_state["last_played_sound_id"]:
@@ -917,6 +1001,7 @@ while True:
     if eng["px"] > 0:
         mem_min = (time.time() - eng["vault"][0]["ts"]) / 60.0 if len(eng["vault"]) > 1 else 0.0
         next_sec = max(0, int(180 - (time.time() - eng["last_report_ts"]))) if eng["last_report_ts"] > 0 else 0
+        mod_label_short = "Auto" if eng["selected_model"] == AUTO_MODEL_LABEL else eng["selected_model"]
 
         hist_cards = ""
         for h in eng["signal_history"]:
@@ -1054,7 +1139,7 @@ while True:
             left_body = f"""
             <div class='card-box' style='text-align:center; padding:45px 20px; margin-bottom:12px;'>
                 <div style='font-size:20px; font-weight:800; color:#38bdf8; margin-bottom:8px;'>⏳ डायनामिक AI इंजन के लिए शुरुआती डेटा जमा हो रहा है... ({pct}%)</div>
-                <div style='font-size:14px; color:#94a3b8;'>तुरंत AI से फैसला लेने के लिए ऊपर <b>'🤖 अभी AI से डायनामिक फैसला / SL जांच कराएं'</b> बटन दबाएं।</div>
+                <div style='font-size:14px; color:#94a3b8;'>मॉडल मोड: <b style='color:#c084fc;'>{mod_label_short}</b> | तुरंत फैसले के लिए ऊपर <b>'🤖 अभी AI से फैसला / SL जांच कराएं'</b> दबाएं।</div>
             </div>
             """
 
@@ -1062,8 +1147,8 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V14.2 (ZERO-BLINK DYNAMIC AI)</div>
-                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b></div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V15.0 (SMART MODEL SELECTOR & DYNAMIC AI)</div>
+                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b> | 🧠 मोड: <b style='color:#c084fc;'>{mod_label_short}</b></div>
                 </div>
                 <div style='text-align:right;'>
                     <div style='font-size:21px; font-weight:900; color:#f8fafc;'>BTC: ${eng['px']:,.1f}</div>
@@ -1094,6 +1179,6 @@ while True:
         """), unsafe_allow_html=True)
 
     else:
-        dashboard_slot.warning("⏳ 24x7 V14.2 (Zero-Blink Dynamic AI Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+        dashboard_slot.warning("⏳ 24x7 V15.0 (Smart Model Selector & Dynamic AI Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
 
     time.sleep(1.5)
