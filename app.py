@@ -13,7 +13,7 @@ import base64
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V17.0 - Smart Adaptive AI Engine", layout="wide")
+st.set_page_config(page_title="Pro Quant V18.0 - Pro-Model Priority & English Quant Brain", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML inside a single slot without ghost boxes"""
@@ -88,19 +88,35 @@ def create_sound_b64(tone_type="BULL"):
     return base64.b64encode(buf.getvalue()).decode('ascii')
 
 # ============================================================================
-# LIVE GEMINI API MODEL DISCOVERY
+# LIVE GEMINI API MODEL DISCOVERY (PRIORITIZES ADVANCED / PRO MODELS FIRST)
 # ============================================================================
-AUTO_MODEL_LABEL = "🤖 Auto (Smart Best)"
+AUTO_MODEL_LABEL = "🤖 Auto (Pro/Advanced Priority)"
+
+def score_model_priority(model_name: str) -> tuple:
+    """Ranks models so the most advanced Pro models come first, followed by newest Flash models"""
+    tier = 0 if ("pro" in model_name and "vision" not in model_name) else (
+        1 if "exp" in model_name else (
+            2 if ("flash" in model_name and "lite" not in model_name and "8b" not in model_name) else 3
+        )
+    )
+    gen = 0 if "2.5" in model_name else (
+        1 if "2.0" in model_name else (
+            2 if "1.5" in model_name else 3
+        )
+    )
+    # Prefer standard stable/latest release names over dated sub-snapshots
+    is_dated = 1 if re.search(r"-\d{3,4}", model_name) else 0
+    return (tier, gen, is_dated, model_name)
 
 def fetch_available_api_models(api_key):
     default_models = [
-        "gemini-2.5-flash",
         "gemini-2.5-pro",
-        "gemini-2.0-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash-lite",
         "gemini-1.5-pro",
-        "gemini-1.5-flash"
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite"
     ]
     if not api_key:
         return default_models
@@ -118,11 +134,7 @@ def fetch_available_api_models(api_key):
                     if not any(kw in name for kw in skip_keywords):
                         discovered.append(name)
             if discovered:
-                discovered.sort(key=lambda x: (
-                    0 if "2.5" in x else (1 if "2.0" in x else (2 if "1.5" in x else 3)),
-                    0 if "flash" in x else (1 if "pro" in x else 2),
-                    x
-                ))
+                discovered.sort(key=score_model_priority)
                 return discovered
     except Exception:
         pass
@@ -246,7 +258,8 @@ def analyze_void_cluster(void_list, current_px):
             "count": 0, "bull_cnt": 0, "bear_cnt": 0, "pull_cnt": 0,
             "avg_l2_shift": 0.0, "avg_tape": 50.0, "net_px_progress": 0.0,
             "pattern_summary": "पिछले 30 मिनट में $4.0+ का कोई स्प्रेड क्लस्टर नहीं बना है (लिक्विडिटी सामान्य है)।",
-            "prompt_table": "कोई बड़ा स्प्रेड रिकॉर्ड नहीं हुआ।"
+            "pattern_en": "No major liquidity voids (> $4.0 spread) in the last 30 minutes; orderbook liquidity is stable.",
+            "prompt_table": "No major liquidity voids recorded."
         }
 
     cnt = len(recent)
@@ -260,26 +273,32 @@ def analyze_void_cluster(void_list, current_px):
 
     if bull_cnt >= bear_cnt + 2 and net_px_progress < -15.0:
         pattern = f"🧊 बियरिश आइसबर्ग ट्रैप: पिछले {cnt} में से {bull_cnt} स्प्रेड बुलिश थे (Avg Tape {avg_tape:.0f}%B), फिर भी प्राइस {net_px_progress:+.0f}$ गिरा—ऊपर व्हेल माल चिपका रही है!"
+        pattern_en = f"BEARISH ICEBERG ABSORPTION TRAP: {bull_cnt}/{cnt} voids had aggressive buying (Avg Tape {avg_tape:.0f}% Buy), yet net price fell {net_px_progress:+.1f} pts. Whales are absorbing buys at resistance."
     elif bear_cnt >= bull_cnt + 2 and net_px_progress > 15.0:
         pattern = f"🧊 बुलिश आइसबर्ग अब्जॉर्प्शन: पिछले {cnt} में से {bear_cnt} स्प्रेड बियरिश थे, फिर भी प्राइस {net_px_progress:+.0f}$ चढ़ा—नीचे व्हेल सारा बिकवाली का माल सोख रही है!"
+        pattern_en = f"BULLISH ICEBERG ABSORPTION: {bear_cnt}/{cnt} voids had heavy selling, yet net price rose {net_px_progress:+.1f} pts. Whales are absorbing sells at support."
     elif avg_l2_shift <= -4.5:
         pattern = f"⚠️ बिड-पुलिंग पैनिक: पिछले {cnt} स्प्रेड्स में औसतन L2 Bids {avg_l2_shift:+.1f}% गिरी हैं—स्प्रेड फटने पर बायर्स डरकर सपोर्ट हटा रहे हैं।"
+        pattern_en = f"BID-PULLING PANIC: Across last {cnt} voids, L2 Bids dropped by an average of {avg_l2_shift:+.1f}%. Buyers are pulling liquidity."
     elif avg_l2_shift >= 4.5:
         pattern = f"🚀 आक्रामक बाइंग स्वीप: पिछले {cnt} स्प्रेड्स में L2 Bids औसतन {avg_l2_shift:+.1f}% बढ़ी हैं और बायर्स ऊपर के आस्क तोड़ रहे हैं।"
+        pattern_en = f"AGGRESSIVE BUYING SWEEP: Across last {cnt} voids, L2 Bids surged by an average of {avg_l2_shift:+.1f}% as buyers swept ask walls."
     else:
         pattern = f"📊 पिछले {cnt} स्प्रेड्स का निचोड़: {bull_cnt} बुलिश बनाम {bear_cnt} बियरिश ({pull_cnt} ऑर्डर-पुल) | औसत L2 बदलाव: {avg_l2_shift:+.1f}% | नेट प्राइस असर: {net_px_progress:+.1f}$।"
+        pattern_en = f"VOID CLUSTER SUMMARY ({cnt} events): {bull_cnt} Bullish vs {bear_cnt} Bearish ({pull_cnt} Liquidity Pulls) | Avg L2 Bid Shift: {avg_l2_shift:+.1f}% | Net Price Progress: {net_px_progress:+.1f} pts."
 
     lines = []
     for idx, v in enumerate(recent, 1):
         lines.append(
             f"#{idx} [{v['time']}] Spread:${v['spread']:.1f} | Px:${v['px']:,.0f} (Jump:{v['px_jump']:+.1f}$) | "
-            f"L2 Bid:{v['l2_before']:.0f}%->{v['l2_after']:.0f}% ({v['l2_shift']:+.0f}%) | Tape:{v['tape_pct']:.0f}%B | {v['ob_reaction']}"
+            f"L2 Bid:{v['l2_before']:.0f}%->{v['l2_after']:.0f}% ({v['l2_shift']:+.0f}%) | Tape:{v['tape_pct']:.0f}% Buy"
         )
 
     return {
         "count": cnt, "bull_cnt": bull_cnt, "bear_cnt": bear_cnt, "pull_cnt": pull_cnt,
         "avg_l2_shift": avg_l2_shift, "avg_tape": avg_tape, "net_px_progress": net_px_progress,
         "pattern_summary": pattern,
+        "pattern_en": pattern_en,
         "prompt_table": "\n".join(lines)
     }
 
@@ -313,7 +332,7 @@ def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_titl
         )
 
 # ============================================================================
-# V17.0 SMART ADAPTIVE AI ENGINE (~100 PT INITIAL SL + 100% FREE AI TRAILING)
+# V18.0 ENGLISH QUANT PROMPT + PRO-MODEL PRIORITY + FEE-CONSCIOUS AI ENGINE
 # ============================================================================
 def parse_ai_json_safely(raw_text: str):
     try:
@@ -327,49 +346,47 @@ def parse_ai_json_safely(raw_text: str):
     return None
 
 def get_initial_sl_near_100pts(ctx, dec):
-    """Sets initial SL around ~100 points (between 90 and 125 pts) anchored to 5m structure"""
+    """Sets initial SL around ~100 points (between 95 and 125 pts) anchored to 5m structure"""
     px = ctx["px"]
     m5 = ctx["m5"]
     if dec == "BUY":
-        struct_sl = min(m5["low"] - 15.0, px - 100.0)
-        # Keep initial SL strictly around ~100 pts (min 90 pts, max 125 pts) so no huge losses and no tiny noise hits
-        clamped_sl = min(px - 90.0, max(px - 125.0, struct_sl))
+        struct_sl = min(m5["low"] - 15.0, px - 105.0)
+        clamped_sl = min(px - 95.0, max(px - 125.0, struct_sl))
         return round(clamped_sl, 1)
     else:
-        struct_sl = max(m5["high"] + 15.0, px + 100.0)
-        clamped_sl = max(px + 90.0, min(px + 125.0, struct_sl))
+        struct_sl = max(m5["high"] + 15.0, px + 105.0)
+        clamped_sl = max(px + 95.0, min(px + 125.0, struct_sl))
         return round(clamped_sl, 1)
 
 def dynamic_microstructure_backup_brain(ctx, active_trade):
-    """Fallback brain if all Google servers are unreachable"""
+    """Fee-conscious fallback brain if all external API models are temporarily unreachable"""
     m30 = ctx["m30"]
     m5 = ctx["m5"]
-    m1 = ctx["m1"]
     px = ctx["px"]
     vwap = ctx["vwap"] if ctx["vwap"] > 0 else px
     vc = ctx["void_cluster"]
-    dynamic_range = max(180.0, (m30["high"] - m30["low"]) * 1.4)
+    dynamic_range = max(220.0, (m30["high"] - m30["low"]) * 1.5)
 
     if active_trade is None:
-        bull_align = (m30["tape_buy"] >= 53.5 and m5["tape_buy"] >= 55.0 and px >= vwap and vc["avg_l2_shift"] >= -3.0)
-        bear_align = (m30["tape_buy"] <= 46.5 and m5["tape_buy"] <= 45.0 and px <= vwap and vc["avg_l2_shift"] <= 3.0)
+        bull_align = (m30["tape_buy"] >= 54.0 and m5["tape_buy"] >= 55.5 and px >= vwap and vc["avg_l2_shift"] >= -2.5)
+        bear_align = (m30["tape_buy"] <= 46.0 and m5["tape_buy"] <= 44.5 and px <= vwap and vc["avg_l2_shift"] <= 2.5)
 
         if bull_align and ctx["span_min"] >= 1.5:
-            prob = min(92, int(55 + (m5["tape_buy"] - 50) * 1.8 + (m30["tape_buy"] - 50) * 1.2))
+            prob = min(92, int(56 + (m5["tape_buy"] - 50) * 1.8 + (m30["tape_buy"] - 50) * 1.2))
             return {
                 "decision": "BUY",
-                "probability": max(76, prob),
+                "probability": max(78, prob),
                 "sl_price": get_initial_sl_near_100pts(ctx, "BUY"),
                 "target_price": round(px + dynamic_range, 1),
-                "headline": f"कन्फर्म BUY सिग्नल (${px:,.0f}) — 30m, 5m और स्प्रेड क्लस्टर तीनों में बायर्स मजबूत हैं।",
-                "macro_vs_micro": f"30m Tape ({m30['tape_buy']:.0f}% Buy) के साथ आखिरी 5m में बाइंग {m5['tape_buy']:.0f}% पर है।",
+                "headline": f"कन्फर्म BUY सिग्नल (${px:,.0f}) — 30m, 5m और स्प्रेड क्लस्टर तीनों में हाई-कन्विक्शन बाइंग है।",
+                "macro_vs_micro": f"30m Tape ({m30['tape_buy']:.0f}% Buy) के साथ आखिरी 5m में बाइंग {m5['tape_buy']:.0f}% पर मजबूत है।",
                 "void_forensics": vc["pattern_summary"]
             }
         elif bear_align and ctx["span_min"] >= 1.5:
-            prob = min(92, int(55 + (50 - m5["tape_buy"]) * 1.8 + (50 - m30["tape_buy"]) * 1.2))
+            prob = min(92, int(56 + (50 - m5["tape_buy"]) * 1.8 + (50 - m30["tape_buy"]) * 1.2))
             return {
                 "decision": "SELL",
-                "probability": max(76, prob),
+                "probability": max(78, prob),
                 "sl_price": get_initial_sl_near_100pts(ctx, "SELL"),
                 "target_price": round(px - dynamic_range, 1),
                 "headline": f"कन्फर्म SELL सिग्नल (${px:,.0f}) — 30m, 5m और स्प्रेड क्लस्टर में सेलर्स हावी हैं।",
@@ -380,11 +397,11 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
             prob = int(45 + abs(m5["tape_buy"] - 50) * 1.1)
             return {
                 "decision": "WAIT",
-                "probability": min(68, prob),
+                "probability": min(70, prob),
                 "sl_price": get_initial_sl_near_100pts(ctx, "BUY"),
-                "target_price": round(px + 250.0, 1),
-                "headline": "WAIT (अभी कोई ट्रेड न लें) — डेटा में 75%+ वाली एकतरफा संभावना नहीं है।",
-                "macro_vs_micro": f"30m Tape ({m30['tape_buy']:.0f}% B) और 5m Tape ({m5['tape_buy']:.0f}% B) में स्पष्ट तालमेल का इंतज़ार करें।",
+                "target_price": round(px + 260.0, 1),
+                "headline": "WAIT (ओवर-ट्रेडिंग और फीस से बचें) — अभी 78%+ संभावना वाला एकतरफा सेटअप नहीं है।",
+                "macro_vs_micro": f"30m Tape ({m30['tape_buy']:.0f}% B) और 5m Tape ({m5['tape_buy']:.0f}% B) में स्पष्ट ब्रेकआउट का इंतज़ार करें।",
                 "void_forensics": vc["pattern_summary"]
             }
     else:
@@ -395,73 +412,61 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
         curr_sl = active_trade["sl_px"]
 
         if t_type == "BUY":
-            # Smart Early Exit if flow flips against trade (don't wait for full 100pt loss!)
-            if m5["tape_buy"] <= 43.0 or (m1["tape_buy"] <= 36.0 and m1["px_chg"] < -18.0) or (peak_pts >= 90.0 and live_pts <= peak_pts * 0.40):
+            # Only exit early on genuine 5m + 30m multi-timeframe breakdown or heavy profit giveback
+            if (m5["tape_buy"] <= 41.0 and m30["tape_buy"] <= 47.5) or (peak_pts >= 130.0 and live_pts <= peak_pts * 0.45 and m5["tape_buy"] <= 44.0):
                 return {
                     "action": "EXIT",
                     "confidence": 88,
                     "trailing_sl": curr_sl,
-                    "sl_trail_reason": "ऑर्डरफ्लो बायर्स के खिलाफ पलटने के कारण बड़े नुकसान का इंतज़ार किए बिना तुरंत एग्जिट।",
-                    "headline": f"🚨 SMART EXIT LONG @ ${px:,.0f} ({live_pts:+.1f}p) — डेटा में सेलिंग प्रेशर आने से ट्रेड काटा गया!",
-                    "macro_vs_micro": f"5m बाइंग गिरकर {m5['tape_buy']:.0f}% और 1m बाइंग {m1['tape_buy']:.0f}% रह गई है।",
+                    "sl_trail_reason": "5m और 30m दोनों में असली रिवर्सल दिखने के कारण ट्रेड एग्जिट किया गया।",
+                    "headline": f"🚨 CONFIRMED EXIT LONG @ ${px:,.0f} ({live_pts:+.1f}p) — 5m और 30m डेटा बायर्स के खिलाफ पलट गया है!",
+                    "macro_vs_micro": f"5m बाइंग गिरकर {m5['tape_buy']:.0f}% और 30m बाइंग {m30['tape_buy']:.0f}% रह गई है।",
                     "void_forensics": vc["pattern_summary"]
                 }
 
-            # Smart Adaptive Trailing based on current situation
             new_sl = curr_sl
-            reason_txt = f"मोमेंटम बुलिश है, इसलिए वर्तमान SL (${curr_sl:,.1f}) को बनाए रखा गया है।"
-            if live_pts >= 65.0:
-                struct_lvl = max(entry_px + 10.0, m5["low"] - 12.0, ctx["bid_wall_px"] - 10.0)
-                if curr_sl < struct_lvl < px - 18.0:
+            reason_txt = f"माइक्रो-नॉइज़ को इग्नोर किया गया है और ~100p के शुरुआती SL (${curr_sl:,.1f}) को ब्रीदिंग रूम दिया गया है।"
+            if live_pts >= 90.0:
+                struct_lvl = max(entry_px + 20.0, min(m5["low"] - 18.0, px - 45.0))
+                if struct_lvl > curr_sl + 15.0:
                     new_sl = round(struct_lvl, 1)
-                    reason_txt = f"डेटा मजबूत है (+{live_pts:.0f}p); रिस्क खत्म करने और प्रॉफिट लॉक करने के लिए SL को 5m सपोर्ट/L2 बिड के नीचे (${new_sl:,.1f}) ट्रेल किया गया।"
-            elif live_pts < 0 and m5["tape_buy"] < 48.0:
-                # Trade in minor loss & momentum weak -> tighten SL to reduce risk
-                tight_sl = round(max(curr_sl, m5["low"] - 15.0), 1)
-                if tight_sl > curr_sl and tight_sl < px - 12.0:
-                    new_sl = tight_sl
-                    reason_txt = f"5m मोमेंटम थोड़ा सुस्त पड़ने के कारण संभावित नुकसान कम करने के लिए SL को पास (${new_sl:,.1f}) खींचा गया।"
+                    reason_txt = f"+{live_pts:.0f}p प्रॉफिट बनने के बाद फीस और मुनाफा सुरक्षित करने के लिए SL को 5m सपोर्ट (${new_sl:,.1f}) पर ट्रेल किया गया।"
 
             return {
                 "action": "HOLD",
                 "confidence": 82,
                 "trailing_sl": new_sl,
                 "sl_trail_reason": reason_txt,
-                "headline": f"✅ HOLD LONG ({live_pts:+.1f}p) — संभावना पक्ष में है (Active SL: ${new_sl:,.1f})।",
-                "macro_vs_micro": f"5m Tape ({m5['tape_buy']:.0f}% B) और 30m Tape ({m30['tape_buy']:.0f}% B) ट्रेड के साथ हैं।",
+                "headline": f"✅ HOLD LONG ({live_pts:+.1f}p) — बड़ा स्ट्रक्चर अनुकूल है, पैनिक एग्जिट न करें (SL: ${new_sl:,.1f})।",
+                "macro_vs_micro": f"5m Tape ({m5['tape_buy']:.0f}% B) और 30m Tape ({m30['tape_buy']:.0f}% B) ट्रेड के पक्ष में हैं।",
                 "void_forensics": vc["pattern_summary"]
             }
         else:
-            if m5["tape_buy"] >= 57.0 or (m1["tape_buy"] >= 64.0 and m1["px_chg"] > 18.0) or (peak_pts >= 90.0 and live_pts <= peak_pts * 0.40):
+            if (m5["tape_buy"] >= 59.0 and m30["tape_buy"] >= 52.5) or (peak_pts >= 130.0 and live_pts <= peak_pts * 0.45 and m5["tape_buy"] >= 56.0):
                 return {
                     "action": "EXIT",
                     "confidence": 88,
                     "trailing_sl": curr_sl,
-                    "sl_trail_reason": "नीचे से आक्रामक बाइंग आने के कारण पूरे SL का इंतज़ार किए बिना तुरंत एग्जिट।",
-                    "headline": f"🚨 SMART EXIT SHORT @ ${px:,.0f} ({live_pts:+.1f}p) — डेटा में शॉर्ट-कवरिंग दिखने से तुरंत एग्जिट!",
-                    "macro_vs_micro": f"5m बाइंग उछलकर {m5['tape_buy']:.0f}% और 1m बाइंग {m1['tape_buy']:.0f}% हो गई है।",
+                    "sl_trail_reason": "5m और 30m दोनों में शॉर्ट-कवरिंग रिवर्सल की पुष्टि होने पर एग्जिट।",
+                    "headline": f"🚨 CONFIRMED EXIT SHORT @ ${px:,.0f} ({live_pts:+.1f}p) — 5m और 30m में बायर्स हावी हो गए हैं!",
+                    "macro_vs_micro": f"5m बाइंग उछलकर {m5['tape_buy']:.0f}% और 30m बाइंग {m30['tape_buy']:.0f}% हो गई है।",
                     "void_forensics": vc["pattern_summary"]
                 }
 
             new_sl = curr_sl
-            reason_txt = f"बिकवाली का दबाव बना हुआ है, इसलिए वर्तमान SL (${curr_sl:,.1f}) को रखा गया है।"
-            if live_pts >= 65.0:
-                struct_lvl = min(entry_px - 10.0, m5["high"] + 12.0, ctx["ask_wall_px"] + 10.0)
-                if px + 18.0 < struct_lvl < curr_sl:
+            reason_txt = f"माइक्रो-नॉइज़ को इग्नोर किया गया है और शुरुआती SL (${curr_sl:,.1f}) को ब्रीदिंग रूम दिया गया है।"
+            if live_pts >= 90.0:
+                struct_lvl = min(entry_px - 20.0, max(m5["high"] + 18.0, px + 45.0))
+                if struct_lvl < curr_sl - 15.0:
                     new_sl = round(struct_lvl, 1)
-                    reason_txt = f"अच्छा मुनाफा (+{live_pts:.0f}p) बनने और 5m हाई/L2 आस्क दीवार नीचे आने से SL को ${new_sl:,.1f} पर ट्रेल किया गया।"
-            elif live_pts < 0 and m5["tape_buy"] > 52.0:
-                tight_sl = round(min(curr_sl, m5["high"] + 15.0), 1)
-                if tight_sl < curr_sl and tight_sl > px + 12.0:
-                    new_sl = tight_sl
-                    reason_txt = f"मोमेंटम कमज़ोर पड़ने से रिस्क घटाने के लिए SL को पास (${new_sl:,.1f}) लाया गया।"
+                    reason_txt = f"+{live_pts:.0f}p मुनाफा बनने के बाद फीस और प्रॉफिट लॉक करने के लिए SL को 5m हाई (${new_sl:,.1f}) के पास ट्रेल किया गया।"
 
             return {
                 "action": "HOLD",
                 "confidence": 82,
                 "trailing_sl": new_sl,
                 "sl_trail_reason": reason_txt,
-                "headline": f"✅ HOLD SHORT ({live_pts:+.1f}p) — संभावना पक्ष में है (Active SL: ${new_sl:,.1f})।",
+                "headline": f"✅ HOLD SHORT ({live_pts:+.1f}p) — बड़ा स्ट्रक्चर बियरिश है, ट्रेड होल्ड करें (SL: ${new_sl:,.1f})।",
                 "macro_vs_micro": f"5m Sell Tape ({100-m5['tape_buy']:.0f}%) और 30m Sell Tape ({100-m30['tape_buy']:.0f}%) आपके पक्ष में हैं।",
                 "void_forensics": vc["pattern_summary"]
             }
@@ -479,34 +484,37 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
 
     if active_trade is None:
         prompt = f"""
-तुम एक स्मार्ट और लचीले (Adaptive) इंट्राडे BTCUSDT AI ट्रेडर हो। नीचे दिए गए 30m, 5m, 1m डेटा, L2 ऑर्डरबुक दीवारों और पिछले 10 स्प्रेड्स के क्लस्टर को पढ़कर संभावना (Probability) के आधार पर निर्णय लो।
+You are a patient, fee-conscious Wall Street Institutional Quantitative Analyst trading intraday BTCUSDT.
+Your primary objective is HIGH-CONVICTION SNIPER ENTRIES. Frequent low-quality trades destroy net PnL due to exchange trading fees and spread slippage.
 
-1. लाइव मार्केट और ऑर्डरबुक डेटा:
-- वर्तमान प्राइस: ${px:,.1f} (Spread: ${ctx['spread']:.1f}) | सेशन VWAP: ${vwap:,.1f}
-- ऑर्डरबुक की सबसे बड़ी बाइंग दीवार (L2 Bid Wall): ${ctx['bid_wall_px']:,.1f} ({ctx['bid_wall_sz']:.2f} BTC)
-- ऑर्डरबुक की सबसे बड़ी सेलिंग दीवार (L2 Ask Wall): ${ctx['ask_wall_px']:,.1f} ({ctx['ask_wall_sz']:.2f} BTC)
-- पूरे 30m का डेटा: बदलाव {m30['px_chg']:+.1f} Pts (High: ${m30['high']:,.0f}, Low: ${m30['low']:,.0f}) | 30m Tape: {m30['tape_buy']:.1f}% Buy | 30m L2: {m30['l2_buy']:.1f}% Bids
-- आखिरी 5m का डेटा: बदलाव {m5['px_chg']:+.1f} Pts (5m High: ${m5['high']:,.0f}, 5m Low: ${m5['low']:,.0f}) | 5m Tape: {m5['tape_buy']:.1f}% Buy | 5m L2: {m5['l2_buy']:.1f}% Bids
-- आखिरी 1m का ताज़ा डेटा: बदलाव {m1['px_chg']:+.1f} Pts (1m High: ${m1['high']:,.0f}, 1m Low: ${m1['low']:,.0f}) | 1m Tape: {m1['tape_buy']:.1f}% Buy
+1. LIVE MARKET & ORDERBOOK STRUCTURE:
+- Current BTC Price: ${px:,.1f} (Bid-Ask Spread: ${ctx['spread']:.1f}) | Session VWAP: ${vwap:,.1f} | Data Memory Span: {ctx['span_min']:.1f} mins
+- Major L2 Bid Support Wall: ${ctx['bid_wall_px']:,.1f} (Size: {ctx['bid_wall_sz']:.2f} BTC)
+- Major L2 Ask Resistance Wall: ${ctx['ask_wall_px']:,.1f} (Size: {ctx['ask_wall_sz']:.2f} BTC)
+- 30-Minute Macro Structure: Price Change {m30['px_chg']:+.1f} pts (30m High: ${m30['high']:,.0f}, 30m Low: ${m30['low']:,.0f}) | 30m Taker Tape: {m30['tape_buy']:.1f}% Buy / {100-m30['tape_buy']:.1f}% Sell | 30m L2 Weighted Bids: {m30['l2_buy']:.1f}%
+- 5-Minute Micro Structure: Price Change {m5['px_chg']:+.1f} pts (5m High: ${m5['high']:,.0f}, 5m Low: ${m5['low']:,.0f}) | 5m Taker Tape: {m5['tape_buy']:.1f}% Buy ({m5['tape_buy']-m30['tape_buy']:+.1f}% Shift vs 30m) | 5m L2 Bids: {m5['l2_buy']:.1f}%
+- 1-Minute Immediate Flow: Price Change {m1['px_chg']:+.1f} pts | 1m Taker Tape: {m1['tape_buy']:.1f}% Buy
 
-2. पिछले {vc['count']} बड़े स्प्रेड्स (Spread > $4.0) का क्लस्टर पैटर्न:
-- सारांश: {vc['pattern_summary']}
+2. LAST {vc['count']} LIQUIDITY VOIDS (SPREAD > $4.0) CLUSTER FORENSICS:
+- Cluster Pattern Analysis: {vc['pattern_en']}
+- Chronological Void Log (Newest to Oldest):
 {vc['prompt_table']}
 
-एंट्री और शुरुआती SL के नियम:
-1. "BUY" या "SELL" केवल तभी चुनो जब डेटा के हिसाब से ट्रेड सफल होने की संभावना (probability) 75% से 95% हो।
-2. **शुरुआती स्टॉप-लॉस (sl_price) कम से कम 100 पॉइंट्स के आसपास (90 से 120 पॉइंट्स के बीच) रखो** ताकि न तो 20-30 पॉइंट्स के मामूली शोर में SL कटे और न ही 200+ पॉइंट्स का बड़ा नुकसान हो:
-   - BUY के लिए सुझाया गया ~100pt स्ट्रक्चरल SL: `${buy_sl_100:,.1f}` के आसपास।
-   - SELL के लिए सुझाया गया ~100pt स्ट्रक्चरल SL: `${sell_sl_100:,.1f}` के आसपास।
-3. केवल शुद्ध JSON में जवाब दो:
+STRICT QUANTITATIVE ENTRY RULES:
+1. QUALITY OVER QUANTITY (SAVE FEES): Choose "BUY" or "SELL" ONLY when 30m Macro Flow, 5m Micro Momentum, VWAP position, and the 10-Void Cluster Pattern are strongly aligned, giving a genuine win probability of 78% to 95%. If the market is choppy or conflicting, output "WAIT" with probability < 70.
+2. INITIAL STOP-LOSS (~100 POINTS BREATHING ROOM): Place `sl_price` around ~100 points from entry (between 95 and 125 points away, anchored behind 5m structure/L2 walls) so normal BTC micro-noise does not stop out the trade, while capping maximum risk:
+   - Recommended structural ~100pt SL for BUY: around ${buy_sl_100:,.1f}
+   - Recommended structural ~100pt SL for SELL: around ${sell_sl_100:,.1f}
+3. TARGET: Set a realistic swing `target_price` at least 220 to 450 points away so the reward easily covers trading fees and risk.
+4. OUTPUT FORMAT: Return ONLY valid JSON matching the exact keys below. Write the 3 text analysis fields (`headline`, `macro_vs_micro`, `void_forensics`) in sharp, clear Hindi:
 {{
-  "decision": "BUY" या "SELL" या "WAIT",
-  "probability": 0 से 100 के बीच पूर्णांक (int),
-  "sl_price": संख्या (float - एंट्री से ~100 पॉइंट्स के आसपास स्टॉप-लॉस प्राइस),
-  "target_price": संख्या (float - डेटा के अनुसार संभावित टारगेट प्राइस),
-  "headline": "1 तीखी लाइन में स्पष्ट सिग्नल और कारण (हिंदी में)",
-  "macro_vs_micro": "1 लाइन में 30m बनाम 5m/1m की तुलना (हिंदी में)",
-  "void_forensics": "1 लाइन में पिछले सभी स्प्रेड्स के पैटर्न का निष्कर्ष (हिंदी में)"
+  "decision": "BUY" or "SELL" or "WAIT",
+  "probability": integer (0 to 100),
+  "sl_price": float (initial stop-loss price ~100 pts from entry),
+  "target_price": float (structural target price),
+  "headline": "Sharp 1-line decision and core reason in Hindi",
+  "macro_vs_micro": "Sharp 1-line comparison of 30m vs 5m flow in Hindi",
+  "void_forensics": "Sharp 1-line conclusion from the 10-void cluster in Hindi"
 }}
 """
     else:
@@ -520,40 +528,42 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
         dur_min = (time.time() - active_trade["open_ts"]) / 60.0
 
         prompt = f"""
-तुम एक बेहद स्मार्ट और लचीले (Adaptive) इंट्राडे BTCUSDT AI ट्रेड मैनेजर हो। अभी हमारा एक ट्रेड चालू (ACTIVE) है।
-तुम्हारे ऊपर कोई भी फिक्स नियम नहीं है! तुम्हें ताज़ा डेटा (30m, 5m, 1m, L2 वॉल्स और 10 स्प्रेड्स) को पढ़कर यह देखना है कि आगे क्या संभावना बन रही है, और उसी हिसाब से ट्रेड और स्टॉप-लॉस को स्मार्ट तरीके से हैंडल करना है।
+You are a patient, fee-conscious Wall Street Institutional Quantitative Trade Manager managing an ACTIVE intraday BTCUSDT position.
+You must avoid panic-exiting on minor 1-minute noise because frequent small exits bleed capital through exchange trading fees. However, you have 100% dynamic authority to trail the stop-loss smartly or exit if a genuine multi-timeframe reversal occurs.
 
-चालू ट्रेड की स्थिति:
-- ट्रेड दिशा: {t_type} | एंट्री प्राइस: ${t_entry:,.1f} | वर्तमान लाइव प्राइस: ${px:,.1f}
-- वर्तमान प्रॉफिट/लॉस: {live_pts:+.1f} Points | अब तक का अधिकतम प्रॉफिट (Peak): +{peak_pts:.1f} Points
-- शुरुआती SL: ${init_sl:,.1f} | वर्तमान एक्टिव SL: ${curr_sl:,.1f} (एंट्री से {curr_sl_pts:+.1f} Points पर) | समय: {dur_min:.1f} मिनट
+ACTIVE TRADE STATUS:
+- Position Direction: {t_type} | Entry Price: ${t_entry:,.1f} | Current Live Price: ${px:,.1f}
+- Live PnL: {live_pts:+.1f} Points | Peak Profit Achieved: +{peak_pts:.1f} Points
+- Initial SL: ${init_sl:,.1f} | Current Active SL: ${curr_sl:,.1f} ({curr_sl_pts:+.1f} Points from entry) | Trade Duration: {dur_min:.1f} mins
 
-ताज़ा लाइव डेटा:
-- ऑर्डरबुक L2 सबसे बड़ी Bid दीवार: ${ctx['bid_wall_px']:,.1f} ({ctx['bid_wall_sz']:.2f} BTC) | सबसे बड़ी Ask दीवार: ${ctx['ask_wall_px']:,.1f} ({ctx['ask_wall_sz']:.2f} BTC)
-- सेशन VWAP: ${vwap:,.1f}
-- पूरे 30m का डेटा: Tape {m30['tape_buy']:.1f}% Buy | L2 {m30['l2_buy']:.1f}% Bids
-- आखिरी 5m का डेटा: प्राइस {m5['px_chg']:+.1f} Pts (5m High: ${m5['high']:,.0f}, 5m Low: ${m5['low']:,.0f}) | 5m Tape: {m5['tape_buy']:.1f}% Buy | 5m L2: {m5['l2_buy']:.1f}% Bids
-- आखिरी 1m का ताज़ा डेटा: प्राइस {m1['px_chg']:+.1f} Pts (1m High: ${m1['high']:,.0f}, 1m Low: ${m1['low']:,.0f}) | 1m Tape: {m1['tape_buy']:.1f}% Buy | 1m L2: {m1['l2_buy']:.1f}% Bids
-- पिछले {vc['count']} स्प्रेड्स का क्लस्टर पैटर्न: {vc['pattern_summary']}
+LIVE MARKET & ORDERBOOK STRUCTURE:
+- Major L2 Bid Support Wall: ${ctx['bid_wall_px']:,.1f} ({ctx['bid_wall_sz']:.2f} BTC) | Major L2 Ask Resistance Wall: ${ctx['ask_wall_px']:,.1f} ({ctx['ask_wall_sz']:.2f} BTC)
+- Session VWAP: ${vwap:,.1f}
+- 30-Minute Macro Flow: Taker Tape {m30['tape_buy']:.1f}% Buy | L2 Bids {m30['l2_buy']:.1f}% | 30m High: ${m30['high']:,.0f}, Low: ${m30['low']:,.0f}
+- 5-Minute Micro Flow: Price Change {m5['px_chg']:+.1f} pts (5m High: ${m5['high']:,.0f}, 5m Low: ${m5['low']:,.0f}) | 5m Tape: {m5['tape_buy']:.1f}% Buy | 5m L2 Bids: {m5['l2_buy']:.1f}%
+- 1-Minute Immediate Flow: Price Change {m1['px_chg']:+.1f} pts (1m High: ${m1['high']:,.0f}, 1m Low: ${m1['low']:,.0f}) | 1m Tape: {m1['tape_buy']:.1f}% Buy
+- Last {vc['count']} Liquidity Voids Cluster Pattern: {vc['pattern_en']}
 {vc['prompt_table']}
 
-स्मार्ट ट्रेड मैनेजमेंट के निर्देश (परिस्थिति के अनुसार खुद निर्णय लो):
-1. **बड़े नुकसान से बचाव (Cut Bad Trades Early):** अगर डेटा पढ़कर लगता है कि हमारे ट्रेड के खिलाफ व्हेल्स आ गई हैं (5m/1m Tape और Spreads खिलाफ हो गए हैं), तो पूरे 100 पॉइंट्स के SL के हिट होने का इंतज़ार बिल्कुल मत करो! तुरंत `"action": "EXIT"` चुनो ताकि ट्रेड छोटे नुकसान या प्रॉफिट में ही कट जाए।
-2. **स्मार्ट ट्रेलिंग (Smart Situation-Based Trailing):** अगर `"action": "HOLD"` चुनते हो, तो डेटा की संभावना के हिसाब से `trailing_sl` तय करो:
-   - अगर ट्रेंड बहुत मजबूत है और ट्रेड अभी शुरू हुआ है, तो SL को बार-बार बहुत पास लाकर ट्रेड का गला मत घोंटो; उसे तब तक मत छेड़ो (`{curr_sl:.1f}` ही रखो) जब तक एक अच्छा नया सपोर्ट/रेजिस्टेंस न बन जाए।
-   - अगर ट्रेड अच्छे प्रॉफिट में आ गया है, तो नया 5m/1m स्विंग या L2 वॉल देखकर SL को स्मार्ट तरीके से कॉस्ट (Breakeven) या प्रॉफिट में ट्रेल करो।
-   - अगर ट्रेड थोड़ा संदिग्ध लग रहा है (मोमेंटम धीमा पड़ रहा है), तो तुम रिस्क घटाने या बना हुआ प्रॉफिट बचाने के लिए SL को प्राइस के करीब भी ट्रेल कर सकते हो।
-   - ध्यान रहे: BUY में `trailing_sl` हमेशा पुराने SL (`{curr_sl:.1f}`) के बराबर या उससे ऊपर होना चाहिए (और लाइव प्राइस `${px:,.1f}` से नीचे)। SELL में पुराने SL के बराबर या उससे नीचे होना चाहिए (और लाइव प्राइस `${px:,.1f}` से ऊपर)।
-
-केवल शुद्ध JSON में जवाब दो:
+STRICT FEE-CONSCIOUS TRADE MANAGEMENT RULES:
+1. IGNORE 1-MINUTE MICRO-NOISE (DO NOT PANIC EXIT): Normal 30 to 50 point pullbacks happen constantly in BTC. Do NOT command "EXIT" on minor 1-minute counter-ticks or small drawdowns (-15 to -65 pts) if the broader 5m and 30m structure is still intact. Let your ~100-point initial SL (${curr_sl:,.1f}) act as breathing room.
+2. WHEN TO COMMAND "EXIT": Command `"action": "EXIT"` ONLY if:
+   - (A) Both the 5-minute Tape/L2 AND the 10-Void Cluster show a confirmed structural reversal/iceberg absorption against our position, OR
+   - (B) The trade reached a strong profit (+110+ pts) and momentum has clearly stalled/reversed, threatening to give back the gains.
+3. SMART SITUATION-BASED TRAILING (`trailing_sl`):
+   - While the trade is developing (profit < +80 pts) and structure is healthy, keep `trailing_sl` unchanged at `{curr_sl:.1f}` so you don't choke the trade early.
+   - Once the trade has solid profit (+85+ pts, enough to cover fees plus profit) OR forms a clear new 5m support/resistance or L2 wall, smartly trail `trailing_sl` to breakeven+buffer or behind the new 5m swing / L2 wall.
+   - If the trade is in a small loss/chop and 5m momentum is noticeably weakening (but not fully reversed), you may tighten `trailing_sl` closer to reduce downside risk.
+   - Direction Rule: For BUY, `trailing_sl` must be >= `{curr_sl:.1f}` and < `${px:,.1f}`. For SELL, `trailing_sl` must be <= `{curr_sl:.1f}` and > `${px:,.1f}`.
+4. OUTPUT FORMAT: Return ONLY valid JSON matching the exact keys below. Write all 4 text explanation fields in sharp, clear Hindi:
 {{
-  "action": "HOLD" या "EXIT",
-  "confidence": 0 से 100 के बीच पूर्णांक (int - ट्रेड के पक्ष में आगे की संभावना %),
-  "trailing_sl": संख्या (float - तुम्हारा चुना हुआ स्मार्ट SL प्राइस, जैसे {curr_sl:.1f}),
-  "sl_trail_reason": "1 स्पष्ट लाइन में बताओ कि डेटा की किस संभावना को देखकर SL को ट्रेल किया गया या वहीं रखा गया (हिंदी में)",
-  "headline": "1 तीखी लाइन में HOLD या EXIT का स्पष्ट आदेश और आगे की संभावना (हिंदी में)",
-  "macro_vs_micro": "1 लाइन में 30m बनाम 5m/1m डेटा का चालू ट्रेड पर असर (हिंदी में)",
-  "void_forensics": "1 लाइन में 10-स्प्रेड क्लस्टर का चालू ट्रेड पर असर (हिंदी में)"
+  "action": "HOLD" or "EXIT",
+  "confidence": integer (0 to 100 - probability of trade continuing in our favor),
+  "trailing_sl": float (exact stop-loss price; return {curr_sl:.1f} if no trail is needed, or new trailed SL price),
+  "sl_trail_reason": "Sharp 1-line explanation in Hindi of why SL was kept unchanged for breathing room or why it was trailed",
+  "headline": "Sharp 1-line HOLD or EXIT command and probability outlook in Hindi",
+  "macro_vs_micro": "Sharp 1-line analysis of 30m vs 5m structure on this trade in Hindi",
+  "void_forensics": "Sharp 1-line impact of the 10-void cluster on this trade in Hindi"
 }}
 """
 
@@ -565,19 +575,31 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
         }
     }
 
-    auto_priority = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
-    for m in (available_models or []):
-        if m not in auto_priority:
-            auto_priority.append(m)
+    # Build Priority Queue: Always prioritize Advanced/Pro models first, then Flash models
+    pro_first_priority = [
+        "gemini-2.5-pro",
+        "gemini-1.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite"
+    ]
+    sorted_avail = sorted(available_models or [], key=score_model_priority)
+    combined_auto = []
+    for m in sorted_avail + pro_first_priority:
+        if m not in combined_auto:
+            combined_auto.append(m)
+    combined_auto.sort(key=score_model_priority)
 
     if selected_model and selected_model != AUTO_MODEL_LABEL:
-        models_queue = [selected_model] + [m for m in auto_priority if m != selected_model]
+        models_queue = [selected_model] + [m for m in combined_auto if m != selected_model]
     else:
-        models_queue = auto_priority
+        models_queue = combined_auto
 
     for idx, mod in enumerate(models_queue):
         try:
-            req_timeout = 12.0 if "pro" in mod else 8.0
+            req_timeout = 14.0 if "pro" in mod else 8.5
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
             res = requests.post(url, json=payload, timeout=req_timeout)
             if res.status_code == 200:
@@ -585,15 +607,15 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
                 parsed = parse_ai_json_safely(raw_txt)
                 if parsed:
                     if selected_model == AUTO_MODEL_LABEL:
-                        return parsed, f"🟢 Auto AI ({mod})"
+                        return parsed, f"🟢 Auto Pro-Priority ({mod})"
                     elif idx == 0:
                         return parsed, f"🟢 Selected AI ({mod})"
                     else:
-                        return parsed, f"🟡 Fallback ({mod}) [{selected_model} Busy]"
+                        return parsed, f"🟡 Fallback ({mod}) [{selected_model} Limit/Busy]"
         except Exception:
             continue
 
-    return dynamic_microstructure_backup_brain(ctx, active_trade), "⚡ Adaptive Backup Brain"
+    return dynamic_microstructure_backup_brain(ctx, active_trade), "⚡ Quant Backup Brain"
 
 # ============================================================================
 # CORE EXECUTION CYCLE (RUNS EVERY 3 MINS OR ON MANUAL TRIGGER)
@@ -651,7 +673,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         ist_now_str = get_ist_time_str()
 
         # --------------------------------------------------------------------
-        # CASE 1: NO ACTIVE TRADE -> ~100 PT INITIAL SL + AI ENTRY DECISION
+        # CASE 1: NO ACTIVE TRADE -> HIGH CONVICTION (>=78%) & ~100 PT INITIAL SL
         # --------------------------------------------------------------------
         if current_live_tr is None:
             dec = str(ai_json.get("decision", "WAIT")).upper()
@@ -660,7 +682,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
             raw_sl = float(ai_json.get("sl_price", default_100_sl))
             tp_px = float(ai_json.get("target_price", live_px_now + 280.0 if dec == "BUY" else live_px_now - 280.0))
 
-            # Keep Initial SL around ~100 points (90 to 130 pts) so it's neither too small nor a huge loss
+            # Keep Initial SL around ~100 points (90 to 130 pts)
             if dec == "BUY":
                 sl_px = min(live_px_now - 90.0, max(live_px_now - 130.0, raw_sl))
             elif dec == "SELL":
@@ -668,7 +690,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
             else:
                 sl_px = default_100_sl
 
-            if dec in ["BUY", "SELL"] and prob >= 75 and span_min >= 1.2:
+            if dec in ["BUY", "SELL"] and prob >= 78 and span_min >= 1.2:
                 init_sl_rounded = round(sl_px, 1)
                 init_sl_pts = round((init_sl_rounded - live_px_now) if dec == "BUY" else (live_px_now - init_sl_rounded), 1)
                 new_trade = {
@@ -683,26 +705,26 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
                     "sl_pts": init_sl_pts,
                     "tp_px": round(tp_px, 1),
                     "trail_count": 0,
-                    "last_trail_msg": f"🛡️ शुरुआती ~100pt SL: ${init_sl_rounded:,.1f} ({init_sl_pts:+.1f} Pts) — आगे AI डेटा के अनुसार खुद मैनेज करेगा",
+                    "last_trail_msg": f"🛡️ शुरुआती ~100pt SL: ${init_sl_rounded:,.1f} ({init_sl_pts:+.1f} Pts) — फीस बचाने के लिए माइक्रो-नॉइज़ इग्नोर मोड ऑन",
                     "trail_log": [],
                     "live_pts": 0.0,
                     "peak_pts": 0.0,
-                    "status": "ACTIVE (SMART AI)",
+                    "status": "ACTIVE (PRO AI)",
                     "entry_reason": ai_json.get("headline", "AI Confirmed Entry"),
-                    "exit_reason": "अभी ट्रेड चालू है — 100% डायनामिक AI ट्रेलिंग + 1s SL गार्ड सक्रिय"
+                    "exit_reason": "अभी ट्रेड चालू है — फीस-सजग AI ट्रेलिंग + 1s SL गार्ड सक्रिय"
                 }
                 eng["active_trade"] = new_trade
                 eng["signal_history"].insert(0, new_trade)
                 eng["signal_history"] = eng["signal_history"][:30]
                 eng["sound_event"] = {"id": time.time(), "type": "BULL" if dec == "BUY" else "BEAR"}
 
-                lock_title = f"🟢 AI ने नया {dec} ट्रेड लॉक किया! (संभावना: {prob}%)" if dec == "BUY" else f"🔴 AI ने नया {dec} ट्रेड लॉक किया! (संभावना: {prob}%)"
+                lock_title = f"🟢 AI ने हाई-कन्विक्शन {dec} ट्रेड लॉक किया! (संभावना: {prob}%)" if dec == "BUY" else f"🔴 AI ने हाई-कन्विक्शन {dec} ट्रेड लॉक किया! (संभावना: {prob}%)"
                 lock_cls = "lock-buy" if dec == "BUY" else "lock-sell"
-                lock_sub = f"एंट्री: ${live_px_now:,.1f} | शुरुआती SL: ${init_sl_rounded:,.1f} ({init_sl_pts:+.1f} Pts) | संभावित टारगेट: ${tp_px:,.1f}"
+                lock_sub = f"एंट्री: ${live_px_now:,.1f} | शुरुआती SL: ${init_sl_rounded:,.1f} ({init_sl_pts:+.1f} Pts) | टारगेट: ${tp_px:,.1f}"
             else:
-                lock_title = f"⚪ AI का फैसला: WAIT — कोई ट्रेड नहीं (संभावना सिर्फ {prob}%)"
+                lock_title = f"⚪ AI का फैसला: WAIT — कोई ट्रेड नहीं (संभावना: {prob}%)"
                 lock_cls = "lock-wait"
-                lock_sub = f"पिछले {void_cluster['count']} स्प्रेड्स और 30m/5m डेटा में 75%+ वाली एकतरफा शर्त पूरी नहीं हुई।"
+                lock_sub = f"ट्रेडिंग फीस बचाने के लिए केवल 78%+ संभावना वाले पक्के सेटअप पर ही एंट्री ली जाएगी।"
 
             eng["ai_json_view"] = {
                 "mode": "ENTRY_SCAN",
@@ -721,7 +743,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
             eng["report"] = ctx
 
         # --------------------------------------------------------------------
-        # CASE 2: ACTIVE TRADE RUNNING -> 100% UNSHACKLED SMART AI MANAGEMENT
+        # CASE 2: ACTIVE TRADE RUNNING -> FEE-CONSCIOUS SMART AI MANAGEMENT
         # --------------------------------------------------------------------
         else:
             act = str(ai_json.get("action", "HOLD")).upper()
@@ -737,15 +759,14 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
             if act == "EXIT":
                 close_active_trade_immediately(
                     eng, current_live_tr, live_px_now, ist_now_str,
-                    "AI SMART EXIT", f"🤖 AI ने डेटा बदलते ही ट्रेड काटा: {ai_json.get('headline', trail_reason)}"
+                    "AI STRUCTURAL EXIT", f"🤖 AI ने स्ट्रक्चर पलटने पर एग्जिट किया: {ai_json.get('headline', trail_reason)}"
                 )
                 return
 
             old_sl = current_live_tr["sl_px"]
             sl_trailed_now = False
 
-            # Zero fixed cushions! If AI wants to trail SL closer (either to reduce risk or lock profit), execute it!
-            if current_live_tr["type"] == "BUY" and ai_trail_sl > old_sl + 3.0:
+            if current_live_tr["type"] == "BUY" and ai_trail_sl > old_sl + 5.0:
                 if live_px_now <= ai_trail_sl:
                     current_live_tr["sl_px"] = round(ai_trail_sl, 1)
                     current_live_tr["sl_pts"] = round(ai_trail_sl - current_live_tr["entry"], 1)
@@ -760,7 +781,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
                     current_live_tr["sl_pts"] = round(current_live_tr["sl_px"] - current_live_tr["entry"], 1)
                     sl_trailed_now = True
 
-            elif current_live_tr["type"] == "SELL" and ai_trail_sl < old_sl - 3.0:
+            elif current_live_tr["type"] == "SELL" and ai_trail_sl < old_sl - 5.0:
                 if live_px_now >= ai_trail_sl:
                     current_live_tr["sl_px"] = round(ai_trail_sl, 1)
                     current_live_tr["sl_pts"] = round(current_live_tr["entry"] - ai_trail_sl, 1)
@@ -948,7 +969,7 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v17_0():
+def get_master_engine_v18_0():
     wid = int(time.time() * 1000)
     eng = {
         "worker_id": wid, "px": 0.0, "best_bid": 0.0, "best_ask": 0.0, "spread": 0.0,
@@ -968,19 +989,19 @@ def get_master_engine_v17_0():
             "badge_2": "Probability: --%",
             "badge_3": "Initial SL: ~100p",
             "badge_4": "Target: --",
-            "headline": "⏳ पहली रिपोर्ट बनते ही AI ~100pt शुरुआती SL और 100% स्मार्ट डायनामिक ट्रेलिंग से काम करेगा...",
+            "headline": "⏳ पहली रिपोर्ट बनते ही Pro-Priority AI (English Quant Brain) निर्णय लेगा...",
             "macro_vs_micro": "डेटा बफर तैयार हो रहा है...",
             "void_forensics": "स्प्रेड क्लस्टर पर नज़र रखी जा रही है...",
             "trail_box_html": ""
         },
-        "ai_status": "🤖 Smart Adaptive AI",
+        "ai_status": "🤖 Pro-Model Priority AI",
         "sound_event": {"id": 0.0, "type": "BULL"},
         "api_key": "", "last_err": None
     }
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v17_0()
+eng = get_master_engine_v18_0()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -996,7 +1017,7 @@ if "last_played_sound_id" not in st.session_state:
     st.session_state["last_played_sound_id"] = 0.0
 
 # ============================================================================
-# TOP CONTROL BAR
+# TOP CONTROL BAR (WITH PRO-PRIORITY MODEL SELECTOR)
 # ============================================================================
 c_mod, c_act1, c_act2, c_act3 = st.columns([0.28, 0.28, 0.16, 0.28])
 
@@ -1041,7 +1062,7 @@ while True:
     if eng["px"] > 0:
         mem_min = (time.time() - eng["vault"][0]["ts"]) / 60.0 if len(eng["vault"]) > 1 else 0.0
         next_sec = max(0, int(180 - (time.time() - eng["last_report_ts"]))) if eng["last_report_ts"] > 0 else 0
-        mod_label_short = "Auto" if eng["selected_model"] == AUTO_MODEL_LABEL else eng["selected_model"]
+        mod_label_short = "Pro-Priority Auto" if eng["selected_model"] == AUTO_MODEL_LABEL else eng["selected_model"]
 
         hist_cards = ""
         for h in eng["signal_history"]:
@@ -1049,7 +1070,7 @@ while True:
             h_col = "#4ade80" if h["type"] == "BUY" else "#f87171"
             p_col = "#4ade80" if h["live_pts"] >= 0 else "#f87171"
             is_act = "ACTIVE" in h["status"]
-            sts_badge = "🟢 SMART AI ACTIVE" if is_act else f"🏁 {h['status']}"
+            sts_badge = "🟢 PRO AI ACTIVE" if is_act else f"🏁 {h['status']}"
             sl_pts_val = h.get("sl_pts", 0.0)
             trail_info = (
                 f"शुरुआती SL: ${h['initial_sl']:,.1f} ➔ एक्टिव SL: <b style='color:#facc15;'>${h['sl_px']:,.1f} ({sl_pts_val:+.1f}p)</b> (ट्रेल: {h['trail_count']}x)"
@@ -1072,7 +1093,7 @@ while True:
             </div>
             """
         if not hist_cards:
-            hist_cards = "<div style='text-align:center; color:#64748b; padding-top:75px;'>अभी तक AI ने कोई ट्रेड लॉक नहीं किया है (संभावना 75%+ होने पर ही ट्रेड लॉक होगा)।</div>"
+            hist_cards = "<div style='text-align:center; color:#64748b; padding-top:75px;'>अभी तक AI ने कोई ट्रेड लॉक नहीं किया है (संभावना 78%+ होने पर ही ट्रेड लॉक होगा)।</div>"
 
         live_cluster = analyze_void_cluster([v for v in eng["voids"] if (time.time() - v.get("ts", time.time())) <= 1800], eng["px"])
         cluster_banner = f"""
@@ -1135,7 +1156,7 @@ while True:
 
             <div class='ai-sharp-box'>
                 <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #3b0764; padding-bottom:6px; margin-bottom:8px;'>
-                    <span style='font-size:15px; font-weight:900; color:#c084fc;'>🧠 स्मार्ट एडाप्टिव AI (~100pt शुरुआती SL + 100% डायनामिक ट्रेलिंग)</span>
+                    <span style='font-size:15px; font-weight:900; color:#c084fc;'>🧠 Pro-Priority AI (English Quant Prompt + Fee-Conscious Brain)</span>
                     <span style='font-size:11.5px; color:#4ade80; font-weight:bold;'>{eng["ai_status"]}</span>
                 </div>
                 <div>
@@ -1146,7 +1167,7 @@ while True:
                 </div>
                 <div style='font-size:14px; line-height:1.65; color:#f8fafc; margin-top:10px;'>
                     <div>🎯 <b>AI फैसला:</b> {aj["headline"]}</div>
-                    <div style='margin-top:4px;'>⚡ <b>30m बनाम 5m/1m विश्लेषण:</b> {aj["macro_vs_micro"]}</div>
+                    <div style='margin-top:4px;'>⚡ <b>30m बनाम 5m विश्लेषण:</b> {aj["macro_vs_micro"]}</div>
                     <div style='margin-top:4px;'>🌪️ <b>10-स्प्रेड क्लस्टर निष्कर्ष:</b> {aj["void_forensics"]}</div>
                 </div>
                 {aj.get("trail_box_html", "")}
@@ -1178,7 +1199,7 @@ while True:
             pct = min(100, int((len(eng["vault"]) / 12) * 100))
             left_body = f"""
             <div class='card-box' style='text-align:center; padding:45px 20px; margin-bottom:12px;'>
-                <div style='font-size:20px; font-weight:800; color:#38bdf8; margin-bottom:8px;'>⏳ स्मार्ट AI इंजन के लिए शुरुआती डेटा जमा हो रहा है... ({pct}%)</div>
+                <div style='font-size:20px; font-weight:800; color:#38bdf8; margin-bottom:8px;'>⏳ Pro-Priority AI इंजन के लिए शुरुआती डेटा जमा हो रहा है... ({pct}%)</div>
                 <div style='font-size:14px; color:#94a3b8;'>मॉडल मोड: <b style='color:#c084fc;'>{mod_label_short}</b> | तुरंत फैसले के लिए ऊपर <b>'🤖 अभी AI से फैसला / SL जांच कराएं'</b> दबाएं।</div>
             </div>
             """
@@ -1187,7 +1208,7 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V17.0 (SMART ADAPTIVE AI ENGINE)</div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V18.0 (PRO-MODEL PRIORITY & ENGLISH QUANT BRAIN)</div>
                     <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b> | 🧠 मोड: <b style='color:#c084fc;'>{mod_label_short}</b></div>
                 </div>
                 <div style='text-align:right;'>
@@ -1201,7 +1222,7 @@ while True:
                     {left_body}
                     <div class='history-panel'>
                         <div style='font-size:14px; font-weight:900; color:#4ade80; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
-                            📜 AI ट्रेड एवं स्मार्ट स्टॉप-लॉस हिस्ट्री (~100pt Initial SL ➔ Smart AI Trail सहित)
+                            📜 AI ट्रेड एवं स्मार्ट स्टॉप-लॉस हिस्ट्री (~100pt Initial SL ➔ Fee-Conscious Trail सहित)
                         </div>
                         {hist_cards}
                     </div>
@@ -1219,6 +1240,6 @@ while True:
         """), unsafe_allow_html=True)
 
     else:
-        dashboard_slot.warning("⏳ 24x7 V17.0 (Smart Adaptive AI Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+        dashboard_slot.warning("⏳ 24x7 V18.0 (Pro-Model Priority & English Quant Brain) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
 
     time.sleep(1.5)
