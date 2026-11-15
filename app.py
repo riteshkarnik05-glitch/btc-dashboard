@@ -251,7 +251,7 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
             c = closes[i]
             prev_trend = trend
             prev_st_level = st_level
-            stepped_ bricks = 0
+            stepped_bricks = 0
             flipped_now = False
 
             if trend == 1:
