@@ -10,10 +10,9 @@ import wave
 import struct
 import math
 import base64
-import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V20.1 - Stable Grid Renko Engine", layout="wide")
+st.set_page_config(page_title="Pro Quant V21.0 - 4-Stage Pro Dynamic Renko AI", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML inside a single slot without ghost boxes"""
@@ -45,12 +44,13 @@ st.markdown(clean_html("""
 .ai-sharp-box { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); border: 1px solid #a855f7; border-left: 5px solid #c084fc; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
 .trail-banner { background: #091e3a; border: 1px solid #38bdf8; border-left: 4px solid #facc15; border-radius: 8px; padding: 10px 12px; margin-top: 10px; font-size: 13.2px; color: #f8fafc; }
 .json-pill { background: #090d16; border: 1px solid #4c1d95; padding: 4px 10px; border-radius: 6px; font-size: 12px; color: #e9d5ff; font-weight: 700; display: inline-block; margin-right: 8px; margin-top: 6px; }
-.history-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #22c55e; border-radius: 10px; padding: 12px 14px; height: 270px; overflow-y: auto; }
-.void-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #facc15; border-radius: 10px; padding: 12px 14px; height: 665px; overflow-y: auto; }
+.history-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #22c55e; border-radius: 10px; padding: 12px 14px; height: 280px; overflow-y: auto; }
+.stage-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #facc15; border-radius: 10px; padding: 12px 14px; height: 675px; overflow-y: auto; }
 .item-card { background: #090d16; border: 1px solid #1f2937; padding: 9px 11px; border-radius: 7px; margin-bottom: 7px; font-size: 12.5px; line-height: 1.45; }
 .ic-bull { border-left: 4px solid #22c55e; }
 .ic-bear { border-left: 4px solid #ef4444; }
 .ic-warn { border-left: 4px solid #facc15; }
+.ic-active-stage { background: #172554; border: 1px solid #38bdf8; border-left: 5px solid #facc15; }
 div.stButton > button { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #38bdf8 !important; border-radius: 7px !important; font-weight: 700 !important; width: 100%; margin-top: 2px; }
 div.stButton > button:hover { background-color: #38bdf8 !important; color: #090d16 !important; }
 div[data-baseweb="select"] > div { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #c084fc !important; border-radius: 7px !important; font-weight: 700 !important; }
@@ -139,7 +139,7 @@ def fetch_available_api_models(api_key):
     return default_models
 
 # ============================================================================
-# HYPERLIQUID MARKET DATA + STABLE-BOX AI-RENKO ENGINE
+# HYPERLIQUID LIVE PRICE & PURE DR DEVENDRA AI-RENKO ENGINE (NO 30m/5m NOISE)
 # ============================================================================
 HYPERLIQUID_URL = "https://api.hyperliquid.xyz/info"
 
@@ -149,100 +149,53 @@ def get_ist_now():
 def get_ist_time_str():
     return get_ist_now().strftime('%I:%M:%S %p')
 
-def fetch_microstructure_snapshot():
+def fetch_live_btc_price():
+    """Lightweight 1-second BTC mid-price fetcher for instant SL & Peak Ratchet execution"""
     try:
-        r_ob = requests.post(HYPERLIQUID_URL, json={"type": "l2Book", "coin": "BTC"}, timeout=2.0)
-        if r_ob.status_code != 200:
-            return None
-        data = r_ob.json()
-        if not data or "levels" not in data or len(data["levels"]) < 2:
-            return None
-
-        bids = data["levels"][0][:20]
-        asks = data["levels"][1][:20]
-        if not bids or not asks:
-            return None
-
-        best_bid, best_ask = float(bids[0]["px"]), float(asks[0]["px"])
-        mid_px = (best_bid + best_ask) / 2.0
-        spread = best_ask - best_bid
-
-        weights = [1.0]*5 + [0.5]*5 + [0.2]*10
-        w_bid = sum(float(b["sz"]) * weights[i] for i, b in enumerate(bids))
-        w_ask = sum(float(a["sz"]) * weights[i] for i, a in enumerate(asks))
-
-        top_bid_node = max(bids, key=lambda x: float(x["sz"]))
-        top_ask_node = max(asks, key=lambda x: float(x["sz"]))
-        bid_wall_px, bid_wall_sz = float(top_bid_node["px"]), float(top_bid_node["sz"])
-        ask_wall_px, ask_wall_sz = float(top_ask_node["px"]), float(top_ask_node["sz"])
-
-        taker_buy = 0.0
-        taker_sell = 0.0
-        try:
-            r_tr = requests.post(HYPERLIQUID_URL, json={"type": "recentTrades", "coin": "BTC"}, timeout=1.8)
-            if r_tr.status_code == 200:
-                trades = r_tr.json()
-                if isinstance(trades, list):
-                    for t in trades[:50]:
-                        sz = float(t.get("sz", 0.0))
-                        if t.get("side") == "B":
-                            taker_buy += sz
-                        else:
-                            taker_sell += sz
-        except:
-            pass
-
-        if (taker_buy + taker_sell) == 0:
-            taker_buy, taker_sell = w_bid * 0.1, w_ask * 0.1
-
-        return {
-            "px": mid_px, "best_bid": best_bid, "best_ask": best_ask, "spread": spread,
-            "w_bid": w_bid, "w_ask": w_ask,
-            "bid_wall_px": bid_wall_px, "bid_wall_sz": bid_wall_sz,
-            "ask_wall_px": ask_wall_px, "ask_wall_sz": ask_wall_sz,
-            "t_buy": taker_buy, "t_sell": taker_sell
-        }
+        r = requests.post(HYPERLIQUID_URL, json={"type": "allMids"}, timeout=1.8)
+        if r.status_code == 200:
+            mids = r.json()
+            if isinstance(mids, dict) and "BTC" in mids:
+                return float(mids["BTC"])
     except Exception as e:
         return str(e)
+    return None
 
-def fetch_renko_supertrend_and_vwap(locked_box_size=None):
+def fetch_renko_pro_structure(locked_box_size=None):
     """
-    Stable-Box Python implementation of 'Dr Devendra AI-Renko':
-    - Uses a stable cached box_size so historical bricks and supertrend do not fluctuate.
+    Pure 'Dr Devendra AI-Renko [Confirmed Close Algo PRO]' Engine:
+    Calculates Stable Renko Bricks, Special Renko Supertrend (stLine),
+    21-EMA Stretch (in Bricks), 14-RSI, 3-Bar Dominance, and Recent Brick History.
     """
     try:
         now_ms = int(time.time() * 1000)
 
-        # 1. Determine Box Size (Stabilized so it never jumps between 150 and 267)
+        # 1. Stable Box Size (Initialized once from Daily ATR-5 / 10, then locked)
         box_size = locked_box_size if locked_box_size else 200.0
-        macro_range = 2000.0
-        try:
-            start_1d = now_ms - (18 * 86400 * 1000)
-            r_1d = requests.post(
-                HYPERLIQUID_URL,
-                json={"type": "candleSnapshot", "req": {"coin": "BTC", "interval": "1d", "startTime": start_1d, "endTime": now_ms}},
-                timeout=3.0
-            )
-            if r_1d.status_code == 200 and len(r_1d.json()) >= 6:
-                d_bars = r_1d.json()[:-1]
-                trs = []
-                for i in range(1, len(d_bars)):
-                    h = float(d_bars[i]["h"])
-                    l = float(d_bars[i]["l"])
-                    pc = float(d_bars[i-1]["c"])
-                    tr = max(h - l, abs(h - pc), abs(l - pc))
-                    trs.append(tr)
-                if len(trs) >= 5:
-                    macro_range = sum(trs[-5:]) / 5.0
-                    calc_sz = round(macro_range / 10.0, 1)
-                    if not locked_box_size:
-                        # Lock it to a stable standard range for BTC if fluctuating
-                        box_size = max(120.0, min(300.0, calc_sz))
-        except Exception:
-            if locked_box_size:
-                box_size = locked_box_size
+        macro_range = box_size * 10.0
+        if not locked_box_size:
+            try:
+                start_1d = now_ms - (18 * 86400 * 1000)
+                r_1d = requests.post(
+                    HYPERLIQUID_URL,
+                    json={"type": "candleSnapshot", "req": {"coin": "BTC", "interval": "1d", "startTime": start_1d, "endTime": now_ms}},
+                    timeout=3.0
+                )
+                if r_1d.status_code == 200 and len(r_1d.json()) >= 6:
+                    d_bars = r_1d.json()[:-1]
+                    trs = []
+                    for i in range(1, len(d_bars)):
+                        h = float(d_bars[i]["h"])
+                        l = float(d_bars[i]["l"])
+                        pc = float(d_bars[i-1]["c"])
+                        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+                    if len(trs) >= 5:
+                        macro_range = sum(trs[-5:]) / 5.0
+                        box_size = max(120.0, min(300.0, round(macro_range / 10.0, 1)))
+            except Exception:
+                pass
 
-        # 2. Fetch 1m Candles (Last 720 mins)
+        # 2. Fetch 1m Confirmed Closed Candles (Last 720 mins)
         start_1m = now_ms - (720 * 60 * 1000)
         r_1m = requests.post(
             HYPERLIQUID_URL,
@@ -260,12 +213,33 @@ def fetch_renko_supertrend_and_vwap(locked_box_size=None):
         vols = [float(b["v"]) for b in closed_bars]
         bar_times = [int(b["t"]) for b in closed_bars]
 
-        recent_30 = closed_bars[-30:]
-        vwap_num = sum(((float(b["h"]) + float(b["l"]) + float(b["c"])) / 3.0) * float(b["v"]) for b in recent_30)
-        vwap_den = max(0.1, sum(float(b["v"]) for b in recent_30))
-        vwap_val = vwap_num / vwap_den
+        # 3. 21-EMA & 14-RSI (Exact Pine Script Indicators for Pro Over-Extension Check)
+        ema21 = closes[0]
+        k_ema = 2.0 / (21.0 + 1.0)
+        for c_val in closes[1:]:
+            ema21 = (c_val * k_ema) + (ema21 * (1.0 - k_ema))
 
-        # 3. Gaussian Filter
+        gains = []
+        losses = []
+        for i in range(1, len(closes)):
+            diff = closes[i] - closes[i-1]
+            gains.append(max(0.0, diff))
+            losses.append(max(0.0, -diff))
+
+        rsi14 = 50.0
+        if len(gains) >= 14:
+            avg_gain = sum(gains[:14]) / 14.0
+            avg_loss = sum(losses[:14]) / 14.0
+            for i in range(14, len(gains)):
+                avg_gain = (avg_gain * 13.0 + gains[i]) / 14.0
+                avg_loss = (avg_loss * 13.0 + losses[i]) / 14.0
+            if avg_loss == 0:
+                rsi14 = 100.0
+            else:
+                rs = avg_gain / avg_loss
+                rsi14 = 100.0 - (100.0 / (1.0 + rs))
+
+        # 4. Gaussian Smoothing (gaussPeriod = 20)
         gauss_len = 20.0
         w = (2.0 * math.pi) / gauss_len
         b_coef = (1.0 - math.cos(w)) / (1.41421356 - 1.0)
@@ -283,7 +257,7 @@ def fetch_renko_supertrend_and_vwap(locked_box_size=None):
             g_vals.append(g)
             eval_prices.append(c_val * 0.70 + g * 0.30)
 
-        # 4. Orderflow Dominance
+        # 5. 3-Bar Candle Orderflow Dominance (from Pine Script)
         bar_buy_v = []
         bar_sell_v = []
         for i in range(len(closes)):
@@ -303,7 +277,7 @@ def fetch_renko_supertrend_and_vwap(locked_box_size=None):
         roll_sell = (bar_sell_v[-1] * 1.4) + bar_sell_v[-2] + bar_sell_v[-3]
         buy_dom_pct = (roll_buy / (roll_buy + roll_sell) * 100.0) if (roll_buy + roll_sell) > 0 else 50.0
 
-        # 5. STABLE-GRID RENKO & SUPERTREND
+        # 6. Stable-Grid Renko Brick & Special Supertrend Iteration
         st_factor = 3.0
         band_distance = box_size * st_factor
 
@@ -321,27 +295,25 @@ def fetch_renko_supertrend_and_vwap(locked_box_size=None):
         st_flip_buy = False
         st_flip_sell = False
         last_flip_bar_ts = bar_times[0]
+        brick_events = []
 
         for i in range(1, len(closes)):
             ep = eval_prices[i]
+            stepped = False
             if ep >= brick_top + box_size:
                 steps = int(math.floor((ep - brick_top) / box_size))
                 brick_top = brick_top + (steps * box_size)
                 brick_bot = brick_top - box_size
-                if brick_dir == -1:
-                    brick_streak = steps
-                else:
-                    brick_streak += steps
+                brick_streak = steps if brick_dir == -1 else (brick_streak + steps)
                 brick_dir = 1
+                stepped = True
             elif ep <= brick_bot - box_size:
                 steps = int(math.floor((brick_bot - ep) / box_size))
                 brick_bot = brick_bot - (steps * box_size)
                 brick_top = brick_bot + box_size
-                if brick_dir == 1:
-                    brick_streak = steps
-                else:
-                    brick_streak += steps
+                brick_streak = steps if brick_dir == 1 else (brick_streak + steps)
                 brick_dir = -1
+                stepped = True
 
             r_close = brick_top if brick_dir == 1 else brick_bot
             raw_support = r_close - band_distance
@@ -382,14 +354,27 @@ def fetch_renko_supertrend_and_vwap(locked_box_size=None):
 
             st_line = support_band if st_trend == 1 else resistance_band
 
+            if stepped or bar_flipped_buy or bar_flipped_sell:
+                b_ist = (datetime.utcfromtimestamp(bar_times[i] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M %p')
+                brick_events.append({
+                    "time": b_ist,
+                    "dir": "UP 🟢" if brick_dir == 1 else "DOWN 🔴",
+                    "cls": "ic-bull" if brick_dir == 1 else "ic-bear",
+                    "r_close": round(r_close, 1),
+                    "streak": brick_streak,
+                    "st_line": round(st_line, 1),
+                    "flip": "🔥 ST FLIP BUY ▲" if bar_flipped_buy else ("🔥 ST FLIP SELL ▼" if bar_flipped_sell else "")
+                })
+
             if i == len(closes) - 1:
                 st_flip_buy = bar_flipped_buy
                 st_flip_sell = bar_flipped_sell
 
         r_close_now = brick_top if brick_dir == 1 else brick_bot
+        last_c = closes[-1]
+        ema_dist_bricks = abs(last_c - ema21) / max(1.0, box_size)
 
         return {
-            "vwap": vwap_val,
             "macro_range": macro_range,
             "box_size": box_size,
             "brick_top": round(brick_top, 1),
@@ -402,80 +387,87 @@ def fetch_renko_supertrend_and_vwap(locked_box_size=None):
             "st_flip_buy": st_flip_buy,
             "st_flip_sell": st_flip_sell,
             "last_flip_bar_ts": last_flip_bar_ts,
-            "buy_dom_pct": buy_dom_pct,
-            "last_confirmed_close": closes[-1]
+            "buy_dom_pct": round(buy_dom_pct, 1),
+            "ema21": round(ema21, 1),
+            "ema_dist_bricks": round(ema_dist_bricks, 2),
+            "rsi14": round(rsi14, 1),
+            "last_confirmed_close": last_c,
+            "brick_events": list(reversed(brick_events[-15:]))
         }
     except Exception:
         return None
 
-def compute_slice_metrics(slice_data):
-    if not slice_data:
-        return {"px_chg": 0.0, "high": 0.0, "low": 0.0, "tape_buy": 50.0, "l2_buy": 50.0}
-    t_b = sum(d["t_buy"] for d in slice_data)
-    t_s = sum(d["t_sell"] for d in slice_data)
-    w_b = sum(d["w_bid"] for d in slice_data)
-    w_a = sum(d["w_ask"] for d in slice_data)
-    return {
-        "px_chg": slice_data[-1]["px"] - slice_data[0]["px"],
-        "high": max(d["px"] for d in slice_data),
-        "low": min(d["px"] for d in slice_data),
-        "tape_buy": (t_b / (t_b + t_s) * 100.0) if (t_b + t_s) > 0 else 50.0,
-        "l2_buy": (w_b / (w_b + w_a) * 100.0) if (w_b + w_a) > 0 else 50.0
-    }
+# ============================================================================
+# 4-STAGE PRO-TRADER DYNAMIC TRAILING CALCULATOR (NO FIXED ROBOTIC GAP!)
+# ============================================================================
+def compute_pro_stage_profile(peak_pts: float, live_pts: float, rk: dict, trade_type: str) -> dict:
+    """
+    Determines the active Pro-Trader Stage (1 to 4) based on Peak Profit and Renko Over-Extension
+    (Brick Streak >= 4, EMA Stretch >= 2.0 Bricks, or RSI Exhaustion).
+    """
+    streak = rk.get("brick_streak", 1)
+    ema_bricks = rk.get("ema_dist_bricks", 0.5)
+    rsi = rk.get("rsi14", 50.0)
 
-# ============================================================================
-# MULTI-SPREAD (LAST 10 VOIDS) CLUSTER FORENSIC ANALYZER
-# ============================================================================
-def analyze_void_cluster(void_list, current_px):
-    recent = void_list[:10]
-    if not recent:
+    is_exhausted = (
+        streak >= 4
+        or ema_bricks >= 2.2
+        or (trade_type == "BUY" and rsi >= 74.0)
+        or (trade_type == "SELL" and rsi <= 26.0)
+    )
+
+    if peak_pts < 220.0:
         return {
-            "count": 0, "bull_cnt": 0, "bear_cnt": 0, "pull_cnt": 0,
-            "avg_l2_shift": 0.0, "avg_tape": 50.0, "net_px_progress": 0.0,
-            "pattern_summary": "पिछले 30 मिनट में $4.0+ का कोई स्प्रेड क्लस्टर नहीं बना है (लिक्विडिटी सामान्य है)।",
-            "pattern_en": "No major liquidity voids (> $4.0 spread) in the last 30 minutes; orderbook liquidity is stable.",
-            "prompt_table": "No major liquidity voids recorded."
+            "stage_num": 1,
+            "stage_name": "STAGE 1: BREATHING ZONE (0–220p)",
+            "min_gap": 250.0,
+            "max_gap": 250.0,
+            "min_lock_pts": -250.0,
+            "is_exhausted": is_exhausted,
+            "rule_hi": "ट्रेड अभी शुरुआती ब्रीदिंग ज़ोन (< +220p) में है — शुरुआती ~250p SL को बिल्कुल नहीं छेड़ा जाएगा।"
         }
-
-    cnt = len(recent)
-    bull_cnt = sum(1 for v in recent if v["cls"] == "ic-bull")
-    bear_cnt = sum(1 for v in recent if v["cls"] == "ic-bear")
-    pull_cnt = sum(1 for v in recent if v["cls"] == "ic-warn")
-    avg_l2_shift = sum(v["l2_shift"] for v in recent) / cnt
-    avg_tape = sum(v["tape_pct"] for v in recent) / cnt
-    oldest_void_px = recent[-1]["px"]
-    net_px_progress = current_px - oldest_void_px
-
-    if bull_cnt >= bear_cnt + 2 and net_px_progress < -15.0:
-        pattern = f"🧊 बियरिश आइसबर्ग ट्रैप: पिछले {cnt} में से {bull_cnt} स्प्रेड बुलिश थे (Avg Tape {avg_tape:.0f}%B), फिर भी प्राइस {net_px_progress:+.0f}$ गिरा—ऊपर व्हेल माल चिपका रही है!"
-        pattern_en = f"BEARISH ICEBERG ABSORPTION TRAP: {bull_cnt}/{cnt} voids had aggressive buying (Avg Tape {avg_tape:.0f}% Buy), yet net price fell {net_px_progress:+.1f} pts."
-    elif bear_cnt >= bull_cnt + 2 and net_px_progress > 15.0:
-        pattern = f"🧊 बुलिश आइसबर्ग अब्जॉर्प्शन: पिछले {cnt} में से {bear_cnt} स्प्रेड बियरिश थे, फिर भी प्राइस {net_px_progress:+.0f}$ चढ़ा—नीचे व्हेल सारा बिकवाली का माल सोख रही है!"
-        pattern_en = f"BULLISH ICEBERG ABSORPTION: {bear_cnt}/{cnt} voids had heavy selling, yet net price rose {net_px_progress:+.1f} pts."
-    elif avg_l2_shift <= -4.5:
-        pattern = f"⚠️ बिड-पुलिंग पैनिक: पिछले {cnt} स्प्रेड्स में औसतन L2 Bids {avg_l2_shift:+.1f}% गिरी हैं—स्प्रेड फटने पर बायर्स डरकर सपोर्ट हटा रहे हैं।"
-        pattern_en = f"BID-PULLING PANIC: Across last {cnt} voids, L2 Bids dropped by an average of {avg_l2_shift:+.1f}%."
-    elif avg_l2_shift >= 4.5:
-        pattern = f"🚀 आक्रामक बाइंग स्वीप: पिछले {cnt} स्प्रेड्स में L2 Bids औसतन {avg_l2_shift:+.1f}% बढ़ी हैं और बायर्स ऊपर के आस्क तोड़ रहे हैं।"
-        pattern_en = f"AGGRESSIVE BUYING SWEEP: Across last {cnt} voids, L2 Bids surged by an average of {avg_l2_shift:+.1f}%."
+    elif peak_pts < 450.0:
+        # Stage 2: Safe Trend Zone (+220p to +450p) -> Wide gap (140p-190p), tighter if exhausted
+        min_gap = 115.0 if is_exhausted else 140.0
+        max_gap = 165.0 if is_exhausted else 190.0
+        min_lock_pts = max(75.0, round(peak_pts - max_gap, 1))
+        return {
+            "stage_num": 2,
+            "stage_name": "STAGE 2: SAFE TREND ZONE (220–450p)",
+            "min_gap": min_gap,
+            "max_gap": max_gap,
+            "min_lock_pts": min_lock_pts,
+            "is_exhausted": is_exhausted,
+            "rule_hi": f"स्टेज 2 सक्रिय: रिस्क ज़ीरो कर दिया गया है और ट्रेंड को बड़ा चलने देने के लिए {min_gap:.0f}p–{max_gap:.0f}p का डायनामिक गैप रखा गया है।"
+        }
+    elif peak_pts < 700.0:
+        # Stage 3: Aggressive Lock Zone (+450p to +700p) -> Medium gap (85p-130p), locks ~75-82% of peak!
+        min_gap = 70.0 if is_exhausted else 85.0
+        max_gap = 110.0 if is_exhausted else 130.0
+        min_lock_pts = max(320.0, round(peak_pts - max_gap, 1))
+        return {
+            "stage_num": 3,
+            "stage_name": "STAGE 3: AGGRESSIVE LOCK (450–700p)",
+            "min_gap": min_gap,
+            "max_gap": max_gap,
+            "min_lock_pts": min_lock_pts,
+            "is_exhausted": is_exhausted,
+            "rule_hi": f"स्टेज 3 सक्रिय: बड़ा प्रॉफिट बन चुका है, इसलिए गैप को घटाकर {min_gap:.0f}p–{max_gap:.0f}p किया गया है (कम से कम +{min_lock_pts:.0f}p लॉक)।"
+        }
     else:
-        pattern = f"📊 पिछले {cnt} स्प्रेड्स का निचोड़: {bull_cnt} बुलिश बनाम {bear_cnt} बियरिश ({pull_cnt} ऑर्डर-पुल) | औसत L2 बदलाव: {avg_l2_shift:+.1f}% | नेट प्राइस असर: {net_px_progress:+.1f}$।"
-        pattern_en = f"VOID CLUSTER SUMMARY ({cnt} events): {bull_cnt} Bullish vs {bear_cnt} Bearish | Avg L2 Shift: {avg_l2_shift:+.1f}% | Net Price Progress: {net_px_progress:+.1f} pts."
-
-    lines = []
-    for idx, v in enumerate(recent, 1):
-        lines.append(
-            f"#{idx} [{v['time']}] Spread:${v['spread']:.1f} | Px:${v['px']:,.0f} (Jump:{v['px_jump']:+.1f}$) | "
-            f"L2 Bid:{v['l2_before']:.0f}%->{v['l2_after']:.0f}% ({v['l2_shift']:+.0f}%) | Tape:{v['tape_pct']:.0f}% Buy"
-        )
-
-    return {
-        "count": cnt, "bull_cnt": bull_cnt, "bear_cnt": bear_cnt, "pull_cnt": pull_cnt,
-        "avg_l2_shift": avg_l2_shift, "avg_tape": avg_tape, "net_px_progress": net_px_progress,
-        "pattern_summary": pattern,
-        "pattern_en": pattern_en,
-        "prompt_table": "\n".join(lines)
-    }
+        # Stage 4: Parabolic Choke Zone (+700p+) -> Tight choke gap (45p-75p), locks ~88-92% of 900pt spikes!
+        min_gap = 40.0 if is_exhausted else 50.0
+        max_gap = 65.0 if is_exhausted else 80.0
+        min_lock_pts = max(610.0, round(peak_pts - max_gap, 1))
+        return {
+            "stage_num": 4,
+            "stage_name": "STAGE 4: PARABOLIC CHOKE (700p+)",
+            "min_gap": min_gap,
+            "max_gap": max_gap,
+            "min_lock_pts": min_lock_pts,
+            "is_exhausted": is_exhausted,
+            "rule_hi": f"स्टेज 4 (चोक ज़ोन) सक्रिय: मार्केट एक्सट्रीम पर है! मैक्सिमम प्रॉफिट बुक करने के लिए गैप को टाइट ({min_gap:.0f}p–{max_gap:.0f}p) कर दिया गया है।"
+        }
 
 # ============================================================================
 # RENKO ENTRY OPENER & STRICT RE-ENTRY ARMER
@@ -496,19 +488,20 @@ def open_renko_trade_now(eng, direction: str, entry_px: float, ist_str: str, ent
         "close_time": "",
         "type": direction,
         "entry": entry_px,
-        "prob": 90,
         "initial_sl": init_sl,
         "sl_px": init_sl,
         "sl_pts": init_sl_pts,
-        "tp_px": round(entry_px + 650.0 if direction == "BUY" else entry_px - 650.0, 1),
+        "stage_num": 1,
+        "stage_name": "STAGE 1: BREATHING ZONE",
+        "last_ai_peak": 0.0,
         "trail_count": 0,
-        "last_trail_msg": f"🛡️ शुरुआती ~250pt SL लॉक: ${init_sl:,.1f} ({init_sl_pts:+.1f} Pts) | +220p प्रॉफिट से पहले SL नहीं छेड़ा जाएगा",
+        "last_trail_msg": f"🛡️ स्टेज 1 (ब्रीदिंग ज़ोन): शुरुआती SL ${init_sl:,.1f} ({init_sl_pts:+.1f} Pts) लॉक किया गया।",
         "trail_log": [],
         "live_pts": 0.0,
         "peak_pts": 0.0,
-        "status": "ACTIVE (STABLE-GRID RENKO)",
-        "entry_reason": f"{entry_source_label} (Stable Brick: ${box_sz:.0f} | ST Line: ${st_line_val:,.1f})",
-        "exit_reason": "अभी ट्रेड चालू है — +220p प्रॉफिट गेट और 160p गैप ट्रेलिंग नियम सक्रिय"
+        "status": "ACTIVE (4-STAGE PRO AI)",
+        "entry_reason": f"{entry_source_label} (Brick: ${box_sz:.0f} | ST Line: ${st_line_val:,.1f})",
+        "exit_reason": "अभी ट्रेड चालू है — 4-स्टेज प्रो डायनामिक ट्रेलिंग सक्रिय"
     }
     eng["active_trade"] = new_trade
     eng["reentry_watch"] = {"armed": False, "dir": 0, "reason": ""}
@@ -519,7 +512,7 @@ def open_renko_trade_now(eng, direction: str, entry_px: float, ist_str: str, ent
     if eng.get("report"):
         eng["report"]["lock_title"] = f"{'🟢' if direction=='BUY' else '🔴'} {entry_source_label}: {direction} @ ${entry_px:,.1f}"
         eng["report"]["lock_cls"] = "lock-buy" if direction == "BUY" else "lock-sell"
-        eng["report"]["lock_sub"] = f"शुरुआती SL: ${init_sl:,.1f} ({init_sl_pts:+.1f} Pts) | +220p मुनाफे के बाद ही 160p गैप के साथ ट्रेलिंग शुरू होगी।"
+        eng["report"]["lock_sub"] = f"शुरुआती SL: ${init_sl:,.1f} ({init_sl_pts:+.1f} Pts) | अब प्रो 4-स्टेज डायनामिक ट्रेलिंग सिस्टम ट्रेड को संभालेगा।"
 
 def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_title, detailed_reason):
     move = (exit_px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - exit_px)
@@ -538,7 +531,7 @@ def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_titl
     box_sz = rk.get("box_size", 200.0)
     tr_dir_int = 1 if active_tr["type"] == "BUY" else -1
     dist_to_st = abs(exit_px - st_line_now) if st_line_now > 0 else 0.0
-    min_far_dist = max(300.0, box_sz * 2.0)
+    min_far_dist = max(300.0, box_sz * 1.8)
 
     reentry_note = ""
     if move >= 200.0 and st_trend_now == tr_dir_int and dist_to_st >= min_far_dist and "ST FLIP" not in reason_title:
@@ -550,11 +543,11 @@ def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_titl
             "exit_profit": move,
             "armed_ts": time.time(),
             "reason": (
-                f"पिछला {active_tr['type']} ट्रेड +{move:.1f}p के बड़े प्रॉफिट में कटा जब ST Line (${st_line_now:,.0f}) {dist_to_st:.0f}p दूर थी। "
-                f"अब जब प्राइस वापस घूमकर ST Line के करीब (20p–90p ज़ोन में) आएगा, तभी री-एंट्री होगी!"
+                f"पिछला {active_tr['type']} ट्रेड +{move:.1f}p के प्रॉफिट में बुक हुआ जब ST Line (${st_line_now:,.0f}) {dist_to_st:.0f}p दूर थी। "
+                f"प्राइस के वापस ST Line के करीब (20p–90p ज़ोन) आने पर ऑटो री-एंट्री होगी!"
             )
         }
-        reentry_note = f" | 🎯 री-एंट्री आर्म हुई (प्राइस के ST Line ${st_line_now:,.0f} के 20-90p पास आने पर ही री-एंट्री होगी)"
+        reentry_note = f" | 🎯 री-एंट्री वॉचर ON (ST Line ${st_line_now:,.0f} के 20-90p पास आने पर दोबारा {active_tr['type']} लिया जाएगा)"
     else:
         eng["reentry_watch"] = {"armed": False, "dir": 0, "reason": ""}
 
@@ -566,7 +559,7 @@ def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_titl
     if eng.get("ai_json_view"):
         eng["ai_json_view"]["badge_1"] = f"Closed: {reason_title}"
         eng["ai_json_view"]["badge_3"] = f"Exit Price: ${exit_px:,.1f}"
-        eng["ai_json_view"]["badge_4"] = f"PnL: {move:+.1f} Pts"
+        eng["ai_json_view"]["badge_4"] = f"Booked: {move:+.1f} Pts"
         eng["ai_json_view"]["headline"] = detailed_reason + reentry_note
         eng["ai_json_view"]["trail_box_html"] = (
             f"<div class='trail-banner' style='border-left-color:#ef4444; background:#3b0a0a;'>"
@@ -574,7 +567,7 @@ def close_active_trade_immediately(eng, active_tr, exit_px, ist_str, reason_titl
         )
 
 # ============================================================================
-# V20.1 STABLE-GRID AI POST-ENTRY MANAGER
+# V21.0 PURE PRO-TRADER AI BRAIN (NO 30m/5m TAPE CLUTTER, 4-STAGE DYNAMIC GAP)
 # ============================================================================
 def parse_ai_json_safely(raw_text: str):
     try:
@@ -587,11 +580,8 @@ def parse_ai_json_safely(raw_text: str):
         pass
     return None
 
-def dynamic_microstructure_backup_brain(ctx, active_trade):
-    m30 = ctx["m30"]
-    m5 = ctx["m5"]
+def pro_renko_backup_brain(ctx, active_trade):
     px = ctx["px"]
-    vc = ctx["void_cluster"]
     rk = ctx["renko"]
     st_line = rk["st_line"]
     box_sz = rk["box_size"]
@@ -600,8 +590,8 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
         st_dir_str = "BUY 🟢" if rk["st_trend"] == 1 else "SELL 🔴"
         return {
             "headline": f"एंट्री केवल पक्के AI-Renko फ्लिप या ST Line (${st_line:,.0f}) रीटेस्ट पर होगी (वर्तमान रैंकों ट्रेंड: {st_dir_str})।",
-            "macro_vs_micro": f"30m Tape: {m30['tape_buy']:.0f}% Buy | 5m Tape: {m5['tape_buy']:.0f}% Buy | Renko Brick: ${box_sz:.0f} (rClose: ${rk['r_close']:,.0f})।",
-            "void_forensics": vc["pattern_summary"]
+            "renko_structure": f"Renko Brick: ${box_sz:.0f} | rClose: ${rk['r_close']:,.0f} (Streak #{rk['brick_streak']}) | ST Line दूरी: {abs(px - st_line):.0f} Pts।",
+            "extension_check": f"21-EMA से दूरी: {rk['ema_dist_bricks']:.2f} Bricks (${rk['ema21']:,.0f}) | 14-RSI: {rk['rsi14']:.1f} | 3-Bar Dominance: {rk['buy_dom_pct']:.0f}% Buy।"
         }
 
     t_type = active_trade["type"]
@@ -609,79 +599,37 @@ def dynamic_microstructure_backup_brain(ctx, active_trade):
     live_pts = active_trade["live_pts"]
     peak_pts = active_trade["peak_pts"]
     curr_sl = active_trade["sl_px"]
-    safe_gap = max(160.0, box_sz * 1.15)
+    prof = compute_pro_stage_profile(peak_pts, live_pts, rk, t_type)
+    target_gap = (prof["min_gap"] + prof["max_gap"]) / 2.0
 
-    if t_type == "BUY":
-        if live_pts >= 350.0 and m5["tape_buy"] <= 40.0 and m30["tape_buy"] <= 46.5:
-            return {
-                "action": "EXIT",
-                "confidence": 90,
-                "trailing_sl": curr_sl,
-                "sl_trail_reason": "+350p से बड़ा मुनाफा बनने के बाद ऊपर मोमेंटम थमने से प्रॉफिट बुक किया गया।",
-                "headline": f"🚨 BIG PROFIT EXIT LONG @ ${px:,.0f} (+{live_pts:.1f}p) — बड़े टारगेट ज़ोन में रिवर्सल दिखने पर प्रॉफिट लॉक!",
-                "macro_vs_micro": f"5m बाइंग गिरकर {m5['tape_buy']:.0f}% रह गई है जबकि ST Line ${st_line:,.0f} पर काफी नीचे है।",
-                "void_forensics": vc["pattern_summary"]
-            }
-
+    if prof["stage_num"] == 1:
         new_sl = curr_sl
-        reason_txt = f"हार्ड-लॉक नियम: +220p मुनाफे से पहले शुरुआती ~250p SL (${curr_sl:,.1f}) को बिल्कुल नहीं छेड़ा जाएगा।"
-        if peak_pts >= 220.0:
-            cand_sl = max(entry_px + 65.0, min(px - safe_gap, max(st_line - 15.0, rk["r_close"] - box_sz)))
-            if cand_sl >= curr_sl + 25.0:
-                new_sl = round(cand_sl, 1)
-                reason_txt = f"Peak +{peak_pts:.0f}p पार होने पर {safe_gap:.0f}p का सुरक्षित गैप रखते हुए SL को ${new_sl:,.1f} पर ट्रेल किया गया।"
-
-        return {
-            "action": "HOLD",
-            "confidence": 86,
-            "trailing_sl": new_sl,
-            "sl_trail_reason": reason_txt,
-            "headline": f"✅ HOLD RENKO LONG ({live_pts:+.1f}p) — बड़े प्रॉफिट के लिए ट्रेड होल्ड रखें (SL: ${new_sl:,.1f})।",
-            "macro_vs_micro": f"Renko ST Line (${st_line:,.0f}) बुलिश है और 5m Tape ({m5['tape_buy']:.0f}% B) सपोर्ट कर रहा है।",
-            "void_forensics": vc["pattern_summary"]
-        }
+        reason_txt = prof["rule_hi"]
     else:
-        if live_pts >= 350.0 and m5["tape_buy"] >= 60.0 and m30["tape_buy"] >= 53.5:
-            return {
-                "action": "EXIT",
-                "confidence": 90,
-                "trailing_sl": curr_sl,
-                "sl_trail_reason": "+350p से बड़ा मुनाफा बनने के बाद नीचे बाइंग आने से प्रॉफिट बुक किया गया।",
-                "headline": f"🚨 BIG PROFIT EXIT SHORT @ ${px:,.0f} (+{live_pts:.1f}p) — बड़े टारगेट पर प्रॉफिट बुक!",
-                "macro_vs_micro": f"5m बाइंग उछलकर {m5['tape_buy']:.0f}% हो गई है जबकि ST Line ${st_line:,.0f} पर ऊपर है।",
-                "void_forensics": vc["pattern_summary"]
-            }
+        if t_type == "BUY":
+            cand_sl = max(entry_px + prof["min_lock_pts"], px - target_gap)
+            new_sl = round(max(curr_sl, cand_sl), 1)
+        else:
+            cand_sl = min(entry_px - prof["min_lock_pts"], px + target_gap)
+            new_sl = round(min(curr_sl, cand_sl), 1)
+        reason_txt = f"{prof['stage_name']}: Peak +{peak_pts:.0f}p के अनुसार गैप को {target_gap:.0f}p पर सेट करके SL को ${new_sl:,.1f} किया गया।"
 
-        new_sl = curr_sl
-        reason_txt = f"हार्ड-लॉक नियम: +220p मुनाफे से पहले शुरुआती ~250p SL (${curr_sl:,.1f}) को बिल्कुल नहीं छेड़ा जाएगा।"
-        if peak_pts >= 220.0:
-            cand_sl = min(entry_px - 65.0, max(px + safe_gap, min(st_line + 15.0, rk["r_close"] + box_sz)))
-            if cand_sl <= curr_sl - 25.0:
-                new_sl = round(cand_sl, 1)
-                reason_txt = f"Peak +{peak_pts:.0f}p पार होने पर {safe_gap:.0f}p का सुरक्षित गैप रखते हुए SL को ${new_sl:,.1f} पर ट्रेल किया गया।"
+    return {
+        "action": "HOLD",
+        "confidence": 88,
+        "trailing_sl": new_sl,
+        "sl_trail_reason": reason_txt,
+        "headline": f"✅ HOLD {t_type} ({live_pts:+.1f}p | {prof['stage_name']}) — Active SL: ${new_sl:,.1f}",
+        "renko_structure": f"rClose: ${rk['r_close']:,.0f} (Streak #{rk['brick_streak']}) | Renko ST Line: ${st_line:,.0f} (दूरी: {abs(px - st_line):.0f}p)।",
+        "extension_check": f"21-EMA Stretch: {rk['ema_dist_bricks']:.2f} Bricks | RSI: {rk['rsi14']:.1f} | Stage Allowed Gap: {prof['min_gap']:.0f}p–{prof['max_gap']:.0f}p।"
+    }
 
-        return {
-            "action": "HOLD",
-            "confidence": 86,
-            "trailing_sl": new_sl,
-            "sl_trail_reason": reason_txt,
-            "headline": f"✅ HOLD RENKO SHORT ({live_pts:+.1f}p) — बड़े प्रॉफिट के लिए शॉर्ट होल्ड रखें (SL: ${new_sl:,.1f})।",
-            "macro_vs_micro": f"Renko ST Line (${st_line:,.0f}) बियरिश है और 5m Sell Tape ({100-m5['tape_buy']:.0f}%) पक्ष में है।",
-            "void_forensics": vc["pattern_summary"]
-        }
-
-def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, available_models):
+def call_gemini_pro_renko_engine(api_key, ctx, active_trade, selected_model, available_models):
     if active_trade is None:
-        return dynamic_microstructure_backup_brain(ctx, None), "🟢 Stable-Grid Renko Watcher"
+        return pro_renko_backup_brain(ctx, None), "🟢 Pure Renko Structure Watcher"
 
-    m30 = ctx["m30"]
-    m5 = ctx["m5"]
-    m1 = ctx["m1"]
     px = ctx["px"]
-    vwap = ctx["vwap"]
-    vc = ctx["void_cluster"]
     rk = ctx["renko"]
-
     t_type = active_trade["type"]
     t_entry = active_trade["entry"]
     live_pts = active_trade["live_pts"]
@@ -691,43 +639,49 @@ def call_gemini_json_engine(api_key, ctx, active_trade, selected_model, availabl
     curr_sl_pts = (curr_sl - t_entry) if t_type == "BUY" else (t_entry - curr_sl)
     dur_min = (time.time() - active_trade["open_ts"]) / 60.0
 
+    prof = compute_pro_stage_profile(peak_pts, live_pts, rk, t_type)
+
     prompt = f"""
-You are a disciplined Wall Street Institutional Swing Trade Manager managing an ACTIVE BTCUSDT trade opened by our Stable-Grid 'Dr Devendra AI-Renko' indicator.
-Your job is to let winners run into BIG SWING PROFITS (+300 to +800 points) and NEVER choke the trade on small profits.
+You are a master Wall Street Price-Action & Renko Swing Trader managing an ACTIVE intraday BTCUSDT position opened by our 'Dr Devendra AI-Renko [Confirmed Close Algo PRO]' system.
+We have completely removed noisy 30m/5m orderbook tape metrics. You must make decisions purely like a professional Renko & Price-Action trader using the 4-Stage Dynamic Profit Ratchet, Renko Brick Streak, 21-EMA Extension, and 14-RSI Exhaustion.
 
 ACTIVE RENKO TRADE STATUS:
-- Trade Direction: {t_type} | Entry Price: ${t_entry:,.1f} | Current Live Price: ${px:,.1f}
-- Live PnL: {live_pts:+.1f} Points | Peak Profit Achieved: +{peak_pts:.1f} Points
-- Initial Stop-Loss (~250 pts): ${init_sl:,.1f} | Current Active Stop-Loss: ${curr_sl:,.1f} ({curr_sl_pts:+.1f} Points from entry) | Duration: {dur_min:.1f} mins
+- Direction: {t_type} | Entry Price: ${t_entry:,.1f} | Current Live Price: ${px:,.1f}
+- Live Profit/Loss: {live_pts:+.1f} Points | Peak Profit Achieved: +{peak_pts:.1f} Points | Duration: {dur_min:.1f} mins
+- Initial SL (~250p): ${init_sl:,.1f} | Current Active SL: ${curr_sl:,.1f} ({curr_sl_pts:+.1f} Points locked from entry)
+- Current Active Profit Stage: {prof['stage_name']}
 
-DR DEVENDRA AI-RENKO & ORDERBOOK STRUCTURE:
-- Stable Renko Box Size: ${rk['box_size']:.1f} pts
-- Current Renko Brick Close (`rClose`): ${rk['r_close']:,.1f} | Brick Direction: {'BULLISH (+1)' if rk['brick_dir']==1 else 'BEARISH (-1)'} | Brick Streak: #{rk['brick_streak']}
-- Special Renko Supertrend Line (`stLine`): ${rk['st_line']:,.1f} (Distance from live price: {abs(px - rk['st_line']):.1f} pts) | 3-Bar Orderflow Dominance: {rk['buy_dom_pct']:.1f}% Buy
-- Major L2 Bid Wall: ${ctx['bid_wall_px']:,.1f} ({ctx['bid_wall_sz']:.2f} BTC) | Major L2 Ask Wall: ${ctx['ask_wall_px']:,.1f} ({ctx['ask_wall_sz']:.2f} BTC) | VWAP: ${vwap:,.1f}
-- 30-Minute Macro Flow: Price Change {m30['px_chg']:+.1f} pts | 30m Taker Tape: {m30['tape_buy']:.1f}% Buy | 30m L2 Bids: {m30['l2_buy']:.1f}%
-- 5-Minute Micro Flow: Price Change {m5['px_chg']:+.1f} pts | 5m Taker Tape: {m5['tape_buy']:.1f}% Buy | 5m L2 Bids: {m5['l2_buy']:.1f}%
-- Last {vc['count']} Liquidity Voids Cluster Pattern: {vc['pattern_en']}
-{vc['prompt_table']}
+PURE RENKO & PRICE-ACTION STRUCTURE (FROM PINE SCRIPT ENGINE):
+- Stable Renko Box Size (1 Brick): ${rk['box_size']:.1f} pts
+- Current Renko Brick Close (`rClose`): ${rk['r_close']:,.1f} | Brick Direction: {'BULLISH (+1)' if rk['brick_dir']==1 else 'BEARISH (-1)'} | Consecutive Brick Streak: #{rk['brick_streak']} (Max safe streak in Pine Script = 4)
+- Special Renko Supertrend Line (`stLine`): ${rk['st_line']:,.1f} (Distance from live price: {abs(px - rk['st_line']):.1f} pts)
+- 21-Period EMA (`ema21`): ${rk['ema21']:,.1f} | Over-Extension from 21-EMA: {rk['ema_dist_bricks']:.2f} Bricks (Over-extended if >= 2.0 Bricks)
+- 14-Period RSI (`rsiVal`): {rk['rsi14']:.1f} (Overbought >= 74, Oversold <= 26)
+- 3-Bar Candle Orderflow Dominance: {rk['buy_dom_pct']:.1f}% Buy / {100.0 - rk['buy_dom_pct']:.1f}% Sell
+- Over-Extension / Exhaustion Detected: {'YES (Tighten gap aggressively!)' if prof['is_exhausted'] else 'NO (Normal trend expansion)'}
 
-MANDATORY HARD-LOCKED RULES (DO NOT VIOLATE):
-1. NO EARLY TRAILING BELOW +220 POINTS PEAK PROFIT:
-   - If `Peak Profit Achieved` (+{peak_pts:.1f} pts) is less than +220 points, you MUST NOT trail the Stop-Loss! Return `trailing_sl` as `{curr_sl:.1f}` so the initial ~250-point SL gives full breathing room.
-2. SAFE GAP TRAILING ONCE PROFIT >= +220 POINTS:
-   - Once Peak Profit is >= +220 points, trail `trailing_sl` progressively behind `stLine` (${rk['st_line']:,.1f}), Renko bricks (`rClose`), or L2 walls, ALWAYS keeping a wide gap of at least 160 to 220 points from current live price `${px:,.1f}`.
-   - Any trailed SL in profit must lock at least +65 points above/below entry.
-3. NO PREMATURE "EXIT" COMMANDS:
-   - You are FORBIDDEN from commanding `"action": "EXIT"` when `Live PnL` ({live_pts:+.1f} pts) is below +350 points! Below +350 points, always output `"action": "HOLD"` and let the Renko Supertrend and ~250p SL manage risk.
-   - Only command `"action": "EXIT"` if `Live PnL` is >= +350 points AND price is far from `stLine` with heavy opposing iceberg absorption in the 10-void cluster.
-4. OUTPUT FORMAT: Return ONLY valid JSON matching the exact keys below. Write all 4 text fields in sharp, clear Hindi:
+4-STAGE DYNAMIC PRO-TRADER TRAILING RULES (NO FIXED ROBOTIC GAP!):
+1. STAGE 1 — BREATHING ZONE (Peak Profit < +220 pts):
+   - Do NOT trail the Stop-Loss! Keep `trailing_sl` at `{curr_sl:.1f}` so the trade has full breathing room to survive normal BTC pullbacks.
+2. STAGE 2 — SAFE TREND ZONE (Peak Profit +220 to +449 pts):
+   - Eliminate risk and let the trend grow. Choose a dynamic gap between `{prof['min_gap']:.0f} and {prof['max_gap']:.0f} points` from live price `${px:,.1f}` (locking at least +{prof['min_lock_pts']:.0f} pts profit).
+3. STAGE 3 — AGGRESSIVE LOCK ZONE (Peak Profit +450 to +699 pts):
+   - We are deep in profit; never give back half the move! Narrow the trailing gap dynamically to `{prof['min_gap']:.0f}–{prof['max_gap']:.0f} points` behind live price (locking at least +{prof['min_lock_pts']:.0f} pts).
+4. STAGE 4 — PARABOLIC CHOKE ZONE (Peak Profit >= +700 pts):
+   - Parabolic move! Choke the Stop-Loss tight right behind price with a `{prof['min_gap']:.0f}–{prof['max_gap']:.0f} point gap` (locking at least +{prof['min_lock_pts']:.0f} pts) so we capture 85%–92% of massive 800–1000 point rallies!
+5. WHEN TO COMMAND "EXIT":
+   - Below +450 pts profit, NEVER command `"action": "EXIT"` (always output `"HOLD"`).
+   - Above +450 pts profit, only command `"action": "EXIT"` if `Over-Extension` is extreme (Brick Streak >= 5 or RSI > 78 / < 22) and candle dominance flips sharply against the trade; otherwise output `"HOLD"` with a tight Stage 3/4 `trailing_sl`.
+
+Return ONLY valid JSON matching the exact keys below. Write the 4 text explanation fields in sharp, clear Hindi:
 {{
   "action": "HOLD" or "EXIT",
   "confidence": integer (0 to 100),
-  "trailing_sl": float (return {curr_sl:.1f} if Peak Profit < 220 pts, or new wide-gap trailed SL price),
-  "sl_trail_reason": "Sharp 1-line explanation in Hindi of why SL is held at ~250p breathing room or trailed with a 160p+ gap",
-  "headline": "Sharp 1-line HOLD or EXIT command in Hindi",
-  "macro_vs_micro": "Sharp 1-line analysis of Renko ST Line, 30m & 5m flow in Hindi",
-  "void_forensics": "Sharp 1-line impact of the 10-void cluster on this trade in Hindi"
+  "trailing_sl": float (exact new SL price based on current Stage {prof['stage_num']} gap rules, or {curr_sl:.1f} if Stage 1),
+  "sl_trail_reason": "Sharp 1-line explanation in Hindi citing Stage {prof['stage_num']}, Peak Profit (+{peak_pts:.0f}p), and chosen dynamic gap",
+  "headline": "Sharp 1-line Pro-Trader command and stage status in Hindi",
+  "renko_structure": "Sharp 1-line analysis of Renko Brick Streak (#{rk['brick_streak']}) and ST Line (${rk['st_line']:,.0f}) in Hindi",
+  "extension_check": "Sharp 1-line analysis of 21-EMA Stretch ({rk['ema_dist_bricks']:.2f} bricks) and RSI ({rk['rsi14']:.1f}) in Hindi"
 }}
 """
 
@@ -778,41 +732,24 @@ MANDATORY HARD-LOCKED RULES (DO NOT VIOLATE):
         except Exception:
             continue
 
-    return dynamic_microstructure_backup_brain(ctx, active_trade), "⚡ Quant Backup Brain"
+    return pro_renko_backup_brain(ctx, active_trade), "⚡ Pro Stage Backup Brain"
 
 # ============================================================================
-# AI TRADE MANAGEMENT CYCLE
+# AI 4-STAGE EXECUTION CYCLE (RUNS EVERY 3 MINS OR INSTANTLY ON STAGE SPIKE!)
 # ============================================================================
 def execute_ai_cycle_thread(eng, now_ts, ist_str):
     if eng.get("ai_busy"):
         return
     eng["ai_busy"] = True
     try:
-        vault = eng["vault"]
-        if len(vault) < 3:
-            return
-
         px = eng["px"]
-        span_min = max(0.5, (now_ts - vault[0]["ts"]) / 60.0)
-        vault_5m = [d for d in vault if (now_ts - d["ts"]) <= 300.0]
-        vault_1m = [d for d in vault if (now_ts - d["ts"]) <= 60.0]
-
-        m30 = compute_slice_metrics(vault)
-        m5 = compute_slice_metrics(vault_5m)
-        m1 = compute_slice_metrics(vault_1m)
-        voids_30m = [v for v in eng["voids"] if (now_ts - v.get("ts", now_ts)) <= 1800]
-        void_cluster = analyze_void_cluster(voids_30m, px)
+        if px <= 0:
+            return
         rk = eng.get("renko", {})
 
         ctx = {
-            "time": ist_str, "px": px,
-            "best_bid": eng.get("best_bid", px), "best_ask": eng.get("best_ask", px),
-            "spread": eng.get("spread", 1.0),
-            "bid_wall_px": eng.get("bid_wall_px", px - 25.0), "bid_wall_sz": eng.get("bid_wall_sz", 1.0),
-            "ask_wall_px": eng.get("ask_wall_px", px + 25.0), "ask_wall_sz": eng.get("ask_wall_sz", 1.0),
-            "vwap": eng["vwap"] if eng["vwap"] > 0 else px,
-            "span_min": span_min, "m30": m30, "m5": m5, "m1": m1,
-            "void_cluster": void_cluster, "recent_voids": voids_30m[:10],
+            "time": ist_str,
+            "px": px,
             "renko": rk
         }
 
@@ -823,9 +760,9 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         snapshot_trade_id = active_tr_snapshot["open_ts"] if active_tr_snapshot else None
 
         if api_key and active_tr_snapshot is not None:
-            ai_json, status_str = call_gemini_json_engine(api_key, ctx, active_tr_snapshot, selected_mod, avail_mods)
+            ai_json, status_str = call_gemini_pro_renko_engine(api_key, ctx, active_tr_snapshot, selected_mod, avail_mods)
         else:
-            ai_json, status_str = dynamic_microstructure_backup_brain(ctx, active_tr_snapshot), "🟢 Stable-Grid Renko + Hard-Lock AI"
+            ai_json, status_str = pro_renko_backup_brain(ctx, active_tr_snapshot), "🟢 4-Stage Pro Renko Engine"
 
         eng["ai_status"] = status_str
         eng["last_report_ts"] = time.time()
@@ -856,11 +793,11 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
                 "mode": "RENKO_WATCH",
                 "badge_1": f"Renko Trend: {st_dir_str}",
                 "badge_2": f"ST Line: ${st_line_px:,.1f}",
-                "badge_3": f"Brick Size: ${rk.get('box_size', 200.0):.1f}",
-                "badge_4": f"Trail Gate: +220p",
+                "badge_3": f"Brick: ${rk.get('box_size', 200.0):.0f} (#{rk.get('brick_streak', 1)})",
+                "badge_4": f"Trail Mode: 4-Stage Dynamic",
                 "headline": ai_json.get("headline", ""),
-                "macro_vs_micro": ai_json.get("macro_vs_micro", ""),
-                "void_forensics": ai_json.get("void_forensics", ""),
+                "renko_structure": ai_json.get("renko_structure", ""),
+                "extension_check": ai_json.get("extension_check", ""),
                 "trail_box_html": ""
             }
             ctx["lock_title"] = lock_title
@@ -870,9 +807,9 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
 
         else:
             raw_act = str(ai_json.get("action", "HOLD")).upper()
-            conf = int(ai_json.get("confidence", 85))
+            conf = int(ai_json.get("confidence", 88))
             raw_ai_sl = float(ai_json.get("trailing_sl", current_live_tr["sl_px"]))
-            trail_reason = str(ai_json.get("sl_trail_reason", "रैंकों सुपरट्रेंड और ऑर्डरबुक के अनुसार SL की समीक्षा की गई।")).strip()
+            trail_reason = str(ai_json.get("sl_trail_reason", "4-स्टेज प्रो डायनामिक नियम के अनुसार SL की समीक्षा की गई।")).strip()
 
             if 0 < abs(raw_ai_sl) < 5000:
                 ai_trail_sl = (current_live_tr["entry"] + raw_ai_sl) if current_live_tr["type"] == "BUY" else (current_live_tr["entry"] - raw_ai_sl)
@@ -881,99 +818,112 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
 
             live_pts_now = current_live_tr["live_pts"]
             peak_pts_now = current_live_tr["peak_pts"]
+            prof = compute_pro_stage_profile(peak_pts_now, live_pts_now, rk, current_live_tr["type"])
 
+            current_live_tr["stage_num"] = prof["stage_num"]
+            current_live_tr["stage_name"] = prof["stage_name"]
+            current_live_tr["last_ai_peak"] = peak_pts_now
+
+            # Only allow direct AI EXIT in Stage 3/4 (+450p+ profit)
             if raw_act == "EXIT":
-                if live_pts_now >= 350.0:
+                if live_pts_now >= 450.0:
                     close_active_trade_immediately(
                         eng, current_live_tr, live_px_now, ist_now_str,
-                        "AI BIG PROFIT EXIT", f"🤖 +{live_pts_now:.1f}p के बड़े प्रॉफिट पर AI ने एग्जिट किया: {ai_json.get('headline', trail_reason)}"
+                        "STAGE 3/4 PRO AI EXIT",
+                        f"🤖 +{live_pts_now:.1f}p के बड़े प्रॉफिट और ओवर-एक्सटेंशन पर AI ने एग्जिट किया: {ai_json.get('headline', trail_reason)}"
                     )
                     return
                 else:
                     act = "HOLD"
-                    trail_reason = f"🛡️ हार्ड-लॉक सुरक्षा: अभी प्रॉफिट (+{live_pts_now:.0f}p) +350p से कम है, इसलिए AI को समय से पहले ट्रेड काटने से रोका गया।"
             else:
                 act = "HOLD"
 
-            MIN_PEAK_TO_UNLOCK_TRAIL = 220.0
-            MIN_GAP_FROM_LIVE = 160.0
-            MIN_LOCKED_PROFIT_FLOOR = 65.0
-            MIN_STEP_IMPROVEMENT = 25.0
-
             old_sl = current_live_tr["sl_px"]
             sl_trailed_now = False
-            gate_note = ""
+            stage_note = ""
 
-            if peak_pts_now < MIN_PEAK_TO_UNLOCK_TRAIL:
-                gate_note = f"🔒 हार्ड-लॉक: जब तक Peak Profit (+{peak_pts_now:.0f}p) +220p पार नहीं करता, शुरुआती ~250p SL (${old_sl:,.1f}) लॉक रहेगा।"
+            if prof["stage_num"] == 1:
+                stage_note = prof["rule_hi"]
             else:
-                if current_live_tr["type"] == "BUY" and ai_trail_sl > old_sl + MIN_STEP_IMPROVEMENT:
-                    capped_sl = min(ai_trail_sl, live_px_now - MIN_GAP_FROM_LIVE)
-                    min_profit_sl = current_live_tr["entry"] + MIN_LOCKED_PROFIT_FLOOR
-                    if capped_sl >= max(old_sl + MIN_STEP_IMPROVEMENT, min_profit_sl):
+                # Stage 2, 3, or 4 Dynamic Gap Bounds:
+                # AI can choose any SL inside [live_px - max_gap, live_px - min_gap], AND must lock at least min_lock_pts!
+                min_gap = prof["min_gap"]
+                max_gap = prof["max_gap"]
+                min_lock_pts = prof["min_lock_pts"]
+
+                if current_live_tr["type"] == "BUY":
+                    stage_floor_sl = max(current_live_tr["entry"] + min_lock_pts, live_px_now - max_gap)
+                    stage_ceil_sl = live_px_now - min_gap
+                    proposed_sl = max(ai_trail_sl, stage_floor_sl)
+                    capped_sl = min(proposed_sl, stage_ceil_sl)
+
+                    if capped_sl >= old_sl + 12.0:
                         current_live_tr["sl_px"] = round(capped_sl, 1)
                         current_live_tr["sl_pts"] = round(current_live_tr["sl_px"] - current_live_tr["entry"], 1)
                         sl_trailed_now = True
                     else:
-                        gate_note = f"🔒 160p गैप नियम: लाइव प्राइस से 160p का सुरक्षित गैप रखने के लिए अभी SL को ${old_sl:,.1f} पर ही रखा गया है।"
+                        stage_note = f"{prof['stage_name']}: वर्तमान SL (${old_sl:,.1f}) पहले से ही {min_gap:.0f}p–{max_gap:.0f}p के डायनामिक गैप पर सुरक्षित है।"
 
-                elif current_live_tr["type"] == "SELL" and ai_trail_sl < old_sl - MIN_STEP_IMPROVEMENT:
-                    capped_sl = max(ai_trail_sl, live_px_now + MIN_GAP_FROM_LIVE)
-                    min_profit_sl = current_live_tr["entry"] - MIN_LOCKED_PROFIT_FLOOR
-                    if capped_sl <= min(old_sl - MIN_STEP_IMPROVEMENT, min_profit_sl):
+                else:
+                    stage_ceil_sl = min(current_live_tr["entry"] - min_lock_pts, live_px_now + max_gap)
+                    stage_floor_sl = live_px_now + min_gap
+                    proposed_sl = min(ai_trail_sl, stage_ceil_sl)
+                    capped_sl = max(proposed_sl, stage_floor_sl)
+
+                    if capped_sl <= old_sl - 12.0:
                         current_live_tr["sl_px"] = round(capped_sl, 1)
                         current_live_tr["sl_pts"] = round(current_live_tr["entry"] - current_live_tr["sl_px"], 1)
                         sl_trailed_now = True
                     else:
-                        gate_note = f"🔒 160p गैप नियम: लाइव प्राइस से 160p का सुरक्षित गैप रखने के लिए अभी SL को ${old_sl:,.1f} पर ही रखा गया है।"
+                        stage_note = f"{prof['stage_name']}: वर्तमान SL (${old_sl:,.1f}) पहले से ही {min_gap:.0f}p–{max_gap:.0f}p के डायनामिक गैप पर सुरक्षित है।"
 
             curr_sl_pts = current_live_tr["sl_pts"]
             gap_now = abs(live_px_now - current_live_tr["sl_px"])
-            shown_reason = gate_note if gate_note else trail_reason
+            shown_reason = stage_note if stage_note else trail_reason
 
             if sl_trailed_now:
                 current_live_tr["trail_count"] += 1
                 pts_shifted = abs(current_live_tr["sl_px"] - old_sl)
-                lock_tag = f"+{curr_sl_pts:.1f} Pts पक्का प्रॉफिट लॉक"
+                pct_locked = int((curr_sl_pts / max(1.0, peak_pts_now)) * 100) if curr_sl_pts > 0 else 0
 
                 event_str = (
-                    f"🔄 <b>हार्ड-लॉक गैप ट्रेल #{current_live_tr['trail_count']} ({ist_now_str}):</b> "
+                    f"🔄 <b>{prof['stage_name']} ट्रेल #{current_live_tr['trail_count']} ({ist_now_str}):</b> "
                     f"<span style='color:#f87171; text-decoration:line-through;'>${old_sl:,.1f}</span> ➔ "
                     f"<b style='color:#4ade80; font-size:14.5px;'>${current_live_tr['sl_px']:,.1f} ({curr_sl_pts:+.1f} Pts)</b> "
-                    f"(<span style='color:#facc15;'>+{pts_shifted:.1f}p शिफ्ट | {lock_tag} | Gap: {gap_now:.0f}p</span>)<br>"
-                    f"📌 <b>AI ट्रेलिंग कारण:</b> {trail_reason}"
+                    f"(<span style='color:#facc15;'>+{pts_shifted:.1f}p शिफ्ट | Peak का {pct_locked}% लॉक | Dynamic Gap: {gap_now:.0f}p</span>)<br>"
+                    f"📌 <b>AI प्रो-ट्रेडर कारण:</b> {trail_reason}"
                 )
                 current_live_tr["last_trail_msg"] = event_str
                 current_live_tr["trail_log"].insert(
-                    0, f"[{ist_now_str}] ${old_sl:,.1f} ➔ ${current_live_tr['sl_px']:,.1f} ({curr_sl_pts:+.1f}p | Gap {gap_now:.0f}p): {trail_reason}"
+                    0, f"[{ist_now_str}] Stage {prof['stage_num']}: ${old_sl:,.1f} ➔ ${current_live_tr['sl_px']:,.1f} ({curr_sl_pts:+.1f}p | Gap {gap_now:.0f}p)"
                 )
                 eng["sound_event"] = {"id": time.time(), "type": "TRAIL"}
             else:
                 event_str = (
-                    f"🛡️ <b>सक्रिय स्टॉप-लॉस स्थिति ({ist_now_str}):</b> एक्टिव SL: <b style='color:#facc15;'>${current_live_tr['sl_px']:,.1f} ({curr_sl_pts:+.1f} Pts)</b> | "
-                    f"लाइव प्राइस से गैप: <b>{gap_now:.0f} Pts</b> | Peak: <b>+{peak_pts_now:.1f}p</b><br>"
-                    f"📌 <b>नियम एवं AI नोट:</b> {shown_reason}"
+                    f"🛡️ <b>{prof['stage_name']} ({ist_now_str}):</b> एक्टिव SL: <b style='color:#facc15;'>${current_live_tr['sl_px']:,.1f} ({curr_sl_pts:+.1f} Pts)</b> | "
+                    f"डायनामिक गैप: <b>{gap_now:.0f} Pts</b> | Peak: <b>+{peak_pts_now:.1f}p</b><br>"
+                    f"📌 <b>प्रो-ट्रेडर नोट:</b> {shown_reason}"
                 )
 
             trail_box_html = f"<div class='trail-banner'>{event_str}</div>"
 
-            lock_title = f"{'🟢' if current_live_tr['type']=='BUY' else '🔴'} रैंकों {current_live_tr['type']} ट्रेड चालू है — हार्ड-लॉक AI मैनेजिंग (Live: {live_pts_now:+.1f} Pts)"
+            lock_title = f"{'🟢' if current_live_tr['type']=='BUY' else '🔴'} रैंकों {current_live_tr['type']} चालू ({prof['stage_name']}) — Live: {live_pts_now:+.1f} Pts"
             lock_cls = "lock-buy" if current_live_tr["type"] == "BUY" else "lock-sell"
             lock_sub = (
                 f"एंट्री: ${current_live_tr['entry']:,.1f} | "
                 f"एक्टिव SL: ${current_live_tr['sl_px']:,.1f} ({curr_sl_pts:+.1f} Pts | Gap: {gap_now:.0f}p) | "
-                f"Renko ST Line: ${rk.get('st_line', 0.0):,.1f}"
+                f"Peak: +{peak_pts_now:.1f}p | ट्रेल: {current_live_tr['trail_count']}x"
             )
 
             eng["ai_json_view"] = {
                 "mode": "TRADE_MANAGER",
-                "badge_1": f"Command: {act} ({conf}%)",
+                "badge_1": f"{prof['stage_name']}",
                 "badge_2": f"Entry: ${current_live_tr['entry']:,.1f}",
                 "badge_3": f"Active SL: ${current_live_tr['sl_px']:,.1f} ({curr_sl_pts:+.1f}p)",
-                "badge_4": f"Gap: {gap_now:.0f}p | Peak: +{peak_pts_now:.0f}p",
+                "badge_4": f"Dynamic Gap: {gap_now:.0f}p | Peak: +{peak_pts_now:.0f}p",
                 "headline": ai_json.get("headline", ""),
-                "macro_vs_micro": ai_json.get("macro_vs_micro", ""),
-                "void_forensics": ai_json.get("void_forensics", ""),
+                "renko_structure": ai_json.get("renko_structure", ""),
+                "extension_check": ai_json.get("extension_check", ""),
                 "trail_box_html": trail_box_html
             }
 
@@ -986,15 +936,11 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         eng["ai_busy"] = False
 
 # ============================================================================
-# 24x7 1-SECOND BACKGROUND WORKER (STABLE-GRID RENKO, STRICT RE-ENTRY & 1s SL)
+# 24x7 1-SECOND BACKGROUND WORKER (1s SL + INSTANT STAGE SPIKE RATCHET)
 # ============================================================================
 def background_worker(eng, worker_id):
-    SPREAD_VOID_THRESHOLD = 4.0
     REPORT_INTERVAL_SEC = 180
-    VAULT_MEMORY_SEC = 1800
-
-    # Cache box_size so it doesn't fluctuate between 150 and 267 dynamically on every tick
-    cached_box_size = 200.0
+    cached_box_size = None
 
     while True:
         if eng.get("worker_id") != worker_id:
@@ -1002,60 +948,76 @@ def background_worker(eng, worker_id):
         try:
             now_ts = time.time()
             ist_str = get_ist_time_str()
-            snap = fetch_microstructure_snapshot()
+            px_res = fetch_live_btc_price()
 
-            if isinstance(snap, str):
-                eng["last_err"] = snap
-            elif snap:
-                px = snap["px"]
-                spread = snap["spread"]
-                w_bid, w_ask = snap["w_bid"], snap["w_ask"]
-                curr_l2_pct = (w_bid / (w_bid + w_ask) * 100.0) if (w_bid + w_ask) > 0 else 50.0
-                curr_tape_pct = (snap["t_buy"] / (snap["t_buy"] + snap["t_sell"]) * 100.0) if (snap["t_buy"] + snap["t_sell"]) > 0 else 50.0
-
-                recent_5_ticks = eng["vault"][-5:] if len(eng["vault"]) >= 2 else []
-                if recent_5_ticks:
-                    pre_b = sum(d["w_bid"] for d in recent_5_ticks)
-                    pre_a = sum(d["w_ask"] for d in recent_5_ticks)
-                    pre_l2_pct = (pre_b / (pre_b + pre_a) * 100.0) if (pre_b + pre_a) > 0 else curr_l2_pct
-                    prev_px = eng["vault"][-1]["px"]
-                else:
-                    pre_l2_pct = curr_l2_pct
-                    prev_px = px
-
+            if isinstance(px_res, str):
+                eng["last_err"] = px_res
+            elif isinstance(px_res, float) and px_res > 0:
+                px = px_res
                 eng["px"] = px
-                eng["best_bid"] = snap["best_bid"]
-                eng["best_ask"] = snap["best_ask"]
-                eng["spread"] = spread
-                eng["bid_wall_px"] = snap["bid_wall_px"]
-                eng["bid_wall_sz"] = snap["bid_wall_sz"]
-                eng["ask_wall_px"] = snap["ask_wall_px"]
-                eng["ask_wall_sz"] = snap["ask_wall_sz"]
                 eng["last_update"] = ist_str
+                rk = eng.get("renko", {})
 
-                # 1. 1-SECOND REAL-TIME HARD SL & TRAILED SL GUARD
+                # 1. 1-SECOND REAL-TIME SL GUARD + INSTANT 4-STAGE SPIKE RATCHET
                 active_tr = eng.get("active_trade")
                 if active_tr is not None:
                     move = (px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - px)
+                    prev_stage = active_tr.get("stage_num", 1)
                     active_tr["live_pts"] = move
                     active_tr["peak_pts"] = max(active_tr["peak_pts"], move)
-                    sl_pts_locked = active_tr["sl_pts"]
 
+                    prof = compute_pro_stage_profile(active_tr["peak_pts"], move, rk, active_tr["type"])
+                    active_tr["stage_num"] = prof["stage_num"]
+                    active_tr["stage_name"] = prof["stage_name"]
+
+                    # INSTANT SPIKE RATCHET: If price spikes into Stage 2/3/4 between 3-min AI checks,
+                    # enforce the stage's max_gap floor immediately so a fast 900pt spike never gives back 400pts!
+                    if prof["stage_num"] >= 2:
+                        old_sl = active_tr["sl_px"]
+                        max_allowed_gap = prof["max_gap"]
+                        min_lock = prof["min_lock_pts"]
+
+                        if active_tr["type"] == "BUY":
+                            instant_floor_sl = round(max(active_tr["entry"] + min_lock, px - max_allowed_gap), 1)
+                            if instant_floor_sl >= old_sl + 25.0 and instant_floor_sl < px - prof["min_gap"]:
+                                active_tr["sl_px"] = instant_floor_sl
+                                active_tr["sl_pts"] = round(instant_floor_sl - active_tr["entry"], 1)
+                                active_tr["trail_count"] += 1
+                                gap_now = abs(px - instant_floor_sl)
+                                active_tr["trail_log"].insert(
+                                    0, f"[{ist_str}] ⚡ Auto-{prof['stage_name'][:7]} Ratchet: ${old_sl:,.1f} ➔ ${instant_floor_sl:,.1f} ({active_tr['sl_pts']:+.1f}p | Gap {gap_now:.0f}p)"
+                                )
+                        else:
+                            instant_ceil_sl = round(min(active_tr["entry"] - min_lock, px + max_allowed_gap), 1)
+                            if instant_ceil_sl <= old_sl - 25.0 and instant_ceil_sl > px + prof["min_gap"]:
+                                active_tr["sl_px"] = instant_ceil_sl
+                                active_tr["sl_pts"] = round(active_tr["entry"] - instant_ceil_sl, 1)
+                                active_tr["trail_count"] += 1
+                                gap_now = abs(px - instant_ceil_sl)
+                                active_tr["trail_log"].insert(
+                                    0, f"[{ist_str}] ⚡ Auto-{prof['stage_name'][:7]} Ratchet: ${old_sl:,.1f} ➔ ${instant_ceil_sl:,.1f} ({active_tr['sl_pts']:+.1f}p | Gap {gap_now:.0f}p)"
+                                )
+
+                        # Also trigger AI brain immediately whenever trade upgrades to a new Stage or jumps +90p in Peak!
+                        if (prof["stage_num"] > prev_stage or (active_tr["peak_pts"] - active_tr.get("last_ai_peak", 0.0) >= 90.0)) and not eng.get("ai_busy"):
+                            threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
+
+                    # Check 1-second SL breach
+                    sl_pts_locked = active_tr["sl_pts"]
                     if active_tr["type"] == "BUY":
                         sl_breached = (px <= active_tr["sl_px"]) or (move <= sl_pts_locked)
                     else:
                         sl_breached = (px >= active_tr["sl_px"]) or (move <= sl_pts_locked)
 
                     if sl_breached:
-                        sl_kind = "TRAILED SL HIT" if active_tr["trail_count"] > 0 else "INITIAL ~250p SL HIT"
+                        sl_kind = f"STAGE {prof['stage_num']} TRAILED SL HIT" if active_tr["trail_count"] > 0 else "INITIAL ~250p SL HIT"
                         detail_msg = (
                             f"🛡️ {sl_kind}: लाइव प्राइस ${px:,.1f} ({move:+.1f} Pts) ने आपके एक्टिव स्टॉप-लॉस "
-                            f"${active_tr['sl_px']:,.1f} ({sl_pts_locked:+.1f} Pts) को छू लिया — 1 सेकंड में तुरंत एग्जिट!"
+                            f"${active_tr['sl_px']:,.1f} ({sl_pts_locked:+.1f} Pts | Peak: +{active_tr['peak_pts']:.1f}p) को छू लिया — तुरंत एग्जिट!"
                         )
                         close_active_trade_immediately(eng, active_tr, px, ist_str, sl_kind, detail_msg)
 
                 # 2. STRICT STABLE-GRID RENKO PULLBACK RE-ENTRY (20p to 90p zone)
-                rk = eng.get("renko", {})
                 rw = eng.get("reentry_watch", {"armed": False})
                 if eng.get("active_trade") is None and rw.get("armed") and rk.get("st_line", 0.0) > 0:
                     st_trend_now = rk["st_trend"]
@@ -1072,52 +1034,17 @@ def background_worker(eng, worker_id):
                             open_renko_trade_now(eng, "SELL", px, ist_str, "🔄 Renko ST Line Pullback Re-Entry ▼")
                             threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
 
-                eng["vault"].append({
-                    "ts": now_ts, "px": px,
-                    "w_bid": w_bid, "w_ask": w_ask,
-                    "t_buy": snap["t_buy"], "t_sell": snap["t_sell"]
-                })
-                eng["vault"] = [d for d in eng["vault"] if (now_ts - d["ts"]) <= VAULT_MEMORY_SEC]
-
-                if spread >= SPREAD_VOID_THRESHOLD:
-                    px_jump = px - prev_px
-                    l2_shift = curr_l2_pct - pre_l2_pct
-
-                    if curr_tape_pct >= 58 and l2_shift >= 4:
-                        cls = "ic-bull"; ob_reaction = "🟢 बायर्स ने आस्क तोड़ी और नीचे बिड्स बढ़ाईं"
-                    elif curr_tape_pct <= 42 and l2_shift <= -4:
-                        cls = "ic-bear"; ob_reaction = "🔴 सेलर्स ने बिड्स तोड़ीं और ऊपर आस्क बढ़ाईं"
-                    elif l2_shift <= -8:
-                        cls = "ic-warn"; ob_reaction = "⚠️ स्प्रेड फटते ही बायर्स ने डरकर बिड ऑर्डर हटाए"
-                    elif l2_shift >= 8:
-                        cls = "ic-warn"; ob_reaction = "⚠️ स्प्रेड फटते ही सेलर्स ने ऊपर से आस्क ऑर्डर हटाए"
-                    else:
-                        cls = "ic-bull" if curr_tape_pct >= 52 else "ic-bear"
-                        ob_reaction = "⚡ तेज़ मार्केट ऑर्डर से ऑर्डरबुक में गैप बना"
-
-                    void_obj = {
-                        "ts": now_ts, "time": ist_str, "spread": spread, "px": px,
-                        "px_jump": px_jump, "l2_before": pre_l2_pct, "l2_after": curr_l2_pct,
-                        "l2_shift": l2_shift, "tape_pct": curr_tape_pct,
-                        "ob_reaction": ob_reaction, "cls": cls
-                    }
-                    if not eng["voids"] or eng["voids"][0]["time"] != ist_str:
-                        eng["voids"].insert(0, void_obj)
-                        eng["voids"] = eng["voids"][:45]
-                        if spread >= 5.5:
-                            eng["sound_event"] = {"id": now_ts, "type": "VOID"}
-
-                # 3. UPDATE STABLE-GRID AI-RENKO SUPERTREND EVERY 15 SECONDS
-                if now_ts - eng["last_kline_ts"] > 15:
-                    rk_data = fetch_renko_supertrend_and_vwap(locked_box_size=cached_box_size)
+                # 3. UPDATE PURE AI-RENKO STRUCTURE EVERY 12 SECONDS
+                if now_ts - eng["last_kline_ts"] > 12:
+                    rk_data = fetch_renko_pro_structure(locked_box_size=cached_box_size)
                     if rk_data:
                         cached_box_size = rk_data["box_size"]
-                        eng["vwap"] = rk_data["vwap"]
                         prev_rk_trend = eng["renko"].get("st_trend", 0)
                         eng["renko"] = rk_data
 
                         if prev_rk_trend == 0:
                             eng["last_handled_flip_ts"] = rk_data["last_flip_bar_ts"]
+                            threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
                         else:
                             if rk_data["st_trend"] != prev_rk_trend and rk_data["last_flip_bar_ts"] != eng.get("last_handled_flip_ts"):
                                 eng["last_handled_flip_ts"] = rk_data["last_flip_bar_ts"]
@@ -1140,8 +1067,8 @@ def background_worker(eng, worker_id):
 
                     eng["last_kline_ts"] = now_ts
 
-                # 4. RUN 3-MINUTE AI TRADE & TRAILING MANAGER CYCLE
-                if now_ts - eng["last_report_ts"] >= REPORT_INTERVAL_SEC and len(eng["vault"]) >= 8 and not eng.get("ai_busy"):
+                # 4. PERIODIC 3-MINUTE AI CHECK
+                if now_ts - eng["last_report_ts"] >= REPORT_INTERVAL_SEC and rk.get("st_line", 0.0) > 0 and not eng.get("ai_busy"):
                     threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
 
         except Exception as e:
@@ -1149,22 +1076,19 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v20_1():
+def get_master_engine_v21_0():
     wid = int(time.time() * 1000)
     eng = {
-        "worker_id": wid, "px": 0.0, "best_bid": 0.0, "best_ask": 0.0, "spread": 0.0,
-        "bid_wall_px": 0.0, "bid_wall_sz": 0.0, "ask_wall_px": 0.0, "ask_wall_sz": 0.0,
-        "last_update": "--:--:--",
-        "vault": [], "voids": [], "signal_history": [],
-        "active_trade": None, "ai_busy": False,
-        "last_kline_ts": 0.0, "last_report_ts": 0.0,
-        "last_handled_flip_ts": 0,
-        "vwap": 0.0,
+        "worker_id": wid, "px": 0.0, "last_update": "--:--:--",
+        "signal_history": [], "active_trade": None, "ai_busy": False,
+        "last_kline_ts": 0.0, "last_report_ts": 0.0, "last_handled_flip_ts": 0,
         "renko": {
             "box_size": 200.0, "macro_range": 2000.0,
             "brick_top": 0.0, "brick_bot": 0.0, "brick_dir": 1, "brick_streak": 1,
             "r_close": 0.0, "st_trend": 0, "st_line": 0.0,
-            "st_flip_buy": False, "st_flip_sell": False, "buy_dom_pct": 50.0
+            "st_flip_buy": False, "st_flip_sell": False,
+            "buy_dom_pct": 50.0, "ema21": 0.0, "ema_dist_bricks": 0.0, "rsi14": 50.0,
+            "brick_events": []
         },
         "reentry_watch": {"armed": False, "dir": 0, "dir_str": "", "reason": ""},
         "report": None,
@@ -1173,23 +1097,23 @@ def get_master_engine_v20_1():
         "selected_model": AUTO_MODEL_LABEL,
         "ai_json_view": {
             "mode": "INIT",
-            "badge_1": "Renko: Stable-Grid",
+            "badge_1": "Stage: Scanning...",
             "badge_2": "ST Line: --",
             "badge_3": "Initial SL: ~250p",
-            "badge_4": "Trail Gate: +220p",
-            "headline": "⏳ Stable-Grid AI-Renko इंजन लाइव कैंडल्स स्कैन कर रहा है...",
-            "macro_vs_micro": "डेटा बफर तैयार हो रहा है...",
-            "void_forensics": "स्प्रेड क्लस्टर पर नज़र रखी जा रही है...",
+            "badge_4": "4-Stage Dynamic Gap",
+            "headline": "⏳ Pure AI-Renko एवं 4-Stage Pro Trailing इंजन स्टार्ट हो रहा है...",
+            "renko_structure": "रैंकों ब्रिक्स और सुपरट्रेंड स्कैन हो रहे हैं...",
+            "extension_check": "21-EMA और RSI एक्सटेंशन की गणना हो रही है...",
             "trail_box_html": ""
         },
-        "ai_status": "🤖 Stable-Grid Renko + Hard-Lock AI",
+        "ai_status": "🤖 4-Stage Pro Renko AI",
         "sound_event": {"id": 0.0, "type": "BULL"},
         "api_key": "", "last_err": None
     }
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v20_1()
+eng = get_master_engine_v21_0()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -1222,7 +1146,7 @@ with c_mod:
     eng["selected_model"] = chosen_model
 
 with c_act1:
-    if st.button("🤖 अभी AI से SL ट्रेल / स्टेटस अपडेट कराएं"):
+    if st.button("🤖 अभी AI से 4-स्टेज SL ट्रेल अपडेट कराएं"):
         threading.Thread(target=execute_ai_cycle_thread, args=(eng, time.time(), get_ist_time_str()), daemon=True).start()
 
 with c_act2:
@@ -1248,11 +1172,18 @@ while True:
             components.html(f'<audio autoplay="true"><source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>', height=0, width=0)
 
     if eng["px"] > 0:
-        mem_min = (time.time() - eng["vault"][0]["ts"]) / 60.0 if len(eng["vault"]) > 1 else 0.0
         next_sec = max(0, int(180 - (time.time() - eng["last_report_ts"]))) if eng["last_report_ts"] > 0 else 0
         mod_label_short = "Pro-Priority Auto" if eng["selected_model"] == AUTO_MODEL_LABEL else eng["selected_model"]
         rk = eng.get("renko", {})
         rw = eng.get("reentry_watch", {"armed": False})
+        act_tr = eng.get("active_trade")
+
+        active_prof = compute_pro_stage_profile(
+            act_tr["peak_pts"] if act_tr else 0.0,
+            act_tr["live_pts"] if act_tr else 0.0,
+            rk,
+            act_tr["type"] if act_tr else ("BUY" if rk.get("st_trend", 1) == 1 else "SELL")
+        )
 
         hist_cards = ""
         for h in eng["signal_history"]:
@@ -1260,7 +1191,7 @@ while True:
             h_col = "#4ade80" if h["type"] == "BUY" else "#f87171"
             p_col = "#4ade80" if h["live_pts"] >= 0 else "#f87171"
             is_act = "ACTIVE" in h["status"]
-            sts_badge = "🟢 STABLE-GRID ACTIVE" if is_act else f"🏁 {h['status']}"
+            sts_badge = f"🟢 {h.get('stage_name', 'STAGE 1')}" if is_act else f"🏁 {h['status']}"
             sl_pts_val = h.get("sl_pts", 0.0)
             trail_info = (
                 f"शुरुआती SL: ${h['initial_sl']:,.1f} ➔ एक्टिव SL: <b style='color:#facc15;'>${h['sl_px']:,.1f} ({sl_pts_val:+.1f}p)</b> (ट्रेल: {h['trail_count']}x)"
@@ -1285,47 +1216,57 @@ while True:
         if not hist_cards:
             hist_cards = "<div style='text-align:center; color:#64748b; padding-top:75px;'>अभी तक कोई रैंकों ट्रेड शुरू नहीं हुआ है। अगले पक्के रैंकों फ्लिप या मैनुअल सिंक बटन पर ट्रेड शुरू होगा।</div>"
 
-        live_cluster = analyze_void_cluster([v for v in eng["voids"] if (time.time() - v.get("ts", time.time())) <= 1800], eng["px"])
-        cluster_banner = f"""
-        <div style='background:#1e293b; border:1px solid #475569; border-left:4px solid #38bdf8; padding:8px 10px; border-radius:6px; margin-bottom:9px; font-size:12.2px; color:#f8fafc;'>
-            <b>📊 पिछले {live_cluster["count"]} स्प्रेड्स का क्लस्टर पैटर्न:</b><br>
-            <span style='color:#fde047;'>{live_cluster["pattern_summary"]}</span>
+        # Right Panel: 4-Stage Pro Trailing Roadmap + Recent Confirmed Renko Brick Steps
+        cur_stg = active_prof["stage_num"] if act_tr else 0
+        stage_roadmap_html = f"""
+        <div class='item-card {"ic-active-stage" if cur_stg == 1 else "ic-warn"}'>
+            <b>🛡️ STAGE 1: द ब्रीदिंग ज़ोन (Peak: 0 से +220 Pts)</b><br>
+            <span style='color:#cbd5e1;'>नियम: शुरुआती <b>~250 Pts SL</b> को बिल्कुल नहीं छेड़ा जाएगा ताकि ट्रेड छोटे झटकों से बाहर न हो।</span>
+        </div>
+        <div class='item-card {"ic-active-stage" if cur_stg == 2 else "ic-bull"}'>
+            <b>🟢 STAGE 2: द सेफ ट्रेंड ज़ोन (Peak: +220 से +450 Pts)</b><br>
+            <span style='color:#cbd5e1;'>नियम: रिस्क ज़ीरो! प्राइस से <b>140p–190p का चौड़ा गैप</b> रखकर SL को कॉस्ट+प्रॉफिट में लॉक किया जाता है।</span>
+        </div>
+        <div class='item-card {"ic-active-stage" if cur_stg == 3 else "ic-bull"}'>
+            <b>🚀 STAGE 3: द एग्रेसिव लॉक ज़ोन (Peak: +450 से +700 Pts)</b><br>
+            <span style='color:#cbd5e1;'>नियम: बड़ा मुनाफा वापस जाने से रोकने के लिए गैप घटकर <b>85p–130p</b> हो जाता है (Peak का ~78% लॉक)।</span>
+        </div>
+        <div class='item-card {"ic-active-stage" if cur_stg == 4 else "ic-bull"}'>
+            <b>🔥 STAGE 4: पैराबोलिक चोक ज़ोन (Peak: +700 Pts से ऊपर)</b><br>
+            <span style='color:#cbd5e1;'>नियम: 800-1000p की एक्सट्रीम रैली में <b>45p–75p का एकदम टाइट गैप</b> रखकर टॉप/बॉटम के पास ~90% प्रॉफिट लॉक!</span>
         </div>
         """
 
-        void_cards = ""
-        for idx, v in enumerate(eng["voids"], 1):
-            j_col = "#4ade80" if v["px_jump"] >= 0 else "#f87171"
-            s_col = "#4ade80" if v["l2_shift"] >= 0 else "#f87171"
-            in_ai_tag = "<span style='color:#c084fc; font-size:10.5px; margin-left:4px;'>[AI Cluster Top-10]</span>" if idx <= 10 else ""
-            void_cards += f"""
-            <div class='item-card {v["cls"]}'>
-                <div style='display:flex; justify-content:space-between; font-weight:800; color:#f8fafc;'>
-                    <span>#{idx} 🕒 {v["time"]} | Spread: <b style='color:#facc15;'>${v["spread"]:.1f}</b> {in_ai_tag}</span>
-                    <span style='color:{j_col};'>Jump: {v["px_jump"]:+.1f}$</span>
+        brick_cards = ""
+        for idx, b in enumerate(rk.get("brick_events", []), 1):
+            flip_tag = f"<span style='color:#facc15; font-weight:900; margin-left:6px;'>{b['flip']}</span>" if b["flip"] else ""
+            brick_cards += f"""
+            <div class='item-card {b["cls"]}'>
+                <div style='display:flex; justify-content:space-between; font-weight:800;'>
+                    <span>#{idx} 🕒 {b["time"]} | Brick: {b["dir"]} (Streak #{b["streak"]})</span>
+                    <span style='color:#38bdf8;'>rClose: ${b["r_close"]:,.1f}</span>
                 </div>
-                <div style='color:#cbd5e1; margin-top:3px;'>
-                    <b>L2 बदलाव:</b> {v["l2_before"]:.0f}% ➔ <b>{v["l2_after"]:.0f}% Bid</b> (<span style='color:{s_col}; font-weight:bold;'>{v["l2_shift"]:+.0f}%</span>) | <b>Tape:</b> {v["tape_pct"]:.0f}% B
+                <div style='color:#cbd5e1; font-size:11.8px; margin-top:2px;'>
+                    Renko ST Line: <b>${b["st_line"]:,.1f}</b> {flip_tag}
                 </div>
-                <div style='color:#38bdf8; font-size:11.8px; margin-top:2px; font-weight:600;'>{v["ob_reaction"]}</div>
             </div>
             """
-        if not void_cards:
-            void_cards = "<div style='text-align:center; color:#64748b; padding-top:160px;'>अभी $4.0 से बड़ा कोई स्प्रेड नहीं फटा है।</div>"
+        if not brick_cards:
+            brick_cards = "<div style='text-align:center; color:#64748b; padding-top:40px;'>कन्फर्म्ड रैंकों ब्रिक्स लोड हो रही हैं...</div>"
 
         st_trend_col = "#4ade80" if rk.get("st_trend", 1) == 1 else "#f87171"
         st_trend_txt = "BUY 🟢 (Bullish)" if rk.get("st_trend", 1) == 1 else "SELL 🔴 (Bearish)"
         brick_dir_txt = f"🟢 Up (Streak #{rk.get('brick_streak', 1)})" if rk.get("brick_dir", 1) == 1 else f"🔴 Down (Streak #{rk.get('brick_streak', 1)})"
         st_dist_pts = abs(eng["px"] - rk.get("st_line", eng["px"]))
-        reentry_status_txt = f"🎯 ARMED ({rw.get('dir_str')} @ 20-90p from ${rk.get('st_line', 0):,.0f})" if rw.get("armed") else "⚪ Standby (Requires +200p Exit & >300p Dist)"
+        reentry_status_txt = f"🎯 ARMED ({rw.get('dir_str')} @ 20-90p from ${rk.get('st_line', 0):,.0f})" if rw.get("armed") else "⚪ Standby (+200p Exit & >300p ST Dist)"
 
-        act_tr = eng.get("active_trade")
         if act_tr:
+            gap_now = abs(eng["px"] - act_tr["sl_px"])
             banner_cls = "lock-buy" if act_tr["type"] == "BUY" else "lock-sell"
-            banner_title = f"{'🟢' if act_tr['type']=='BUY' else '🔴'} रैंकों {act_tr['type']} ट्रेड चालू है — स्थिर ग्रिड +220p गेट सक्रिय"
+            banner_title = f"{'🟢' if act_tr['type']=='BUY' else '🔴'} रैंकों {act_tr['type']} चालू — {active_prof['stage_name']}"
             banner_sub = (
-                f"एंट्री: ${act_tr['entry']:,.1f} | एक्टिव SL: ${act_tr['sl_px']:,.1f} ({act_tr['sl_pts']:+.1f} Pts) | "
-                f"Peak: +{act_tr['peak_pts']:.1f}p | Renko ST Line: ${rk.get('st_line', 0.0):,.1f}"
+                f"एंट्री: ${act_tr['entry']:,.1f} | एक्टिव SL: ${act_tr['sl_px']:,.1f} ({act_tr['sl_pts']:+.1f} Pts | Dynamic Gap: {gap_now:.0f}p) | "
+                f"Peak: +{act_tr['peak_pts']:.1f}p"
             )
             right_stat_label = f"LIVE PNL (SL: {act_tr['sl_pts']:+.1f}p)"
             right_stat_val = f"{act_tr['live_pts']:+.1f} Pts"
@@ -1343,8 +1284,8 @@ while True:
             right_stat_col = "#38bdf8"
 
         aj = eng["ai_json_view"]
-        m5_slice = compute_slice_metrics([d for d in eng["vault"] if (time.time() - d["ts"]) <= 300.0])
-        c5_col = "#4ade80" if m5_slice["px_chg"] >= 0 else "#f87171"
+        exh_col = "#facc15" if active_prof["is_exhausted"] else "#4ade80"
+        exh_txt = "⚠️ Over-Extended (Tight Gap)" if active_prof["is_exhausted"] else "✅ Healthy Normal Trend"
 
         left_body = f"""
         <div class='lock-banner {banner_cls}'>
@@ -1361,7 +1302,7 @@ while True:
 
         <div class='ai-sharp-box'>
             <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #3b0764; padding-bottom:6px; margin-bottom:8px;'>
-                <span style='font-size:15px; font-weight:900; color:#c084fc;'>🧠 स्थिर-ग्रिड AI ट्रेलिंग मैनेजर (~250p SL | +220p Profit Gate | 160p Gap)</span>
+                <span style='font-size:15px; font-weight:900; color:#c084fc;'>🧠 4-स्टेज प्रो डायनामिक AI ट्रेलिंग मैनेजर (Pure Renko & Price Action)</span>
                 <span style='font-size:11.5px; color:#4ade80; font-weight:bold;'>{eng["ai_status"]}</span>
             </div>
             <div>
@@ -1371,9 +1312,9 @@ while True:
                 <span class='json-pill'>{aj["badge_4"]}</span>
             </div>
             <div style='font-size:14px; line-height:1.65; color:#f8fafc; margin-top:10px;'>
-                <div>🎯 <b>स्टेटस / AI आदेश:</b> {aj["headline"]}</div>
-                <div style='margin-top:4px;'>⚡ <b>रैंकों एवं ऑर्डरफ्लो विश्लेषण:</b> {aj["macro_vs_micro"]}</div>
-                <div style='margin-top:4px;'>🌪️ <b>10-स्प्रेड क्लस्टर निष्कर्ष:</b> {aj["void_forensics"]}</div>
+                <div>🎯 <b>प्रो-ट्रेडर कमांड:</b> {aj["headline"]}</div>
+                <div style='margin-top:4px;'>🧱 <b>रैंकों ब्रिक एवं ST संरचना:</b> {aj.get("renko_structure", "")}</div>
+                <div style='margin-top:4px;'>📐 <b>21-EMA एवं RSI एक्सटेंशन जांच:</b> {aj.get("extension_check", "")}</div>
             </div>
             {aj.get("trail_box_html", "")}
         </div>
@@ -1381,24 +1322,24 @@ while True:
         <div class='sub-grid'>
             <div class='card-box'>
                 <div class='card-title'>
-                    <span>🧱 1. Stable-Grid AI-Renko इंजन (Non-Repainting)</span>
+                    <span>🧱 1. Dr Devendra AI-Renko इंजन (Direct Mode)</span>
                     <span style='color:{st_trend_col};'>{st_trend_txt}</span>
                 </div>
                 <div class='stat-row'><span>स्पेशल रैंकों सुपरट्रेंड लाइन (stLine):</span><b><span style='color:{st_trend_col};'>${rk.get("st_line", 0.0):,.1f}</span> (दूरी: {st_dist_pts:.0f} Pts)</b></div>
                 <div class='stat-row'><span>स्थिर ब्रिक साइज (Stable Locked):</span><b style='color:#facc15;'>${rk.get("box_size", 200.0):.1f} Pts</b></div>
-                <div class='stat-row'><span>रैंकों ब्रिक क्लोज (rClose) एवं दिशा:</span><b>${rk.get("r_close", 0.0):,.1f} ({brick_dir_txt})</b></div>
+                <div class='stat-row'><span>रैंकों ब्रिक क्लोज (rClose) एवं स्ट्रीक:</span><b>${rk.get("r_close", 0.0):,.1f} ({brick_dir_txt})</b></div>
                 <div class='stat-row' style='border:none;'><span>ST पुलबैक री-एंट्री वॉचर:</span><b style='color:#38bdf8;'>{reentry_status_txt}</b></div>
             </div>
 
             <div class='card-box'>
                 <div class='card-title'>
-                    <span>⚡ 2. आखिरी 5m ऑर्डरफ्लो और L2 वॉल्स (AI Input)</span>
-                    <span style='color:{c5_col};'>{m5_slice["px_chg"]:+.1f} Pts</span>
+                    <span>🎯 2. प्रो-ट्रेडर एक्सटेंशन एवं डायनामिक गैप</span>
+                    <span style='color:{exh_col};'>{exh_txt}</span>
                 </div>
-                <div class='stat-row'><span>आखिरी 5m Taker Tape:</span><b><span style='color:#4ade80;>{m5_slice["tape_buy"]:.0f}% Buy</span> / <span style='color:#f87171;'>{100-m5_slice["tape_buy"]:.0f}% Sell</span></b></div>
-                <div class='stat-row'><span>रैंकों 3-Bar ऑर्डरफ्लो डोमिनेंस:</span><b><span style='color:#4ade80;>{rk.get("buy_dom_pct", 50.0):.0f}% Buy</span> / <span style='color:#f87171;'>{100-rk.get("buy_dom_pct", 50.0):.0f}% Sell</span></b></div>
-                <div class='stat-row'><span>L2 सबसे बड़ी Bid/Ask दीवार:</span><b><span style='color:#4ade80;'>${eng["bid_wall_px"]:,.0f}</span> / <span style='color:#f87171;'>${eng["ask_wall_px"]:,.0f}</span></b></div>
-                <div class='stat-row' style='border:none;'><span>सेशन VWAP एवं 5m रेंज:</span><b>${eng["vwap"]:,.0f} (${m5_slice["low"]:,.0f}–${m5_slice["high"]:,.0f})</b></div>
+                <div class='stat-row'><span>चालू प्रॉफिट स्टेज एवं अनुमत गैप:</span><b style='color:#facc15;'>Stage {active_prof["stage_num"]} ({active_prof["min_gap"]:.0f}p–{active_prof["max_gap"]:.0f}p Gap)</b></div>
+                <div class='stat-row'><span>21-EMA से दूरी (Over-Extension):</span><b>{rk.get("ema_dist_bricks", 0.0):.2f} Bricks (EMA: ${rk.get("ema21", 0.0):,.0f})</b></div>
+                <div class='stat-row'><span>14-RSI मोमेंटम एवं 3-Bar पावर:</span><b>RSI: {rk.get("rsi14", 50.0):.1f} | <span style='color:#4ade80;'>{rk.get("buy_dom_pct", 50.0):.0f}% Buy</span></b></div>
+                <div class='stat-row' style='border:none;'><span>स्टेज गारंटीड लॉक फ्लोर:</span><b style='color:#4ade80;'>{f"+{active_prof['min_lock_pts']:.0f} Pts Min Lock" if active_prof["stage_num"] >= 2 else "Breathing Room (-250p SL)"}</b></div>
             </div>
         </div>
         """
@@ -1407,8 +1348,8 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V20.1 (STABLE-GRID RENKO & HARD-LOCK AI ENGINE)</div>
-                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🗄️ मेमोरी: <b style='color:#facc15;'>{mem_min:.1f} / 30.0 Min</b> | अगली AI जांच: <b>{next_sec}s</b> | 🧠 AI: <b style='color:#c084fc;>{mod_label_short}</b></div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V21.0 (PURE AI-RENKO & 4-STAGE DYNAMIC PRO TRAILING)</div>
+                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🎯 30m/5m नॉइज़ मुक्त | 1s स्पाइक रैचेट: <b style='color:#4ade80;'>ON</b> | अगली AI जांच: <b>{next_sec}s</b> | 🧠 AI: <b style='color:#c084fc;'>{mod_label_short}</b></div>
                 </div>
                 <div style='text-align:right;'>
                     <div style='font-size:21px; font-weight:900; color:#f8fafc;'>BTC: ${eng['px']:,.1f}</div>
@@ -1421,24 +1362,27 @@ while True:
                     {left_body}
                     <div class='history-panel'>
                         <div style='font-size:14px; font-weight:900; color:#4ade80; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
-                            📜 रैंकों ट्रेड, स्थिर ग्रिड री-एंट्री एवं AI गैप-ट्रेलिंग हिस्ट्री
+                            📜 रैंकों ट्रेड एवं 4-स्टेज डायनामिक स्टॉप-लॉस हिस्ट्री
                         </div>
                         {hist_cards}
                     </div>
                 </div>
 
-                <div class='void-panel'>
+                <div class='stage-panel'>
                     <div style='font-size:14.5px; font-weight:900; color:#facc15; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
-                        🌪️ स्प्रेड क्लस्टर एवं ऑर्डरबुक पोस्टमार्टम (Top-10 AI Analyzed)
+                        📐 4-स्टेज प्रो ट्रेलिंग रोडमैप (Active Stage Highlighted)
                     </div>
-                    {cluster_banner}
-                    {void_cards}
+                    {stage_roadmap_html}
+                    <div style='font-size:13.5px; font-weight:900; color:#38bdf8; margin:12px 0 8px 0; border-bottom:1px solid #334155; padding-bottom:5px;'>
+                        🧱 ताज़ा कन्फर्म्ड रैंकों ब्रिक स्टेप्स एवं फ्लिप लॉग
+                    </div>
+                    {brick_cards}
                 </div>
             </div>
         </div>
         """), unsafe_allow_html=True)
 
     else:
-        dashboard_slot.warning("⏳ 24x7 V20.1 (Stable-Grid Renko & Hard-Lock AI Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
+        dashboard_slot.warning("⏳ 24x7 V21.0 (Pure AI-Renko & 4-Stage Pro Trailing Engine) स्टार्ट हो रहा है... कृपया 2 सेकंड प्रतीक्षा करें।")
 
     time.sleep(1.5)
