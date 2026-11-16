@@ -10,9 +10,11 @@ import wave
 import struct
 import math
 import base64
+import hmac
+import hashlib
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V25.0 - Smart Hybrid Renko ST + Peak Lock", layout="wide")
+st.set_page_config(page_title="Pro Quant V25.1 - Smart Hybrid + Delta Demo API", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML/SVG inside a single slot without ghost boxes"""
@@ -21,7 +23,7 @@ def clean_html(raw_html: str) -> str:
 st.markdown(clean_html("""
 <style>
 .stApp { background-color: #090d16; color: #f8fafc; font-family: 'Inter', sans-serif; }
-.block-container { padding-top: 4.2rem !important; padding-bottom: 1.5rem !important; max-width: 98% !important; }
+.block-container { padding-top: 3.6rem !important; padding-bottom: 1.5rem !important; max-width: 98% !important; }
 /* ZERO-BLINK & ANTI-FLICKER LOCK */
 [data-stale="true"], .element-container, .stMarkdown, [data-testid="stAppViewBlockContainer"] * {
     opacity: 1 !important;
@@ -30,6 +32,8 @@ st.markdown(clean_html("""
     filter: none !important;
 }
 .top-bar { background: #111827; border: 1px solid #1f2937; border-bottom: 2px solid #38bdf8; padding: 12px 16px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.ip-badge-box { background: #0f172a; border: 1px solid #facc15; border-left: 4px solid #facc15; padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #f8fafc; }
+.delta-badge-box { background: #0f172a; border: 1px solid #38bdf8; border-left: 4px solid #22c55e; padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #f8fafc; }
 .main-grid { display: grid; grid-template-columns: 1.65fr 1fr; gap: 14px; align-items: start; }
 @media (max-width: 1000px) { .main-grid { grid-template-columns: 1fr; } }
 .lock-banner { padding: 14px 16px; border-radius: 10px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
@@ -53,9 +57,146 @@ div.stButton > button { background-color: #1e293b !important; color: #f8fafc !im
 div.stButton > button:hover { background-color: #38bdf8 !important; color: #090d16 !important; }
 div[data-baseweb="select"] > div { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #c084fc !important; border-radius: 7px !important; font-weight: 700 !important; }
 div[data-baseweb="input"] > div { background-color: #1e293b !important; color: #facc15 !important; border: 1px solid #facc15 !important; border-radius: 7px !important; font-weight: 800 !important; }
-input[type="number"] { color: #facc15 !important; font-weight: 800 !important; }
+input[type="number"], input[type="text"], input[type="password"] { color: #facc15 !important; font-weight: 800 !important; }
 </style>
 """), unsafe_allow_html=True)
+
+# ============================================================================
+# SERVER PUBLIC IP FETCHER & DELTA EXCHANGE DEMO API EXECUTION ENGINE
+# ============================================================================
+DELTA_ENV_URLS = {
+    "🇮🇳 Delta India Testnet (Demo)": "https://cdn-ind.testnet.deltaex.org",
+    "🌐 Delta Global Testnet (Demo)": "https://testnet-api.delta.exchange"
+}
+
+def fetch_server_public_ip() -> str:
+    """Fetches the server's public outbound IPv4 address for Delta API whitelisting"""
+    endpoints = [
+        "https://api.ipify.org",
+        "https://checkip.amazonaws.com",
+        "https://ifconfig.me/ip"
+    ]
+    for url in endpoints:
+        try:
+            r = requests.get(url, timeout=3.0)
+            if r.status_code == 200 and r.text.strip():
+                return r.text.strip()
+        except Exception:
+            continue
+    return "Unable to detect IP"
+
+def get_delta_btc_product_id(base_url: str, cached_id=None) -> int:
+    """Dynamically resolves the BTCUSD / BTCUSDT perpetual product_id on the chosen Delta Testnet"""
+    if cached_id:
+        return int(cached_id)
+    try:
+        r = requests.get(f"{base_url}/v2/products", timeout=4.0)
+        if r.status_code == 200:
+            products = r.json().get("result", [])
+            for sym in ["BTCUSD", "BTCUSDT"]:
+                for p in products:
+                    if p.get("symbol") == sym and p.get("contract_type") == "perpetual_futures":
+                        return int(p["id"])
+            for p in products:
+                if p.get("symbol") in ["BTCUSD", "BTCUSDT"]:
+                    return int(p["id"])
+    except Exception:
+        pass
+    return 27  # Standard fallback BTCUSD product ID on Delta
+
+def generate_delta_signature(secret: str, method: str, timestamp: str, path: str, query_string: str, payload_str: str) -> str:
+    message = method + timestamp + path + query_string + payload_str
+    return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+def place_delta_demo_order(eng: dict, side: str, size: int, reduce_only: bool = False, note: str = ""):
+    """
+    Fires a Market Order on Delta Exchange Demo (Testnet) in a non-blocking manner.
+    side: 'buy' or 'sell'
+    """
+    if not eng.get("delta_enabled", False):
+        return
+    api_key = eng.get("delta_api_key", "").strip()
+    api_secret = eng.get("delta_api_secret", "").strip()
+    if not api_key or not api_secret:
+        eng["delta_last_status"] = "⚠️ Delta Keys खाली हैं (Demo Order Skipped)"
+        return
+
+    def _order_worker():
+        try:
+            base_url = DELTA_ENV_URLS.get(eng.get("delta_env"), "https://cdn-ind.testnet.deltaex.org")
+            prod_id = get_delta_btc_product_id(base_url, eng.get("delta_product_id"))
+            eng["delta_product_id"] = prod_id
+
+            path = "/v2/orders"
+            timestamp = str(int(time.time()))
+            body_dict = {
+                "product_id": int(prod_id),
+                "size": int(max(1, size)),
+                "side": side.lower(),
+                "order_type": "market_order"
+            }
+            if reduce_only:
+                body_dict["reduce_only"] = True
+
+            payload_str = json.dumps(body_dict, separators=(",", ":"))
+            sig = generate_delta_signature(api_secret, "POST", timestamp, path, "", payload_str)
+
+            headers = {
+                "api-key": api_key,
+                "timestamp": timestamp,
+                "signature": sig,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "pro-quant-v25-bot"
+            }
+
+            res = requests.post(f"{base_url}{path}", data=payload_str, headers=headers, timeout=6.0)
+            ist_now = get_ist_time_str()
+            if res.status_code == 200 and res.json().get("success"):
+                ord_data = res.json().get("result", {})
+                ord_id = ord_data.get("id", "OK")
+                eng["delta_last_status"] = f"🟢 Delta Demo {side.upper()} ({size} Lot) Success [ID:{ord_id}] @ {ist_now} ({note})"
+            else:
+                err_txt = res.text[:90]
+                eng["delta_last_status"] = f"🔴 Delta Error ({res.status_code}): {err_txt}"
+        except Exception as e:
+            eng["delta_last_status"] = f"🔴 Delta Exception: {str(e)[:70]}"
+
+    threading.Thread(target=_order_worker, daemon=True).start()
+
+def check_delta_demo_wallet(eng: dict):
+    """Tests Delta Demo API connection & fetches wallet balance"""
+    api_key = eng.get("delta_api_key", "").strip()
+    api_secret = eng.get("delta_api_secret", "").strip()
+    if not api_key or not api_secret:
+        eng["delta_last_status"] = "⚠️ कृपया पहले Delta Demo API Key और Secret दर्ज करें।"
+        return
+
+    try:
+        base_url = DELTA_ENV_URLS.get(eng.get("delta_env"), "https://cdn-ind.testnet.deltaex.org")
+        path = "/v2/wallet/balances"
+        timestamp = str(int(time.time()))
+        sig = generate_delta_signature(api_secret, "GET", timestamp, path, "", "")
+        headers = {
+            "api-key": api_key,
+            "timestamp": timestamp,
+            "signature": sig,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "pro-quant-v25-bot"
+        }
+        r = requests.get(f"{base_url}{path}", headers=headers, timeout=5.0)
+        if r.status_code == 200 and r.json().get("success"):
+            bals = r.json().get("result", [])
+            usdt_bal = 0.0
+            for b in bals:
+                if b.get("asset_symbol") in ["USDT", "USD", "BTC"]:
+                    usdt_bal = max(usdt_bal, float(b.get("available_balance", 0.0)))
+            eng["delta_last_status"] = f"🟢 Delta Demo Connected! Available Balance: ${usdt_bal:,.2f} ({get_ist_time_str()})"
+        else:
+            eng["delta_last_status"] = f"🔴 Auth Error ({r.status_code}): {r.text[:90]}"
+    except Exception as e:
+        eng["delta_last_status"] = f"🔴 Connection Error: {str(e)[:70]}"
 
 # ============================================================================
 # IN-BUILT SOUND SYNTHESIZER
@@ -137,7 +278,7 @@ def fetch_available_api_models(api_key):
     return default_models
 
 # ============================================================================
-# SMART HYBRID PROFIT PROTECTION CALCULATOR (+500p SHIELD & +700p/+1200p LOCK)
+# SMART HYBRID PROFIT PROTECTION CALCULATOR (UNTOUCHED LOGIC)
 # ============================================================================
 def compute_hybrid_protection(entry_px: float, peak_pts: float, trade_type: str, st_line: float) -> dict:
     """
@@ -198,7 +339,7 @@ def compute_hybrid_protection(entry_px: float, peak_pts: float, trade_type: str,
         }
 
 # ============================================================================
-# PURE SVG LIVE CHART GENERATOR (SHOWS PRICE, ST LINE & HYBRID SHIELD LINE)
+# PURE SVG LIVE CHART GENERATOR (UNTOUCHED LOGIC)
 # ============================================================================
 def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
     pts = rk.get("chart_points", [])
@@ -252,7 +393,6 @@ def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
         f"<line x1='{pad_l}' y1='{y_bbot:.1f}' x2='{w - pad_r}' y2='{y_bbot:.1f}' stroke='#f97316' stroke-dasharray='4,4' stroke-width='1' opacity='0.6'/>"
     )
 
-    # If Hybrid Profit Shield (+500p/+700p) is active, draw a golden shield line on the chart
     shield_svg = ""
     if active_tr and active_tr.get("shield_active") and active_tr.get("protect_sl", 0) > 0:
         y_sh = to_y(active_tr["protect_sl"])
@@ -316,7 +456,7 @@ def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
     """
 
 # ============================================================================
-# CORE ARCHITECTURE: SYNTHETIC RENKO SUPERTREND + SMART HYBRID SIMULATOR
+# CORE ARCHITECTURE: SYNTHETIC RENKO SUPERTREND (UNTOUCHED LOGIC)
 # ============================================================================
 HYPERLIQUID_URL = "https://api.hyperliquid.xyz/info"
 
@@ -346,11 +486,6 @@ def fetch_live_btc_price():
     return None
 
 def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: float = 2.0, allow_pullback_reentry: bool = False):
-    """
-    1. Runs 'AI Renko Supertrend [Core Architecture]' on confirmed 1m candles (last 24h).
-    2. Applies Smart Hybrid Profit Protection (+500p Breakeven+ Shield & +700p/+1200p Peak Lock)
-       across historical trades so the user sees exact Hybrid PnL vs raw Flip PnL!
-    """
     try:
         brick_size = max(10.0, float(fixed_brick_size))
         rev_mult = max(0.5, float(rev_bricks))
@@ -411,9 +546,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
         roll_sell = (bar_sell_v[-1] * 1.4) + bar_sell_v[-2] + bar_sell_v[-3]
         buy_dom_pct = (roll_buy / (roll_buy + roll_sell) * 100.0) if (roll_buy + roll_sell) > 0 else 50.0
 
-        # ====================================================================
-        # CORE RENKO SUPERTREND + SMART HYBRID TRADE TRACKER
-        # ====================================================================
         rev_dist = rev_mult * brick_size
         snapped = math.floor(closes[0] / brick_size) * brick_size
         brick_bot = snapped
@@ -488,10 +620,8 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
             b_ist_short = (datetime.utcfromtimestamp(bar_times[i] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M %p')
             b_ist_full = (datetime.utcfromtimestamp(bar_times[i] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
-            # 1. Check if an active Hybrid Trade hit its +500p/+700p/+1200p Protected SL on this bar (before a flip)
             if hybrid_trades and "ACTIVE" in hybrid_trades[-1]["status"] and not (bar_buy_sig or bar_sell_sig):
                 cur_t = hybrid_trades[-1]
-                # First check if existing shield SL was hit on this bar
                 if cur_t.get("shield_active"):
                     prot_sl = cur_t["protect_sl"]
                     hit_shield = (l_bar <= prot_sl) if cur_t["type"] == "BUY" else (h_bar >= prot_sl)
@@ -508,7 +638,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                             sim_reentry_armed = True
                             sim_reentry_dir = 1 if cur_t["type"] == "BUY" else -1
 
-                # If still active, update Peak Profit and upgrade Hybrid Shield if it crossed +500p / +700p / +1200p
                 if "ACTIVE" in cur_t["status"]:
                     fav_px = h_bar if cur_t["type"] == "BUY" else l_bar
                     cur_fav = (fav_px - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - fav_px)
@@ -530,7 +659,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     else:
                         cur_t["protect_sl"] = st_level
 
-            # 2. Optional Pullback Re-Entry near ST Line (if enabled and armed)
             if allow_pullback_reentry and sim_reentry_armed and not (bar_buy_sig or bar_sell_sig):
                 if sim_reentry_dir != trend:
                     sim_reentry_armed = False
@@ -574,7 +702,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                             "exit_reason": "चालू है — +500p पर Breakeven Shield और +700p पर Peak Lock ऑन होगा"
                         })
 
-            # 3. Handle Main Signal-to-Signal Flip (BUY ▲ / SELL ▼)
             if bar_buy_sig or bar_sell_sig:
                 last_flip_bar_ts = bar_times[i]
                 last_flip_price = c
@@ -666,9 +793,9 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
         return {"error": str(e)}
 
 # ============================================================================
-# LIVE HYBRID TRADE OPENER & CLOSER
+# LIVE HYBRID TRADE OPENER & CLOSER (WITH DELTA DEMO API HOOK)
 # ============================================================================
-def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, entry_source_label: str):
+def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, entry_source_label: str, fire_delta: bool = True):
     rk = eng.get("renko", {})
     st_line_val = rk.get("st_line", entry_px)
     box_sz = rk.get("box_size", 270.0)
@@ -696,7 +823,13 @@ def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, en
     eng["signal_history"] = eng["signal_history"][:30]
     eng["sound_event"] = {"id": time.time(), "type": "BULL" if direction == "BUY" else "BEAR"}
 
-def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, reason_title: str, detailed_reason: str):
+    # Fire Delta Exchange Demo Market Order on Live Entry
+    if fire_delta:
+        delta_side = "buy" if direction == "BUY" else "sell"
+        lot_sz = int(eng.get("delta_lot_size", 1))
+        place_delta_demo_order(eng, side=delta_side, size=lot_sz, reduce_only=False, note=f"Entry {direction}")
+
+def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, reason_title: str, detailed_reason: str, fire_delta: bool = True):
     move = (exit_px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - exit_px)
     active_tr["live_pts"] = round(move, 1)
     active_tr["peak_pts"] = round(max(active_tr["peak_pts"], move), 1)
@@ -707,7 +840,12 @@ def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, re
     eng["active_trade"] = None
     eng["sound_event"] = {"id": time.time(), "type": "EXIT"}
 
-    # Arm optional Pullback Re-Entry if trade closed via Hybrid Profit Lock while ST Line is far
+    # Fire Delta Exchange Demo Reduce-Only Close Order on Live Exit
+    if fire_delta:
+        close_side = "sell" if active_tr["type"] == "BUY" else "buy"
+        lot_sz = int(eng.get("delta_lot_size", 1))
+        place_delta_demo_order(eng, side=close_side, size=lot_sz, reduce_only=True, note=f"Exit {active_tr['type']}")
+
     rk = eng.get("renko", {})
     st_line_now = rk.get("st_line", 0.0)
     st_trend_now = rk.get("st_trend", 0)
@@ -722,7 +860,7 @@ def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, re
         }
 
 # ============================================================================
-# AI SMART HYBRID COMMENTARY & PROFIT LOCK REFINEMENT ENGINE
+# AI SMART HYBRID COMMENTARY & PROFIT LOCK REFINEMENT ENGINE (UNTOUCHED LOGIC)
 # ============================================================================
 def parse_ai_json_safely(raw_text: str):
     try:
@@ -848,7 +986,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         eng["ai_busy"] = False
 
 # ============================================================================
-# 24x7 1-SECOND BACKGROUND WORKER (SIGNAL-TO-SIGNAL + 1s HYBRID PROFIT LOCK)
+# 24x7 1-SECOND BACKGROUND WORKER (UNTOUCHED LOGIC)
 # ============================================================================
 def background_worker(eng, worker_id):
     last_used_brick_size = eng.get("fixed_brick_size", 270.0)
@@ -914,7 +1052,8 @@ def background_worker(eng, worker_id):
                             close_hybrid_trade_at_price(
                                 eng, act_tr, px, ist_str,
                                 f"HYBRID PHASE {hyb['phase']} PROFIT LOCK",
-                                f"🛡️ स्मार्ट हाइब्रिड लॉक हिट! Peak +{act_tr['peak_pts']:.1f}p से पलटने पर ${act_tr['protect_sl']:,.1f} पर +{booked:.1f} Pts सुरक्षित बुक!"
+                                f"🛡️ स्मार्ट हाइब्रिड लॉक हिट! Peak +{act_tr['peak_pts']:.1f}p से पलटने पर ${act_tr['protect_sl']:,.1f} पर +{booked:.1f} Pts सुरक्षित बुक!",
+                                fire_delta=True
                             )
                     else:
                         act_tr["protect_sl"] = round(st_line_now, 1)
@@ -928,9 +1067,9 @@ def background_worker(eng, worker_id):
                         eng["reentry_watch"] = {"armed": False, "dir": 0, "reason": ""}
                     elif (now_ts - rw.get("armed_ts", 0.0)) >= 45.0:
                         if rw["dir"] == 1 and (st_line_now + 20.0 <= px <= st_line_now + 90.0):
-                            open_hybrid_trade_now(eng, "BUY", px, ist_str, "🔄 Hybrid ST Pullback Re-Entry ▲")
+                            open_hybrid_trade_now(eng, "BUY", px, ist_str, "🔄 Hybrid ST Pullback Re-Entry ▲", fire_delta=True)
                         elif rw["dir"] == -1 and (st_line_now - 90.0 <= px <= st_line_now - 20.0):
-                            open_hybrid_trade_now(eng, "SELL", px, ist_str, "🔄 Hybrid ST Pullback Re-Entry ▼")
+                            open_hybrid_trade_now(eng, "SELL", px, ist_str, "🔄 Hybrid ST Pullback Re-Entry ▼", fire_delta=True)
 
                 # 3. UPDATE CORE RENKO SUPERTREND & SYNC HISTORICAL HYBRID TRADES
                 if settings_changed or (now_ts - eng["last_kline_ts"] > 6):
@@ -954,7 +1093,7 @@ def background_worker(eng, worker_id):
                                 eng["active_trade"] = latest_tr if "ACTIVE" in latest_tr["status"] else None
                             else:
                                 cur_dir = "BUY" if rk_data["st_trend"] == 1 else "SELL"
-                                open_hybrid_trade_now(eng, cur_dir, rk_data["last_flip_price"], rk_data["last_flip_time_str"], f"🔥 Chart Sync {cur_dir}")
+                                open_hybrid_trade_now(eng, cur_dir, rk_data["last_flip_price"], rk_data["last_flip_time_str"], f"🔥 Chart Sync {cur_dir}", fire_delta=False)
                             threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
                         else:
                             if rk_data["st_trend"] != prev_rk_trend and rk_data["last_flip_bar_ts"] != eng.get("last_handled_flip_ts"):
@@ -966,10 +1105,11 @@ def background_worker(eng, worker_id):
                                     close_hybrid_trade_at_price(
                                         eng, eng["active_trade"], flip_px, ist_str,
                                         f"FLIPPED TO {new_dir}",
-                                        f"विपरीत {new_dir} सिग्नल आने पर ${flip_px:,.1f} पर बंद हुआ"
+                                        f"विपरीत {new_dir} सिग्नल आने पर ${flip_px:,.1f} पर बंद हुआ",
+                                        fire_delta=True
                                     )
 
-                                open_hybrid_trade_now(eng, new_dir, flip_px, ist_str, f"🔥 Live Renko ST Flip {new_dir} {'▲' if new_dir=='BUY' else '▼'}")
+                                open_hybrid_trade_now(eng, new_dir, flip_px, ist_str, f"🔥 Live Renko ST Flip {new_dir} {'▲' if new_dir=='BUY' else '▼'}", fire_delta=True)
                                 threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
 
                     elif rk_data and "error" in rk_data:
@@ -985,10 +1125,19 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v25_0():
+def get_master_engine_v25_1():
     wid = int(time.time() * 1000)
+    srv_ip = fetch_server_public_ip()
     eng = {
         "worker_id": wid, "px": 0.0, "last_update": "--:--:--",
+        "server_ip": srv_ip,
+        "delta_env": "🇮🇳 Delta India Testnet (Demo)",
+        "delta_api_key": "",
+        "delta_api_secret": "",
+        "delta_lot_size": 1,
+        "delta_enabled": True,
+        "delta_product_id": None,
+        "delta_last_status": "⚪ Delta Demo Ready (API Keys सेट करें)",
         "fixed_brick_size": 270.0, "rev_bricks": 2.0, "allow_pullback_reentry": False,
         "signal_history": [], "active_trade": None, "ai_busy": False,
         "reentry_watch": {"armed": False, "dir": 0, "reason": ""},
@@ -1013,11 +1162,15 @@ def get_master_engine_v25_0():
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v25_0()
+eng = get_master_engine_v25_1()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
         eng["api_key"] = str(st.secrets["GEMINI_API_KEY"]).strip()
+    if "DELTA_API_KEY" in st.secrets and not eng["delta_api_key"]:
+        eng["delta_api_key"] = str(st.secrets["DELTA_API_KEY"]).strip()
+    if "DELTA_API_SECRET" in st.secrets and not eng["delta_api_secret"]:
+        eng["delta_api_secret"] = str(st.secrets["DELTA_API_SECRET"]).strip()
 except Exception:
     pass
 
@@ -1029,7 +1182,57 @@ if "last_played_sound_id" not in st.session_state:
     st.session_state["last_played_sound_id"] = 0.0
 
 # ============================================================================
-# TOP CONTROL BAR
+# COMPACT SERVER IP DISPLAY BOX & DELTA EXCHANGE DEMO API SETUP BAR
+# ============================================================================
+ip_col1, ip_col2, ip_col3 = st.columns([0.34, 0.48, 0.18])
+with ip_col1:
+    st.markdown(clean_html(f"""
+    <div class='ip-badge-box'>
+        <span>🌐 <b>Server IP (Delta Whitelist):</b></span>
+        <code style='color:#facc15; background:#1e293b; padding:2px 8px; border-radius:5px; font-size:13.5px; font-weight:900;'>{eng.get('server_ip', '--')}</code>
+    </div>
+    """), unsafe_allow_html=True)
+
+with ip_col2:
+    st.markdown(clean_html(f"""
+    <div class='delta-badge-box'>
+        <span>⚡ <b>Delta Demo:</b></span>
+        <span style='color:#38bdf8; font-weight:700;'>{eng.get('delta_last_status', 'Ready')}</span>
+    </div>
+    """), unsafe_allow_html=True)
+
+with ip_col3:
+    if st.button("🔄 Refresh Server IP"):
+        eng["server_ip"] = fetch_server_public_ip()
+
+with st.expander("⚙️ Delta Exchange Demo API सेटअप एवं टेस्ट पैनल (यहाँ API Key डालें)", expanded=False):
+    d_c1, d_c2, d_c3, d_c4, d_c5 = st.columns([0.24, 0.24, 0.24, 0.14, 0.14])
+    with d_c1:
+        env_list = list(DELTA_ENV_URLS.keys())
+        cur_env_idx = env_list.index(eng["delta_env"]) if eng.get("delta_env") in env_list else 0
+        eng["delta_env"] = st.selectbox("Delta Demo Server:", options=env_list, index=cur_env_idx)
+    with d_c2:
+        eng["delta_api_key"] = st.text_input("🔑 Delta Demo API Key:", value=eng.get("delta_api_key", ""), type="password")
+    with d_c3:
+        eng["delta_api_secret"] = st.text_input("🔒 Delta Demo API Secret:", value=eng.get("delta_api_secret", ""), type="password")
+    with d_c4:
+        eng["delta_lot_size"] = int(st.number_input("📦 Lot Size (BTC):", min_value=1, max_value=1000, value=int(eng.get("delta_lot_size", 1)), step=1))
+    with d_c5:
+        eng["delta_enabled"] = st.checkbox("⚡ Auto-Trade ON", value=bool(eng.get("delta_enabled", True)))
+
+    b_c1, b_c2, b_c3 = st.columns(3)
+    with b_c1:
+        if st.button("🔍 Check Delta Demo Connection & Balance"):
+            check_delta_demo_wallet(eng)
+    with b_c2:
+        if st.button("🟢 Test Demo BUY (1 Lot Market)"):
+            place_delta_demo_order(eng, side="buy", size=int(eng.get("delta_lot_size", 1)), reduce_only=False, note="Manual Test BUY")
+    with b_c3:
+        if st.button("🔴 Test Demo SELL (1 Lot Market)"):
+            place_delta_demo_order(eng, side="sell", size=int(eng.get("delta_lot_size", 1)), reduce_only=False, note="Manual Test SELL")
+
+# ============================================================================
+# TOP CONTROL BAR (UNTOUCHED CONTROLS)
 # ============================================================================
 c_mod, c_brk, c_rev, c_re, c_act1, c_snd = st.columns([0.21, 0.14, 0.14, 0.19, 0.20, 0.12])
 
@@ -1136,7 +1339,6 @@ while True:
 
         svg_chart_html = build_renko_svg_chart(rk, eng["px"], act_tr)
 
-        # Calculate Total Net PnL of displayed history
         closed_pnl_sum = sum(h["live_pts"] for h in eng["signal_history"] if "ACTIVE" not in h["status"])
         win_cnt = sum(1 for h in eng["signal_history"] if "ACTIVE" not in h["status"] and h["live_pts"] > 0)
         loss_cnt = sum(1 for h in eng["signal_history"] if "ACTIVE" not in h["status"] and h["live_pts"] <= 0)
@@ -1263,7 +1465,7 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V25.0 (SMART HYBRID: SIGNAL-TO-SIGNAL + PEAK PROFIT LOCK)</div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V25.1 (SMART HYBRID + DELTA DEMO AUTO-TRADER)</div>
                     <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🧱 Brick: <b style='color:#facc15;'>${box_sz:.0f}</b> | Rev: <b>{rev_b:.1f}x</b> | 🛡️ Hybrid: <b>+500p Shield & +700p/+1200p Peak Lock</b> | 24h Closed PnL: <b style='color:{net_col};'>{closed_pnl_sum:+.1f} Pts ({win_cnt}W/{loss_cnt}L)</b></div>
                 </div>
                 <div style='text-align:right;'>
@@ -1300,6 +1502,6 @@ while True:
 
     else:
         err_msg = f" ({eng['last_err']})" if eng.get("last_err") else ""
-        dashboard_slot.warning(f"⏳ 24x7 V25.0 (Smart Hybrid Renko Engine) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
+        dashboard_slot.warning(f"⏳ 24x7 V25.1 (Smart Hybrid + Delta Demo Engine) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
 
     time.sleep(1.5)
