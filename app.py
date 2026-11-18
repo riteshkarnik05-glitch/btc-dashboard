@@ -14,7 +14,7 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V26.1 - +300p/+500p Hybrid + AI Lot + Delta Demo", layout="wide")
+st.set_page_config(page_title="Pro Quant V26.2 - Smart Hybrid + Auto AI + Delta Demo", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML/SVG inside a single slot without ghost boxes"""
@@ -32,9 +32,9 @@ st.markdown(clean_html("""
     filter: none !important;
 }
 .top-bar { background: #111827; border: 1px solid #1f2937; border-bottom: 2px solid #38bdf8; padding: 12px 16px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-.ip-badge-box { background: #0f172a; border: 1px solid #facc15; border-left: 4px solid #facc15; padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #f8fafc; }
-.delta-badge-box { background: #0f172a; border: 1px solid #38bdf8; border-left: 4px solid #22c55e; padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #f8fafc; }
-.lot-badge-box { background: #1e1b4b; border: 1px solid #c084fc; border-left: 4px solid #facc15; padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #f8fafc; }
+.ip-badge-box { background: #0f172a; border: 1px solid #facc15; border-left: 4px solid #facc15; padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #f8fafc; width: 100%; }
+.ai-badge-box { background: #1e1b4b; border: 1px solid #c084fc; border-left: 4px solid #4ade80; padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #f8fafc; width: 100%; }
+.delta-badge-box { background: #0f172a; border: 1px solid #38bdf8; border-left: 4px solid #22c55e; padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #f8fafc; width: 100%; }
 .main-grid { display: grid; grid-template-columns: 1.65fr 1fr; gap: 14px; align-items: start; }
 @media (max-width: 1000px) { .main-grid { grid-template-columns: 1fr; } }
 .lock-banner { padding: 14px 16px; border-radius: 10px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
@@ -48,27 +48,29 @@ st.markdown(clean_html("""
 .stat-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-bottom: 1px dashed #1f2937; }
 .chart-box { background: #0c1220; border: 1px solid #334155; border-top: 3px solid #38bdf8; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
 .history-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #22c55e; border-radius: 10px; padding: 12px 14px; height: 360px; overflow-y: auto; }
-.brick-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #facc15; border-radius: 10px; padding: 12px 14px; height: 995px; overflow-y: auto; }
-.item-card { background: #090d16; border: 1px solid #1f2937; padding: 9px 11px; border-radius: 7px; margin-bottom: 7px; font-size: 12.5px; line-height: 1.45; }
+.brick-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #facc15; border-radius: 10px; padding: 12px 14px; height: auto; }
+.item-card { background: #090d16; border: 1px solid #1f2937; padding: 10px 12px; border-radius: 7px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.5; }
 .ic-bull { border-left: 4px solid #22c55e; }
 .ic-bear { border-left: 4px solid #ef4444; }
 .ic-warn { border-left: 4px solid #facc15; }
 .ic-active-stage { background: #172554; border: 1px solid #38bdf8; border-left: 5px solid #facc15; }
 div.stButton > button { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #38bdf8 !important; border-radius: 7px !important; font-weight: 700 !important; width: 100%; margin-top: 2px; }
 div.stButton > button:hover { background-color: #38bdf8 !important; color: #090d16 !important; }
-div[data-baseweb="select"] > div { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #c084fc !important; border-radius: 7px !important; font-weight: 700 !important; }
 div[data-baseweb="input"] > div { background-color: #1e293b !important; color: #facc15 !important; border: 1px solid #facc15 !important; border-radius: 7px !important; font-weight: 800 !important; }
-input[type="number"], input[type="text"], input[type="password"] { color: #facc15 !important; font-weight: 800 !important; }
+input[type="number"] { color: #facc15 !important; font-weight: 800 !important; }
 </style>
 """), unsafe_allow_html=True)
 
 # ============================================================================
-# SERVER PUBLIC IP FETCHER & DELTA EXCHANGE DEMO API EXECUTION ENGINE
+# HARDCODED DELTA EXCHANGE DEMO API CREDENTIALS & SERVER IP FETCHER
 # ============================================================================
-DELTA_ENV_URLS = {
-    "🇮🇳 Delta India Testnet (Demo)": "https://cdn-ind.testnet.deltaex.org",
-    "🌐 Delta Global Testnet (Demo)": "https://testnet-api.delta.exchange"
-}
+HARDCODED_DELTA_API_KEY = "7KBIKEhD3yjFWO7tmW6golXOrbnAQW"
+HARDCODED_DELTA_API_SECRET = "SVGs8vtF6CpNqT0ldyLGgPskGoo7w3QJ24v2ytJqB1CWn2xZIS0U7iBcNFDb"
+
+DELTA_TESTNET_CANDIDATES = [
+    ("India Demo", "https://cdn-ind.testnet.deltaex.org"),
+    ("Global Demo", "https://testnet-api.delta.exchange")
+]
 
 def fetch_server_public_ip() -> str:
     """Fetches the server's public outbound IPv4 address for Delta API whitelisting"""
@@ -108,91 +110,95 @@ def generate_delta_signature(secret: str, method: str, timestamp: str, path: str
     message = method + timestamp + path + query_string + payload_str
     return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
-def place_delta_demo_order(eng: dict, side: str, size: int, reduce_only: bool = False, note: str = ""):
-    """Fires a Market Order on Delta Exchange Demo (Testnet) with the exact AI-decided lot size"""
-    if not eng.get("delta_enabled", False):
-        return
-    api_key = eng.get("delta_api_key", "").strip()
-    api_secret = eng.get("delta_api_secret", "").strip()
-    if not api_key or not api_secret:
-        eng["delta_last_status"] = f"⚠️ Delta Keys खाली हैं ({note}: {size} Lot Skipped)"
-        return
+def auto_verify_delta_demo_wallet(eng: dict):
+    """Automatically detects the matching Delta Testnet endpoint (India or Global) and verifies wallet balance"""
+    api_key = eng.get("delta_api_key", HARDCODED_DELTA_API_KEY).strip()
+    api_secret = eng.get("delta_api_secret", HARDCODED_DELTA_API_SECRET).strip()
+    path = "/v2/wallet/balances"
 
-    def _order_worker():
+    for env_label, base_url in DELTA_TESTNET_CANDIDATES:
         try:
-            base_url = DELTA_ENV_URLS.get(eng.get("delta_env"), "https://cdn-ind.testnet.deltaex.org")
-            prod_id = get_delta_btc_product_id(base_url, eng.get("delta_product_id"))
-            eng["delta_product_id"] = prod_id
-
-            path = "/v2/orders"
             timestamp = str(int(time.time()))
-            body_dict = {
-                "product_id": int(prod_id),
-                "size": int(max(1, size)),
-                "side": side.lower(),
-                "order_type": "market_order"
-            }
-            if reduce_only:
-                body_dict["reduce_only"] = True
-
-            payload_str = json.dumps(body_dict, separators=(",", ":"))
-            sig = generate_delta_signature(api_secret, "POST", timestamp, path, "", payload_str)
-
+            sig = generate_delta_signature(api_secret, "GET", timestamp, path, "", "")
             headers = {
                 "api-key": api_key,
                 "timestamp": timestamp,
                 "signature": sig,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "User-Agent": "pro-quant-v26-1-bot"
+                "User-Agent": "pro-quant-v26-2-bot"
             }
-
-            res = requests.post(f"{base_url}{path}", data=payload_str, headers=headers, timeout=6.0)
-            ist_now = get_ist_time_str()
-            if res.status_code == 200 and res.json().get("success"):
-                ord_data = res.json().get("result", {})
-                ord_id = ord_data.get("id", "OK")
-                eng["delta_last_status"] = f"🟢 Delta {side.upper()} ({size} Lot) OK [ID:{ord_id}] @ {ist_now} ({note})"
+            r = requests.get(f"{base_url}{path}", headers=headers, timeout=5.0)
+            if r.status_code == 200 and r.json().get("success"):
+                eng["delta_base_url"] = base_url
+                eng["delta_product_id"] = get_delta_btc_product_id(base_url)
+                bals = r.json().get("result", [])
+                usdt_bal = 0.0
+                for b in bals:
+                    if b.get("asset_symbol") in ["USDT", "USD", "BTC"]:
+                        usdt_bal = max(usdt_bal, float(b.get("available_balance", 0.0)))
+                eng["delta_last_status"] = f"🟢 {env_label} Connected (Bal: ${usdt_bal:,.1f})"
+                return
             else:
-                err_txt = res.text[:85]
-                eng["delta_last_status"] = f"🔴 Delta Error ({res.status_code}): {err_txt}"
+                last_err = f"🔴 {env_label} ({r.status_code}): {r.text[:65]}"
         except Exception as e:
-            eng["delta_last_status"] = f"🔴 Delta Exception: {str(e)[:70]}"
+            last_err = f"🔴 {env_label} Err: {str(e)[:55]}"
+
+    eng["delta_last_status"] = last_err
+
+def place_delta_demo_order(eng: dict, side: str, size: int, reduce_only: bool = False, note: str = ""):
+    """Fires a Market Order on Delta Exchange Demo (Testnet) with the exact AI-decided lot size"""
+    if not eng.get("delta_enabled", True):
+        return
+    api_key = eng.get("delta_api_key", HARDCODED_DELTA_API_KEY).strip()
+    api_secret = eng.get("delta_api_secret", HARDCODED_DELTA_API_SECRET).strip()
+
+    def _order_worker():
+        path = "/v2/orders"
+        primary_url = eng.get("delta_base_url", "https://cdn-ind.testnet.deltaex.org")
+        urls_to_try = [primary_url] + [u for _, u in DELTA_TESTNET_CANDIDATES if u != primary_url]
+
+        for base_url in urls_to_try:
+            try:
+                prod_id = get_delta_btc_product_id(base_url, eng.get("delta_product_id") if base_url == primary_url else None)
+                timestamp = str(int(time.time()))
+                body_dict = {
+                    "product_id": int(prod_id),
+                    "size": int(max(1, size)),
+                    "side": side.lower(),
+                    "order_type": "market_order"
+                }
+                if reduce_only:
+                    body_dict["reduce_only"] = True
+
+                payload_str = json.dumps(body_dict, separators=(",", ":"))
+                sig = generate_delta_signature(api_secret, "POST", timestamp, path, "", payload_str)
+
+                headers = {
+                    "api-key": api_key,
+                    "timestamp": timestamp,
+                    "signature": sig,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "pro-quant-v26-2-bot"
+                }
+
+                res = requests.post(f"{base_url}{path}", data=payload_str, headers=headers, timeout=6.0)
+                ist_now = get_ist_time_str()
+                if res.status_code == 200 and res.json().get("success"):
+                    eng["delta_base_url"] = base_url
+                    eng["delta_product_id"] = prod_id
+                    ord_data = res.json().get("result", {})
+                    ord_id = ord_data.get("id", "OK")
+                    eng["delta_last_status"] = f"🟢 {side.upper()} ({size} Lot) OK [ID:{ord_id}] @ {ist_now}"
+                    return
+                else:
+                    err_txt = res.text[:75]
+                    eng["delta_last_status"] = f"🔴 Delta ({res.status_code}): {err_txt}"
+            except Exception as e:
+                eng["delta_last_status"] = f"🔴 Delta Err: {str(e)[:60]}"
 
     threading.Thread(target=_order_worker, daemon=True).start()
-
-def check_delta_demo_wallet(eng: dict):
-    api_key = eng.get("delta_api_key", "").strip()
-    api_secret = eng.get("delta_api_secret", "").strip()
-    if not api_key or not api_secret:
-        eng["delta_last_status"] = "⚠️ कृपया पहले Delta Demo API Key और Secret दर्ज करें।"
-        return
-
-    try:
-        base_url = DELTA_ENV_URLS.get(eng.get("delta_env"), "https://cdn-ind.testnet.deltaex.org")
-        path = "/v2/wallet/balances"
-        timestamp = str(int(time.time()))
-        sig = generate_delta_signature(api_secret, "GET", timestamp, path, "", "")
-        headers = {
-            "api-key": api_key,
-            "timestamp": timestamp,
-            "signature": sig,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "pro-quant-v26-1-bot"
-        }
-        r = requests.get(f"{base_url}{path}", headers=headers, timeout=5.0)
-        if r.status_code == 200 and r.json().get("success"):
-            bals = r.json().get("result", [])
-            usdt_bal = 0.0
-            for b in bals:
-                if b.get("asset_symbol") in ["USDT", "USD", "BTC"]:
-                    usdt_bal = max(usdt_bal, float(b.get("available_balance", 0.0)))
-            eng["delta_last_status"] = f"🟢 Delta Connected! Balance: ${usdt_bal:,.2f} ({get_ist_time_str()})"
-        else:
-            eng["delta_last_status"] = f"🔴 Auth Error ({r.status_code}): {r.text[:85]}"
-    except Exception as e:
-        eng["delta_last_status"] = f"🔴 Connection Error: {str(e)[:70]}"
 
 # ============================================================================
 # IN-BUILT SOUND SYNTHESIZER
@@ -223,10 +229,8 @@ def create_sound_b64(tone_type="BULL"):
     return base64.b64encode(buf.getvalue()).decode('ascii')
 
 # ============================================================================
-# LIVE GEMINI API MODEL DISCOVERY (PRO-MODEL PRIORITY)
+# LIVE GEMINI API MODEL AUTO-DISCOVERY & AUTO-SELECTION
 # ============================================================================
-AUTO_MODEL_LABEL = "🤖 Auto (Pro/Advanced Priority)"
-
 def score_model_priority(model_name: str) -> tuple:
     tier = 0 if ("pro" in model_name and "vision" not in model_name) else (
         1 if "exp" in model_name else (
@@ -244,9 +248,9 @@ def score_model_priority(model_name: str) -> tuple:
 def fetch_available_api_models(api_key):
     default_models = [
         "gemini-2.5-pro",
-        "gemini-1.5-pro",
         "gemini-2.5-flash",
         "gemini-2.0-flash",
+        "gemini-1.5-pro",
         "gemini-1.5-flash",
         "gemini-2.5-flash-lite",
         "gemini-2.0-flash-lite"
@@ -273,6 +277,24 @@ def fetch_available_api_models(api_key):
         pass
     return default_models
 
+def build_auto_model_queue(eng: dict) -> list:
+    """Builds the ordered list of available AI models, prioritizing the last working model & discovered models"""
+    default_priority = [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite"
+    ]
+    avail = sorted(eng.get("available_models", []), key=score_model_priority)
+    queue = []
+    for m in avail + default_priority:
+        if m and m not in queue:
+            queue.append(m)
+    return queue
+
 # ============================================================================
 # AI DYNAMIC LOSS-RECOVERY & LOT SIZING ENGINE (MANDATORY ENTRY ON EVERY SIGNAL)
 # ============================================================================
@@ -288,12 +310,6 @@ def parse_ai_json_safely(raw_text: str):
     return None
 
 def quant_fallback_lot_sizer(new_dir: str, loss_streak: int, deficit_pts: float, last_closed_pts: float, rsi14: float, buy_dom_pct: float, ema_dist_bricks: float) -> tuple:
-    """
-    Intelligent Quant Fallback Brain for Dynamic Recovery Lot Multiplier (1x, 2x, or 3x):
-    - NEVER skips a Renko signal (minimum multiplier = 1).
-    - Resets to 1x when there is no pending loss deficit or after a profitable recovery.
-    - Can scale up to 2x or 3x even after a SINGLE loss if momentum supports recovery!
-    """
     if deficit_pts <= 0 or loss_streak <= 0:
         return 1, "✅ पिछला कोई पेंडिंग लॉस नहीं है — स्टैंडर्ड 1x Base Lot से ट्रेड लिया गया।"
 
@@ -319,6 +335,7 @@ def decide_next_lot_multiplier_with_ai(eng: dict, new_dir: str, loss_streak: int
 
     api_key = eng.get("api_key", "").strip()
     if not api_key:
+        eng["active_ai_model"] = "In-Built Quant Brain (No Gemini Key)"
         return quant_fallback_lot_sizer(new_dir, loss_streak, deficit_pts, last_closed_pts, rsi14, buy_dom, ema_bricks)
 
     fav_dom = buy_dom if new_dir == "BUY" else (100.0 - buy_dom)
@@ -353,37 +370,28 @@ Return ONLY valid JSON:
         "generationConfig": {"temperature": 0.15, "maxOutputTokens": 220}
     }
 
-    selected_model = eng.get("selected_model", AUTO_MODEL_LABEL)
-    pro_first = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro", "gemini-1.5-pro", "gemini-1.5-flash"]
-    models_queue = [selected_model] + [m for m in pro_first if m != selected_model] if (selected_model and selected_model != AUTO_MODEL_LABEL) else pro_first
-
-    for mod in models_queue[:3]:
+    models_queue = build_auto_model_queue(eng)
+    for mod in models_queue:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
-            res = requests.post(url, json=payload, timeout=4.5)
+            res = requests.post(url, json=payload, timeout=5.0)
             if res.status_code == 200:
                 parsed = parse_ai_json_safely(res.json()['candidates'][0]['content']['parts'][0]['text'].strip())
                 if parsed and "lot_multiplier" in parsed:
+                    eng["active_ai_model"] = f"🟢 {mod}"
                     mult = max(1, min(3, int(parsed["lot_multiplier"])))
                     reason = str(parsed.get("sizing_reason", "")).strip()
                     if reason:
-                        return mult, f"🤖 AI Lot Brain ({mult}x): {reason}"
+                        return mult, f"🤖 AI Lot Brain ({mult}x | {mod}): {reason}"
         except Exception:
             continue
 
     return quant_fallback_lot_sizer(new_dir, loss_streak, deficit_pts, last_closed_pts, rsi14, buy_dom, ema_bricks)
 
 # ============================================================================
-# SMART HYBRID PROFIT PROTECTION CALCULATOR (UPDATED TO +300p / +500p / +900p)
+# SMART HYBRID PROFIT PROTECTION CALCULATOR (+300p / +500p / +900p UNTOUCHED)
 # ============================================================================
 def compute_hybrid_protection(entry_px: float, peak_pts: float, trade_type: str, st_line: float) -> dict:
-    """
-    Computes the Updated Smart Hybrid Profit-Locking Stage & Protected Stop-Loss Price:
-    - Phase 1 (Peak < +300p): Pure Signal-to-Signal (Exit ONLY on Renko ST Flip at stLevel).
-    - Phase 2 (Peak +300p to +499p): Breakeven+ Shield (Locks max(+120p, Peak - 180p) so +300p never turns into a loss!).
-    - Phase 3 (Peak +500p to +899p): Big Profit Lock (Trails 140p behind Peak, locking +360p to +759p).
-    - Phase 4 (Peak >= +900p): Parabolic Tight Lock (Trails 110p behind Peak, locking +790p to +2700p+).
-    """
     if peak_pts < 300.0:
         return {
             "phase": 1,
@@ -435,7 +443,7 @@ def compute_hybrid_protection(entry_px: float, peak_pts: float, trade_type: str,
         }
 
 # ============================================================================
-# PURE SVG LIVE CHART GENERATOR
+# PURE SVG LIVE CHART GENERATOR (UNTOUCHED)
 # ============================================================================
 def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
     pts = rk.get("chart_points", [])
@@ -662,7 +670,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
         last_flip_price = closes[0]
         last_flip_time_str = (datetime.utcfromtimestamp(bar_times[0] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
-        brick_events = []
         hybrid_trades = []
         chart_points = []
         sim_reentry_armed = False
@@ -695,8 +702,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
             l_bar = lows[i]
             prev_trend = trend
             prev_st_level = st_level
-            stepped_bricks = 0
-            flipped_now = False
 
             if trend == 1:
                 if c >= brick_top + brick_size:
@@ -704,7 +709,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     brick_top = brick_top + (steps * brick_size)
                     brick_bot = brick_top - brick_size
                     brick_streak += steps
-                    stepped_bricks = steps
 
                 raw_support = brick_top - rev_dist
                 st_level = max(raw_support, prev_st_level)
@@ -716,7 +720,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     brick_top = brick_bot + brick_size
                     st_level = brick_bot + rev_dist
                     brick_streak = down_steps
-                    flipped_now = True
 
             elif trend == -1:
                 if c <= brick_bot - brick_size:
@@ -724,7 +727,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     brick_bot = brick_bot - (steps * brick_size)
                     brick_top = brick_bot + brick_size
                     brick_streak += steps
-                    stepped_bricks = steps
 
                 raw_res = brick_bot + rev_dist
                 st_level = min(raw_res, prev_st_level)
@@ -736,7 +738,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     brick_bot = brick_top - brick_size
                     st_level = brick_top - rev_dist
                     brick_streak = up_steps
-                    flipped_now = True
 
             bar_buy_sig = (trend == 1 and prev_trend == -1)
             bar_sell_sig = (trend == -1 and prev_trend == 1)
@@ -858,18 +859,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     "exit_reason": f"चालू है — +300p से पहले केवल ST Flip (${st_level:,.1f}) पर कटेगा; +300p/+500p पार होते ही प्रॉफिट लॉक करेगा"
                 })
 
-            if stepped_bricks > 0 or flipped_now:
-                brick_events.append({
-                    "time": b_ist_short,
-                    "dir": "BULLISH 🟢" if trend == 1 else "BEARISH 🔴",
-                    "cls": "ic-bull" if trend == 1 else "ic-bear",
-                    "brick_top": round(brick_top, 1),
-                    "brick_bot": round(brick_bot, 1),
-                    "streak": brick_streak,
-                    "st_line": round(st_level, 1),
-                    "flip": f"🔥 BUY @ ${c:,.0f} ▲" if bar_buy_sig else (f"🔥 SELL @ ${c:,.0f} ▼" if bar_sell_sig else "")
-                })
-
             if i >= len(closes) - 240 or bar_buy_sig or bar_sell_sig:
                 chart_points.append({
                     "time": b_ist_short,
@@ -910,7 +899,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
             "sim_loss_streak": sim_loss_streak,
             "sim_deficit_pts": sim_deficit_pts,
             "sim_last_closed_pts": sim_last_closed_pts,
-            "brick_events": list(reversed(brick_events[-20:])),
             "hybrid_trades": list(reversed(hybrid_trades[-20:])),
             "chart_points": chart_points[-180:]
         }
@@ -1013,7 +1001,7 @@ def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, re
         }
 
 # ============================================================================
-# AI SMART HYBRID COMMENTARY & PROFIT LOCK REFINEMENT ENGINE
+# AI SMART HYBRID COMMENTARY & AUTO-MODEL SELECTION ENGINE
 # ============================================================================
 def hybrid_commentary_backup_brain(ctx, active_trade):
     px = ctx["px"]
@@ -1038,9 +1026,11 @@ def hybrid_commentary_backup_brain(ctx, active_trade):
         "extension_check": f"Active Phase: {hyb['phase_name']} | Lot: {active_trade.get('lot_size', 1)} ({active_trade.get('lot_mult', 1)}x) | RSI: {rk.get('rsi14', 50):.1f}"
     }
 
-def call_gemini_hybrid_engine(api_key, ctx, active_trade, selected_model, available_models):
+def call_gemini_hybrid_engine(eng, api_key, ctx, active_trade):
     if active_trade is None:
-        return hybrid_commentary_backup_brain(ctx, None), "🟢 Smart Hybrid Watcher"
+        avail = eng.get("available_models", [])
+        top_mod = avail[0] if avail else "gemini-2.5-pro"
+        return hybrid_commentary_backup_brain(ctx, None), f"🟢 {top_mod} (Standby)"
 
     px = ctx["px"]
     rk = ctx["renko"]
@@ -1078,15 +1068,7 @@ Return ONLY valid JSON with sharp Hindi explanations:
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 300}
     }
 
-    pro_first_priority = ["gemini-2.5-pro", "gemini-1.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-    sorted_avail = sorted(available_models or [], key=score_model_priority)
-    combined_auto = []
-    for m in sorted_avail + pro_first_priority:
-        if m not in combined_auto:
-            combined_auto.append(m)
-
-    models_queue = [selected_model] + [m for m in combined_auto if m != selected_model] if (selected_model and selected_model != AUTO_MODEL_LABEL) else combined_auto
-
+    models_queue = build_auto_model_queue(eng)
     for mod in models_queue:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
@@ -1094,11 +1076,11 @@ Return ONLY valid JSON with sharp Hindi explanations:
             if res.status_code == 200:
                 parsed = parse_ai_json_safely(res.json()['candidates'][0]['content']['parts'][0]['text'].strip())
                 if parsed:
-                    return parsed, f"🟢 Smart Hybrid AI ({mod})"
+                    return parsed, f"🟢 {mod}"
         except Exception:
             continue
 
-    return hybrid_commentary_backup_brain(ctx, active_trade), "⚡ Smart Hybrid Brain"
+    return hybrid_commentary_backup_brain(ctx, active_trade), "⚡ In-Built Quant Brain (API Busy)"
 
 def execute_ai_cycle_thread(eng, now_ts, ist_str):
     if eng.get("ai_busy"):
@@ -1111,14 +1093,16 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         rk = eng.get("renko", {})
         ctx = {"time": ist_str, "px": px, "renko": rk}
         api_key = eng.get("api_key", "").strip()
-        selected_mod = eng.get("selected_model", AUTO_MODEL_LABEL)
 
-        if api_key and eng.get("active_trade") is not None:
-            ai_json, status_str = call_gemini_hybrid_engine(api_key, ctx, eng.get("active_trade"), selected_mod, eng.get("available_models"))
+        if api_key:
+            ai_json, active_mod_str = call_gemini_hybrid_engine(eng, api_key, ctx, eng.get("active_trade"))
         else:
-            ai_json, status_str = hybrid_commentary_backup_brain(ctx, eng.get("active_trade")), "🟢 Smart Hybrid + AI Lot Engine"
+            avail = eng.get("available_models", [])
+            fallback_label = f"⚡ Quant Engine ({avail[0]})" if avail else "⚡ In-Built Quant Brain"
+            ai_json, active_mod_str = hybrid_commentary_backup_brain(ctx, eng.get("active_trade")), fallback_label
 
-        eng["ai_status"] = status_str
+        eng["active_ai_model"] = active_mod_str
+        eng["ai_status"] = active_mod_str
         eng["last_report_ts"] = time.time()
         eng["ai_json_view"].update({
             "headline": ai_json.get("headline", ""),
@@ -1136,6 +1120,9 @@ def background_worker(eng, worker_id):
     last_used_rev = eng.get("rev_bricks", 2.0)
     last_used_reentry = eng.get("allow_pullback_reentry", False)
     last_used_base_lot = eng.get("delta_base_lot", 1)
+
+    # Verify hardcoded Delta Demo API connection once on startup
+    threading.Thread(target=auto_verify_delta_demo_wallet, args=(eng,), daemon=True).start()
 
     while True:
         if eng.get("worker_id") != worker_id:
@@ -1284,15 +1271,15 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v26_1():
+def get_master_engine_v26_2():
     wid = int(time.time() * 1000)
     srv_ip = fetch_server_public_ip()
     eng = {
         "worker_id": wid, "px": 0.0, "last_update": "--:--:--",
         "server_ip": srv_ip,
-        "delta_env": "🇮🇳 Delta India Testnet (Demo)",
-        "delta_api_key": "",
-        "delta_api_secret": "",
+        "delta_base_url": "https://cdn-ind.testnet.deltaex.org",
+        "delta_api_key": HARDCODED_DELTA_API_KEY,
+        "delta_api_secret": HARDCODED_DELTA_API_SECRET,
         "delta_base_lot": 1,
         "current_lot_mult": 1,
         "current_lot_size": 1,
@@ -1302,7 +1289,7 @@ def get_master_engine_v26_1():
         "last_lot_reason": "✅ हर रैंकों सिग्नल पर ट्रेड अनिवार्य है — शुरुआती 1x Base Lot सक्रिय।",
         "delta_enabled": True,
         "delta_product_id": None,
-        "delta_last_status": "⚪ Delta Demo Ready (API Keys सेट करें)",
+        "delta_last_status": "⏳ Delta Demo Connecting...",
         "fixed_brick_size": 270.0, "rev_bricks": 2.0, "allow_pullback_reentry": False,
         "signal_history": [], "active_trade": None, "ai_busy": False,
         "reentry_watch": {"armed": False, "dir": 0, "reason": ""},
@@ -1312,44 +1299,43 @@ def get_master_engine_v26_1():
             "brick_top": 0.0, "brick_bot": 0.0, "brick_dir": 1, "brick_streak": 1,
             "r_close": 0.0, "st_trend": 0, "st_line": 0.0,
             "buy_dom_pct": 50.0, "ema21": 0.0, "ema_dist_bricks": 0.0, "rsi14": 50.0,
-            "brick_events": [], "chart_points": []
+            "chart_points": []
         },
-        "available_models": [], "models_fetched": False, "selected_model": AUTO_MODEL_LABEL,
+        "available_models": [], "models_fetched": False,
+        "active_ai_model": "🔍 Auto-Scanning Models...",
         "ai_json_view": {
             "headline": "⏳ Smart Hybrid (+300p/+500p Lock) + AI Recovery Lot Engine सिंक हो रहा है...",
             "renko_structure": "फिक्स ब्रिक बॉक्स और Reversal Level लोड हो रहा है...",
             "extension_check": "21-EMA और RSI की गणना हो रही है..."
         },
-        "ai_status": "🟢 Smart Hybrid + AI Lot Sizer",
+        "ai_status": "🟢 Auto-AI Active",
         "sound_event": {"id": 0.0, "type": "BULL"},
         "api_key": "", "last_err": None
     }
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v26_1()
+eng = get_master_engine_v26_2()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
         eng["api_key"] = str(st.secrets["GEMINI_API_KEY"]).strip()
-    if "DELTA_API_KEY" in st.secrets and not eng["delta_api_key"]:
-        eng["delta_api_key"] = str(st.secrets["DELTA_API_KEY"]).strip()
-    if "DELTA_API_SECRET" in st.secrets and not eng["delta_api_secret"]:
-        eng["delta_api_secret"] = str(st.secrets["DELTA_API_SECRET"]).strip()
 except Exception:
     pass
 
 if not eng.get("models_fetched"):
     eng["available_models"] = fetch_available_api_models(eng.get("api_key", ""))
+    if eng["available_models"]:
+        eng["active_ai_model"] = f"🟢 {eng['available_models'][0]} (Auto)"
     eng["models_fetched"] = True
 
 if "last_played_sound_id" not in st.session_state:
     st.session_state["last_played_sound_id"] = 0.0
 
 # ============================================================================
-# COMPACT SERVER IP DISPLAY BOX, AI LOT STATUS & DELTA DEMO API SETUP BAR
+# TOP STATUS BAR: SERVER IP BOX + AUTO-ACTIVE AI MODEL + DELTA STATUS + IP REFRESH
 # ============================================================================
-ip_col1, ip_col2, ip_col3, ip_col4 = st.columns([0.27, 0.31, 0.28, 0.14])
+ip_col1, ip_col2, ip_col3, ip_col4 = st.columns([0.28, 0.28, 0.30, 0.14])
 with ip_col1:
     st.markdown(clean_html(f"""
     <div class='ip-badge-box'>
@@ -1360,16 +1346,16 @@ with ip_col1:
 
 with ip_col2:
     st.markdown(clean_html(f"""
-    <div class='lot-badge-box'>
-        <span>📦 <b>AI Active Lot:</b> <b style='color:#facc15;'>{eng.get('current_lot_size', 1)} Lot ({eng.get('current_lot_mult', 1)}x)</b></span>
-        <span>| <b>Deficit:</b> <b style='color:{"#f87171" if eng.get("deficit_pts",0)>0 else "#4ade80"};'>{-eng.get("deficit_pts", 0.0):+.0f}p</b></span>
+    <div class='ai-badge-box'>
+        <span>🧠 <b>Active AI Model:</b></span>
+        <b style='color:#4ade80; font-size:13px;'>{eng.get('active_ai_model', 'Auto-Selecting...')}</b>
     </div>
     """), unsafe_allow_html=True)
 
 with ip_col3:
     st.markdown(clean_html(f"""
     <div class='delta-badge-box'>
-        <span>⚡ <b>Delta:</b></span>
+        <span>⚡ <b>Delta Demo:</b></span>
         <span style='color:#38bdf8; font-weight:700;'>{eng.get('delta_last_status', 'Ready')}</span>
     </div>
     """), unsafe_allow_html=True)
@@ -1377,43 +1363,12 @@ with ip_col3:
 with ip_col4:
     if st.button("🔄 Refresh IP"):
         eng["server_ip"] = fetch_server_public_ip()
-
-with st.expander("⚙️ Delta Exchange Demo API एवं Base Lot सेटअप (यहाँ API Key डालें)", expanded=False):
-    d_c1, d_c2, d_c3, d_c4, d_c5 = st.columns([0.24, 0.24, 0.24, 0.14, 0.14])
-    with d_c1:
-        env_list = list(DELTA_ENV_URLS.keys())
-        cur_env_idx = env_list.index(eng["delta_env"]) if eng.get("delta_env") in env_list else 0
-        eng["delta_env"] = st.selectbox("Delta Demo Server:", options=env_list, index=cur_env_idx)
-    with d_c2:
-        eng["delta_api_key"] = st.text_input("🔑 Delta Demo API Key:", value=eng.get("delta_api_key", ""), type="password")
-    with d_c3:
-        eng["delta_api_secret"] = st.text_input("🔒 Delta Demo API Secret:", value=eng.get("delta_api_secret", ""), type="password")
-    with d_c4:
-        eng["delta_base_lot"] = int(st.number_input("📦 Base Lot (1x):", min_value=1, max_value=500, value=int(eng.get("delta_base_lot", 1)), step=1, help="सामान्य ट्रेड का बेस लॉट (AI लॉस रिकवरी के समय इसे 1x, 2x या 3x करेगा)"))
-    with d_c5:
-        eng["delta_enabled"] = st.checkbox("⚡ Auto-Trade ON", value=bool(eng.get("delta_enabled", True)))
-
-    b_c1, b_c2, b_c3 = st.columns(3)
-    with b_c1:
-        if st.button("🔍 Check Delta Demo Connection & Balance"):
-            check_delta_demo_wallet(eng)
-    with b_c2:
-        if st.button("🟢 Test Demo BUY (Active AI Lot)"):
-            place_delta_demo_order(eng, side="buy", size=int(eng.get("current_lot_size", 1)), reduce_only=False, note="Manual Test BUY")
-    with b_c3:
-        if st.button("🔴 Test Demo SELL (Active AI Lot)"):
-            place_delta_demo_order(eng, side="sell", size=int(eng.get("current_lot_size", 1)), reduce_only=False, note="Manual Test SELL")
+        threading.Thread(target=auto_verify_delta_demo_wallet, args=(eng,), daemon=True).start()
 
 # ============================================================================
-# TOP CONTROL BAR (UNTOUCHED CONTROLS)
+# TOP CONTROL BAR (BRICK SIZE, REVERSAL, PULLBACK RE-ENTRY, REFRESH & SOUND)
 # ============================================================================
-c_mod, c_brk, c_rev, c_re, c_act1, c_snd = st.columns([0.21, 0.14, 0.14, 0.19, 0.20, 0.12])
-
-with c_mod:
-    dropdown_options = [AUTO_MODEL_LABEL] + eng.get("available_models", [])
-    curr_sel = eng.get("selected_model", AUTO_MODEL_LABEL)
-    sel_idx = dropdown_options.index(curr_sel) if curr_sel in dropdown_options else 0
-    eng["selected_model"] = st.selectbox("🧠 AI मॉडल:", options=dropdown_options, index=sel_idx, label_visibility="collapsed")
+c_brk, c_rev, c_re, c_act1, c_snd = st.columns([0.18, 0.18, 0.24, 0.25, 0.15])
 
 with c_brk:
     eng["fixed_brick_size"] = float(st.number_input(
@@ -1575,21 +1530,6 @@ while True:
         </div>
         """
 
-        brick_cards = ""
-        for idx, b in enumerate(rk.get("brick_events", []), 1):
-            flip_tag = f"<span style='color:#facc15; font-weight:900; margin-left:6px;'>{b['flip']}</span>" if b["flip"] else ""
-            brick_cards += f"""
-            <div class='item-card {b['cls']}'>
-                <div style='display:flex; justify-content:space-between; font-weight:800;'>
-                    <span>#{idx} 🕒 {b['time']} | {b['dir']} (#{b['streak']})</span>
-                    <span style='color:#38bdf8;'>Box: ${b['brick_bot']:,.0f}–${b['brick_top']:,.0f}</span>
-                </div>
-                <div style='color:#cbd5e1; font-size:11.8px; margin-top:2px;'>
-                    Reversal Level (stLevel): <b>${b['st_line']:,.1f}</b> {flip_tag}
-                </div>
-            </div>
-            """
-
         net_col = "#4ade80" if closed_weighted_sum >= 0 else "#f87171"
         def_pts = eng.get("deficit_pts", 0.0)
         l_streak = eng.get("loss_streak", 0)
@@ -1638,7 +1578,7 @@ while True:
                     <span>📦 2. AI लॉस-रिकवरी एवं लॉट साइज़िंग ब्रेन</span>
                     <span style='color:#facc15;'>Active: {eng.get("current_lot_size", 1)} Lot ({eng.get("current_lot_mult", 1)}x)</span>
                 </div>
-                <div class='stat-row'><span>सिग्नल एग्जीक्यूशन नियम:</span><b style='color:#4ade80;'>100% Mandatory (हर सिग्नल पर ट्रेड)</b></div>
+                <div class='stat-row'><span>चालू AI मॉडल (Auto-Selected):</span><b style='color:#4ade80;'>{eng.get("active_ai_model", "Auto")}</b></div>
                 <div class='stat-row'><span>पेंडिंग रिकवरी डेफिसिट (Loss Streak #{l_streak}):</span><b style='color:{"#f87171" if def_pts > 0 else "#4ade80"};'>{f"-{def_pts:.1f} Pts (Recovery Mode)" if def_pts > 0 else "0.0 Pts (All Recovered ✅)"}</b></div>
                 <div class='stat-row'><span>24h PnL (1x Raw vs AI Weighted):</span><b>Raw: {closed_raw_sum:+.0f}p | <span style='color:{net_col};'>AI Lot PnL: {closed_weighted_sum:+.0f}p</span></b></div>
                 <div style='font-size:12px; color:#e9d5ff; margin-top:5px; line-height:1.4;'>🧠 <b>AI निर्णय:</b> {eng.get("last_lot_reason", "")}</div>
@@ -1650,8 +1590,8 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V26.1 (+300p/+500p HYBRID + AI LOT SIZER + DELTA DEMO)</div>
-                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🧱 Brick: <b style='color:#facc15;'>${box_sz:.0f}</b> | 🛡️ Hybrid: <b>+300p Shield & +500p/+900p Peak Lock</b> | 📦 Active Lot: <b style='color:#facc15;'>{eng.get('current_lot_size',1)} Lot ({eng.get('current_lot_mult',1)}x)</b> | AI Lot PnL: <b style='color:{net_col};'>{closed_weighted_sum:+.1f} Pts ({win_cnt}W/{loss_cnt}L)</b></div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V26.2 (+300p/+500p HYBRID + AUTO-AI LOT SIZER + DELTA DEMO)</div>
+                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🧱 Brick: <b style='color:#facc15;'>${box_sz:.0f}</b> | 🧠 AI: <b style='color:#4ade80;'>{eng.get('active_ai_model','Auto')}</b> | 📦 Active Lot: <b style='color:#facc15;'>{eng.get('current_lot_size',1)} Lot ({eng.get('current_lot_mult',1)}x)</b> | AI Lot PnL: <b style='color:{net_col};'>{closed_weighted_sum:+.1f} Pts ({win_cnt}W/{loss_cnt}L)</b></div>
                 </div>
                 <div style='text-align:right;'>
                     <div style='font-size:21px; font-weight:900; color:#f8fafc;'>BTC: ${eng['px']:,.1f}</div>
@@ -1672,14 +1612,10 @@ while True:
                 </div>
 
                 <div class='brick-panel'>
-                    <div style='font-size:14.5px; font-weight:900; color:#facc15; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px;'>
+                    <div style='font-size:14.5px; font-weight:900; color:#facc15; margin-bottom:10px; border-bottom:1px solid #334155; padding-bottom:6px;'>
                         🛡️ 4-फेज स्मार्ट हाइब्रिड प्रॉफिट प्रोटेक्शन रोडमैप (+300p / +500p / +900p)
                     </div>
                     {hybrid_roadmap_html}
-                    <div style='font-size:13.5px; font-weight:900; color:#38bdf8; margin:12px 0 8px 0; border-bottom:1px solid #334155; padding-bottom:5px;'>
-                        🧱 ताज़ा कन्फर्म्ड रैंकों ब्रिक स्टेप्स एवं सिग्नल लॉग
-                    </div>
-                    {brick_cards}
                 </div>
             </div>
         </div>
@@ -1687,6 +1623,6 @@ while True:
 
     else:
         err_msg = f" ({eng['last_err']})" if eng.get("last_err") else ""
-        dashboard_slot.warning(f"⏳ 24x7 V26.1 (+300p/+500p Smart Hybrid + AI Lot Engine) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
+        dashboard_slot.warning(f"⏳ 24x7 V26.2 (+300p/+500p Smart Hybrid + In-Built Delta Demo Engine) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
 
     time.sleep(1.5)
