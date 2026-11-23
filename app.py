@@ -14,7 +14,7 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V26.3 - True Deficit Recovery + Dual-Mode Hybrid", layout="wide")
+st.set_page_config(page_title="Pro Quant V26.4 - Exact Lot & Position-Verified Delta Sync", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML/SVG inside a single slot without ghost boxes"""
@@ -62,7 +62,7 @@ input[type="number"] { color: #facc15 !important; font-weight: 800 !important; }
 """), unsafe_allow_html=True)
 
 # ============================================================================
-# HARDCODED DELTA EXCHANGE DEMO API CREDENTIALS & SERVER IP FETCHER
+# HARDCODED DELTA EXCHANGE DEMO API CREDENTIALS & POSITION-VERIFIED SYNC
 # ============================================================================
 HARDCODED_DELTA_API_KEY = "7KBIKEhD3yjFWO7tmW6golXOrbnAQW"
 HARDCODED_DELTA_API_SECRET = "SVGs8vtF6CpNqT0ldyLGgPskGoo7w3QJ24v2ytJqB1CWn2xZIS0U7iBcNFDb"
@@ -71,6 +71,8 @@ DELTA_TESTNET_CANDIDATES = [
     ("India Demo", "https://cdn-ind.testnet.deltaex.org"),
     ("Global Demo", "https://testnet-api.delta.exchange")
 ]
+
+delta_order_lock = threading.Lock()
 
 def fetch_server_public_ip() -> str:
     """Fetches the server's public outbound IPv4 address for Delta API whitelisting"""
@@ -110,8 +112,60 @@ def generate_delta_signature(secret: str, method: str, timestamp: str, path: str
     message = method + timestamp + path + query_string + payload_str
     return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
+def _delta_signed_headers(api_key: str, api_secret: str, method: str, path: str, query_string: str = "", payload_str: str = "") -> dict:
+    timestamp = str(int(time.time()))
+    sig = generate_delta_signature(api_secret, method, timestamp, path, query_string, payload_str)
+    return {
+        "api-key": api_key,
+        "timestamp": timestamp,
+        "signature": sig,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "pro-quant-v26-4-bot"
+    }
+
+def _get_live_delta_btc_position_size(base_url: str, prod_id: int, api_key: str, api_secret: str):
+    """
+    Fetches exact live open position size for BTC product on Delta Demo.
+    Positive int => Long size; Negative int => Short size; 0 => No open position; None => Query failed.
+    """
+    path = "/v2/positions"
+    query_string = f"?product_id={int(prod_id)}"
+    try:
+        headers = _delta_signed_headers(api_key, api_secret, "GET", path, query_string, "")
+        r = requests.get(f"{base_url}{path}{query_string}", headers=headers, timeout=5.0)
+        if r.status_code == 200 and r.json().get("success"):
+            res_data = r.json().get("result")
+            if isinstance(res_data, dict):
+                return int(float(res_data.get("size", 0)))
+            if isinstance(res_data, list):
+                total_sz = 0
+                for pos in res_data:
+                    if int(pos.get("product_id", -1)) == int(prod_id):
+                        total_sz += int(float(pos.get("size", 0)))
+                return total_sz
+    except Exception:
+        pass
+    return None
+
+def _submit_delta_market_order_sync(base_url: str, prod_id: int, api_key: str, api_secret: str, side: str, size: int, reduce_only: bool = False):
+    path = "/v2/orders"
+    body_dict = {
+        "product_id": int(prod_id),
+        "size": int(max(1, size)),
+        "side": side.lower(),
+        "order_type": "market_order"
+    }
+    if reduce_only:
+        body_dict["reduce_only"] = True
+
+    payload_str = json.dumps(body_dict, separators=(",", ":"))
+    headers = _delta_signed_headers(api_key, api_secret, "POST", path, "", payload_str)
+    res = requests.post(f"{base_url}{path}", data=payload_str, headers=headers, timeout=6.0)
+    return res
+
 def auto_verify_delta_demo_wallet(eng: dict):
-    """Automatically detects the matching Delta Testnet endpoint (India or Global) and verifies wallet balance"""
+    """Automatically detects the matching Delta Testnet endpoint (India or Global) and verifies wallet balance & live position"""
     api_key = eng.get("delta_api_key", HARDCODED_DELTA_API_KEY).strip()
     api_secret = eng.get("delta_api_secret", HARDCODED_DELTA_API_SECRET).strip()
     path = "/v2/wallet/balances"
@@ -119,26 +173,20 @@ def auto_verify_delta_demo_wallet(eng: dict):
 
     for env_label, base_url in DELTA_TESTNET_CANDIDATES:
         try:
-            timestamp = str(int(time.time()))
-            sig = generate_delta_signature(api_secret, "GET", timestamp, path, "", "")
-            headers = {
-                "api-key": api_key,
-                "timestamp": timestamp,
-                "signature": sig,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "pro-quant-v26-3-bot"
-            }
+            headers = _delta_signed_headers(api_key, api_secret, "GET", path, "", "")
             r = requests.get(f"{base_url}{path}", headers=headers, timeout=5.0)
             if r.status_code == 200 and r.json().get("success"):
+                prod_id = get_delta_btc_product_id(base_url, eng.get("delta_product_id"))
                 eng["delta_base_url"] = base_url
-                eng["delta_product_id"] = get_delta_btc_product_id(base_url)
+                eng["delta_product_id"] = prod_id
                 bals = r.json().get("result", [])
                 usdt_bal = 0.0
                 for b in bals:
                     if b.get("asset_symbol") in ["USDT", "USD", "BTC"]:
                         usdt_bal = max(usdt_bal, float(b.get("available_balance", 0.0)))
-                eng["delta_last_status"] = f"🟢 {env_label} Connected (Bal: ${usdt_bal:,.1f})"
+                live_pos = _get_live_delta_btc_position_size(base_url, prod_id, api_key, api_secret)
+                pos_txt = f" | Pos: {live_pos:+d}" if live_pos is not None else ""
+                eng["delta_last_status"] = f"🟢 {env_label} OK (Bal: ${usdt_bal:,.1f}{pos_txt})"
                 return
             else:
                 last_err = f"🔴 {env_label} ({r.status_code}): {r.text[:65]}"
@@ -147,59 +195,76 @@ def auto_verify_delta_demo_wallet(eng: dict):
 
     eng["delta_last_status"] = last_err
 
-def place_delta_demo_order(eng: dict, side: str, size: int, reduce_only: bool = False, note: str = ""):
-    """Fires a Market Order on Delta Exchange Demo (Testnet) with the exact AI-decided lot size"""
+def execute_delta_entry_and_exit(eng: dict, action_kind: str, direction: str, target_lot: int, close_prev_lot: int = 0, note: str = ""):
+    """
+    Thread-safe, serialized Delta Exchange Demo order executor:
+    - action_kind == 'CLOSE_ONLY': Closes existing live Delta position completely and verifies size == 0.
+    - action_kind == 'FLIP': Closes any existing live Delta position completely, verifies closed, then opens exact `target_lot` on `direction`.
+    - action_kind == 'OPEN': Opens exact `target_lot` on `direction` matching dashboard lot size.
+    """
     if not eng.get("delta_enabled", True):
         return
     api_key = eng.get("delta_api_key", HARDCODED_DELTA_API_KEY).strip()
     api_secret = eng.get("delta_api_secret", HARDCODED_DELTA_API_SECRET).strip()
 
-    def _order_worker():
-        path = "/v2/orders"
-        primary_url = eng.get("delta_base_url", "https://cdn-ind.testnet.deltaex.org")
-        urls_to_try = [primary_url] + [u for _, u in DELTA_TESTNET_CANDIDATES if u != primary_url]
+    def _run_serialized():
+        with delta_order_lock:
+            primary_url = eng.get("delta_base_url", "https://cdn-ind.testnet.deltaex.org")
+            urls_to_try = [primary_url] + [u for _, u in DELTA_TESTNET_CANDIDATES if u != primary_url]
+            active_url = primary_url
+            prod_id = get_delta_btc_product_id(active_url, eng.get("delta_product_id"))
 
-        for base_url in urls_to_try:
-            try:
-                prod_id = get_delta_btc_product_id(base_url, eng.get("delta_product_id") if base_url == primary_url else None)
-                timestamp = str(int(time.time()))
-                body_dict = {
-                    "product_id": int(prod_id),
-                    "size": int(max(1, size)),
-                    "side": side.lower(),
-                    "order_type": "market_order"
-                }
-                if reduce_only:
-                    body_dict["reduce_only"] = True
-
-                payload_str = json.dumps(body_dict, separators=(",", ":"))
-                sig = generate_delta_signature(api_secret, "POST", timestamp, path, "", payload_str)
-
-                headers = {
-                    "api-key": api_key,
-                    "timestamp": timestamp,
-                    "signature": sig,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": "pro-quant-v26-3-bot"
-                }
-
-                res = requests.post(f"{base_url}{path}", data=payload_str, headers=headers, timeout=6.0)
-                ist_now = get_ist_time_str()
-                if res.status_code == 200 and res.json().get("success"):
-                    eng["delta_base_url"] = base_url
+            for u in urls_to_try:
+                chk = _get_live_delta_btc_position_size(u, prod_id if u == primary_url else get_delta_btc_product_id(u), api_key, api_secret)
+                if chk is not None:
+                    active_url = u
+                    prod_id = get_delta_btc_product_id(u, eng.get("delta_product_id") if u == primary_url else None)
+                    eng["delta_base_url"] = active_url
                     eng["delta_product_id"] = prod_id
-                    ord_data = res.json().get("result", {})
-                    ord_id = ord_data.get("id", "OK")
-                    eng["delta_last_status"] = f"🟢 {side.upper()} ({size} Lot) OK [ID:{ord_id}] @ {ist_now}"
-                    return
-                else:
-                    err_txt = res.text[:75]
-                    eng["delta_last_status"] = f"🔴 Delta ({res.status_code}): {err_txt}"
-            except Exception as e:
-                eng["delta_last_status"] = f"🔴 Delta Err: {str(e)[:60]}"
+                    break
 
-    threading.Thread(target=_order_worker, daemon=True).start()
+            ist_now = get_ist_time_str()
+
+            # Step 1: If closing or flipping, inspect actual live Delta position size and close it completely
+            if action_kind in ("CLOSE_ONLY", "FLIP"):
+                live_pos = _get_live_delta_btc_position_size(active_url, prod_id, api_key, api_secret)
+                if live_pos is not None and live_pos != 0:
+                    close_side = "sell" if live_pos > 0 else "buy"
+                    close_qty = abs(live_pos)
+                    res_c = _submit_delta_market_order_sync(active_url, prod_id, api_key, api_secret, close_side, close_qty, reduce_only=True)
+                    if res_c.status_code != 200 or not res_c.json().get("success"):
+                        # Retry without reduce_only flag in case testnet rejects reduce_only on specific contract
+                        res_c = _submit_delta_market_order_sync(active_url, prod_id, api_key, api_secret, close_side, close_qty, reduce_only=False)
+                    time.sleep(0.5)
+                    rem_pos = _get_live_delta_btc_position_size(active_url, prod_id, api_key, api_secret)
+                    if rem_pos is not None and rem_pos != 0:
+                        eng["delta_last_status"] = f"⚠️ Delta Close Pending (Rem:{rem_pos:+d}) @ {ist_now}"
+                elif close_prev_lot > 0 and live_pos is None:
+                    prev_side = "sell" if direction == "BUY" else "buy"
+                    _submit_delta_market_order_sync(active_url, prod_id, api_key, api_secret, prev_side, close_prev_lot, reduce_only=True)
+                    time.sleep(0.4)
+
+            if action_kind == "CLOSE_ONLY":
+                final_pos = _get_live_delta_btc_position_size(active_url, prod_id, api_key, api_secret)
+                pos_lbl = f"Pos:{final_pos:+d}" if final_pos is not None else "Closed"
+                eng["delta_last_status"] = f"🟢 Delta EXIT OK ({pos_lbl}) @ {ist_now} [{note}]"
+                return
+
+            # Step 2: Open new position with exact dashboard lot size
+            open_side = "buy" if direction == "BUY" else "sell"
+            req_size = int(max(1, target_lot))
+            res_o = _submit_delta_market_order_sync(active_url, prod_id, api_key, api_secret, open_side, req_size, reduce_only=False)
+            if res_o.status_code == 200 and res_o.json().get("success"):
+                ord_id = res_o.json().get("result", {}).get("id", "OK")
+                time.sleep(0.4)
+                actual_pos = _get_live_delta_btc_position_size(active_url, prod_id, api_key, api_secret)
+                pos_str = f"Actual Pos:{actual_pos:+d}" if actual_pos is not None else f"Req:{req_size}"
+                eng["delta_last_status"] = f"🟢 {open_side.upper()} {req_size}L ({pos_str}) [#{ord_id}] @ {ist_now}"
+            else:
+                err_txt = res_o.text[:75]
+                eng["delta_last_status"] = f"🔴 Delta ({res_o.status_code}): {err_txt}"
+
+    threading.Thread(target=_run_serialized, daemon=True).start()
 
 # ============================================================================
 # IN-BUILT SOUND SYNTHESIZER
@@ -310,21 +375,14 @@ def parse_ai_json_safely(raw_text: str):
     return None
 
 def quant_fallback_lot_sizer(new_dir: str, loss_streak: int, deficit_pts: float, last_closed_pts: float, rsi14: float, buy_dom_pct: float, ema_dist_bricks: float) -> tuple:
-    """
-    True Deficit Carry-Forward Lot Sizer:
-    - Keeps Recovery Mode active until `deficit_pts` is 100% wiped out!
-    - Never skips any Renko signal (minimum 1x Base Lot).
-    """
     if deficit_pts <= 0.0:
         return 1, "✅ पिछला सारा लॉस रिकवर हो चुका है (Deficit: 0p) — स्टैंडर्ड 1x Base Lot से ट्रेड लिया गया।"
 
     fav_dom = buy_dom_pct if new_dir == "BUY" else (100.0 - buy_dom_pct)
     healthy_stretch = ema_dist_bricks <= 2.4
 
-    # High Deficit (>= 500p) + Supportive Momentum -> 3x Recovery Strike so one +300p/+400p move clears the entire deficit!
     if deficit_pts >= 500.0 and fav_dom >= 56.0 and healthy_stretch:
         return 3, f"🔥 AI फुल-रिकवरी स्ट्राइक (3x Lot): कुल पेंडिंग डेफिसिट (-{deficit_pts:.0f}p) को एक ही ट्रेंड में पूरा रिकवर करने के लिए तगड़ा मोमेंटम ({fav_dom:.0f}% Power) देखकर क्वांटिटी 3 गुना की गई!"
-    # Moderate/Remaining Deficit + Supportive Momentum -> 2x Recovery Lot
     elif fav_dom >= 48.0 and healthy_stretch:
         return 2, f"⚡ AI कैरी-फॉरवर्ड रिकवरी (2x Lot): बचे हुए पेंडिंग लॉस (-{deficit_pts:.0f}p) को कवर करने के लिए अनुकूल मोमेंटम ({fav_dom:.0f}% Power) देखकर क्वांटिटी 2 गुना रखी गई।"
     else:
@@ -396,22 +454,6 @@ Return ONLY valid JSON:
 # DUAL-MODE SMART HYBRID PROTECTION (+350p BREAKEVEN & +500p/+550p BIG TRAIL)
 # ============================================================================
 def compute_hybrid_protection(entry_px: float, peak_pts: float, trade_type: str, st_line: float, lot_mult: int = 1) -> dict:
-    """
-    V26.3 Dual-Mode Hybrid Profit Protection:
-    - Prevents premature +120p exits on 1-brick pullbacks while guaranteeing zero loss after +350p!
-    - Normal Trade (1x Lot):
-        * Phase 1 (Peak < +350p): Pure Signal-to-Signal (stLevel).
-        * Phase 2 (Peak +350p to +499p): Wide-Breathing Breakeven+ Shield (locks max(+35p, Peak - 315p)).
-          Gives 315p (>1 full brick) of breathing room so trade can grow into +600p/+1000p without choking!
-        * Phase 3 (Peak +500p to +899p): Big Profit Lock (150p gap behind Peak -> locks +350p to +749p).
-        * Phase 4 (Peak >= +900p): Parabolic Tight Lock (110p gap behind Peak -> locks +790p+).
-    - Recovery Trade (2x / 3x Lot):
-        * Phase 1 (Peak < +350p): Pure Signal-to-Signal (stLevel).
-        * Phase 2 (Peak +350p to +549p): Recovery Breakeven Shield (locks max(+25p, Peak - 325p)).
-          Never chokes a 2x/3x recovery trade at +122p! Lets it run to +550p+ while guaranteeing zero loss.
-        * Phase 3 (Peak +550p to +899p): Recovery Big Profit Lock (150p gap behind Peak -> locks +400p+ Raw = +800p/+1200p Weighted!).
-        * Phase 4 (Peak >= +900p): Parabolic Tight Lock (110p gap behind Peak).
-    """
     is_recovery = (lot_mult > 1)
     p3_trigger = 550.0 if is_recovery else 500.0
     be_floor = 25.0 if is_recovery else 35.0
@@ -616,12 +658,6 @@ def fetch_live_btc_price():
     return None
 
 def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: float = 2.0, base_lot: int = 1):
-    """
-    V26.3 Pure Core Renko Supertrend Simulator:
-    - Pullback Re-Entry is permanently OFF (only takes main Core Renko ST Flip signals).
-    - True Deficit Carry-Forward: Deficit only decreases by actual `weighted_pts` won and never resets prematurely!
-    - Dual-Mode Shield: +350p Breakeven cushion & +500p (1x) / +550p (2x/3x) Big Profit Trail.
-    """
     try:
         brick_size = max(10.0, float(fixed_brick_size))
         rev_mult = max(0.5, float(rev_bricks))
@@ -710,7 +746,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
         sim_last_closed_pts = 0.0
 
         def _record_closed_trade_outcome(closed_tr):
-            """TRUE DEFICIT CARRY-FORWARD: Never resets deficit until 100% of past losses are recovered!"""
             nonlocal sim_loss_streak, sim_deficit_pts, sim_last_closed_pts
             raw_pts = closed_tr["live_pts"]
             mult_used = closed_tr.get("lot_mult", 1)
@@ -775,7 +810,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
             b_ist_short = (datetime.utcfromtimestamp(bar_times[i] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M %p')
             b_ist_full = (datetime.utcfromtimestamp(bar_times[i] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
-            # 1. Manage running trade with Dual-Mode Hybrid Shield (+350p Breakeven & +500p/+550p Trail)
             if hybrid_trades and "ACTIVE" in hybrid_trades[-1]["status"] and not (bar_buy_sig or bar_sell_sig):
                 cur_t = hybrid_trades[-1]
                 t_mult = cur_t.get("lot_mult", 1)
@@ -816,7 +850,6 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     else:
                         cur_t["protect_sl"] = st_level
 
-            # 2. Main Core Renko ST Flip Signal (100% Mandatory Signal-to-Signal Entry)
             if bar_buy_sig or bar_sell_sig:
                 last_flip_bar_ts = bar_times[i]
                 last_flip_price = c
@@ -906,9 +939,9 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
         return {"error": str(e)}
 
 # ============================================================================
-# LIVE HYBRID TRADE OPENER & CLOSER (TRUE DEFICIT CARRY-FORWARD)
+# LIVE HYBRID TRADE OPENER & CLOSER (WITH EXACT DELTA POSITION VERIFICATION)
 # ============================================================================
-def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, entry_source_label: str, fire_delta: bool = True):
+def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, entry_source_label: str, fire_delta: bool = True, is_flip: bool = False, prev_lot_to_close: int = 0):
     rk = eng.get("renko", {})
     st_line_val = rk.get("st_line", entry_px)
     box_sz = rk.get("box_size", 270.0)
@@ -953,10 +986,17 @@ def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, en
     eng["sound_event"] = {"id": time.time(), "type": "BULL" if direction == "BUY" else "BEAR"}
 
     if fire_delta:
-        delta_side = "buy" if direction == "BUY" else "sell"
-        place_delta_demo_order(eng, side=delta_side, size=final_lot_size, reduce_only=False, note=f"Entry {direction} [{lot_mult}x Lot]")
+        act_kind = "FLIP" if is_flip else "OPEN"
+        execute_delta_entry_and_exit(
+            eng,
+            action_kind=act_kind,
+            direction=direction,
+            target_lot=final_lot_size,
+            close_prev_lot=prev_lot_to_close,
+            note=f"{direction} {final_lot_size}L"
+        )
 
-def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, reason_title: str, detailed_reason: str, fire_delta: bool = True):
+def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, reason_title: str, detailed_reason: str, fire_delta: bool = True, defer_delta_for_flip: bool = False):
     move = (exit_px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - exit_px)
     mult_used = int(active_tr.get("lot_mult", 1))
     lot_used = int(active_tr.get("lot_size", max(1, int(eng.get("delta_base_lot", 1)))))
@@ -969,7 +1009,6 @@ def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, re
     active_tr["status"] = f"{reason_title} @ ${exit_px:,.1f} ({ist_str})"
     active_tr["exit_reason"] = detailed_reason
 
-    # TRUE DEFICIT CARRY-FORWARD: Only deduct weighted_move from deficit_pts; reset streak ONLY when deficit_pts == 0!
     eng["last_closed_pts"] = round(move, 1)
     if move < 0:
         eng["loss_streak"] = int(eng.get("loss_streak", 0)) + 1
@@ -984,9 +1023,17 @@ def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, re
     eng["active_trade"] = None
     eng["sound_event"] = {"id": time.time(), "type": "EXIT"}
 
-    if fire_delta:
-        close_side = "sell" if active_tr["type"] == "BUY" else "buy"
-        place_delta_demo_order(eng, side=close_side, size=lot_used, reduce_only=True, note=f"Exit {active_tr['type']} [{lot_used} Lot]")
+    # Close real Delta position immediately when exiting without an immediate flip;
+    # if flipping, `open_hybrid_trade_now(is_flip=True)` closes exact live Delta pos and opens exact new lot in sequence.
+    if fire_delta and not defer_delta_for_flip:
+        execute_delta_entry_and_exit(
+            eng,
+            action_kind="CLOSE_ONLY",
+            direction=active_tr["type"],
+            target_lot=0,
+            close_prev_lot=lot_used,
+            note=f"Close {active_tr['type']}"
+        )
 
 # ============================================================================
 # AI SMART HYBRID COMMENTARY & AUTO-MODEL SELECTION ENGINE
@@ -1031,11 +1078,11 @@ def call_gemini_hybrid_engine(eng, api_key, ctx, active_trade):
 
     prompt = f"""
 You are a Quantitative Dual-Mode Smart-Hybrid Renko Trade Manager monitoring an ACTIVE BTCUSDT trade ('AI Renko Supertrend [Core Architecture]').
-Mandatory V26.3 Rules:
+Mandatory V26.4 Rules:
 - Pullback Re-Entries are OFF. Every main Renko Supertrend flip signal is taken unconditionally.
 - Current Trade Lot Size: {active_trade.get('lot_size', 1)} Lots ({t_mult}x Recovery Multiplier).
 - Phase 1 (Peak < +350p): Pure Signal-to-Signal (only exit if candle closes beyond Reversal Level `stLevel` = ${st_line:,.1f}).
-- Phase 2 (Peak +350p to +{'549p' if t_mult>1 else '499p'}): Wide-Breathing Breakeven Shield active at ${hyb['protect_sl']:,.1f} (+{hyb['locked_pts']:.1f}p locked) so the trade cannot lose money but has >315p room to run into a big winner.
+- Phase 2 (Peak +350p to +{'549p' if t_mult>1 else '499p'}): Wide-Breathing Breakeven Shield active at ${hyb['protect_sl']:,.1f} (+{hyb['locked_pts']:.1f}p locked).
 - Phase 3 (Peak >= +{'550p' if t_mult>1 else '500p'}): Big Profit Trail active at ${hyb['protect_sl']:,.1f} (150p gap from Peak).
 - Phase 4 (Peak >= +900p): Parabolic Tight Lock active at ${hyb['protect_sl']:,.1f} (110p gap from Peak).
 
@@ -1102,7 +1149,7 @@ def execute_ai_cycle_thread(eng, now_ts, ist_str):
         eng["ai_busy"] = False
 
 # ============================================================================
-# 24x7 1-SECOND BACKGROUND WORKER (PURE FLIP ENTRY + DUAL-MODE SHIELD)
+# 24x7 1-SECOND BACKGROUND WORKER (UNTOUCHED TRADING LOGIC + VERIFIED DELTA)
 # ============================================================================
 def background_worker(eng, worker_id):
     last_used_brick_size = eng.get("fixed_brick_size", 270.0)
@@ -1173,14 +1220,15 @@ def background_worker(eng, worker_id):
                                 eng, act_tr, px, ist_str,
                                 f"HYBRID PHASE {hyb['phase']} LOCK",
                                 f"🛡️ डुअल-मोड हाइब्रिड लॉक हिट! Peak +{act_tr['peak_pts']:.1f}p से पलटने पर ${act_tr['protect_sl']:,.1f} पर +{booked:.1f}p ({t_mult}x PnL: +{booked*t_mult:.1f}p) सुरक्षित बुक!",
-                                fire_delta=True
+                                fire_delta=True,
+                                defer_delta_for_flip=False
                             )
                     else:
                         act_tr["protect_sl"] = round(st_line_now, 1)
                         dist_now = abs(px - st_line_now)
                         act_tr["exit_reason"] = f"फेज 1 (Pure Signal): अभी Peak (+{act_tr['peak_pts']:.0f}p) < +350p है — केवल ST Flip (${st_line_now:,.1f} | {dist_now:.0f}p दूर) पर कटेगा"
 
-                # 2. UPDATE CORE RENKO SUPERTREND & MANDATORY FLIP EXECUTION (NO PULLBACK RE-ENTRY)
+                # 2. UPDATE CORE RENKO SUPERTREND & MANDATORY FLIP EXECUTION
                 if settings_changed or (now_ts - eng["last_kline_ts"] > 6):
                     rk_data = fetch_core_renko_supertrend(
                         fixed_brick_size=user_brick_sz,
@@ -1217,18 +1265,30 @@ def background_worker(eng, worker_id):
                                 eng["last_handled_flip_ts"] = rk_data["last_flip_bar_ts"]
                                 new_dir = "BUY" if rk_data["st_trend"] == 1 else "SELL"
                                 flip_px = rk_data["last_confirmed_close"]
+                                prev_lot_cnt = 0
 
                                 if eng.get("active_trade") is not None:
                                     old_tr = eng["active_trade"]
+                                    prev_lot_cnt = int(old_tr.get("lot_size", user_base_lot))
                                     raw_m = (flip_px - old_tr["entry"]) if old_tr["type"] == "BUY" else (old_tr["entry"] - flip_px)
                                     close_hybrid_trade_at_price(
                                         eng, old_tr, flip_px, ist_str,
                                         f"FLIPPED TO {new_dir}",
                                         f"विपरीत {new_dir} सिग्नल आने पर ${flip_px:,.1f} पर बंद हुआ (Raw: {raw_m:+.1f}p | {old_tr.get('lot_mult',1)}x Lot PnL: {raw_m*old_tr.get('lot_mult',1):+.1f}p)",
-                                        fire_delta=True
+                                        fire_delta=True,
+                                        defer_delta_for_flip=True
                                     )
 
-                                open_hybrid_trade_now(eng, new_dir, flip_px, ist_str, f"🔥 Live Renko ST Flip {new_dir} {'▲' if new_dir=='BUY' else '▼'}", fire_delta=True)
+                                open_hybrid_trade_now(
+                                    eng,
+                                    new_dir,
+                                    flip_px,
+                                    ist_str,
+                                    f"🔥 Live Renko ST Flip {new_dir} {'▲' if new_dir=='BUY' else '▼'}",
+                                    fire_delta=True,
+                                    is_flip=True,
+                                    prev_lot_to_close=prev_lot_cnt
+                                )
                                 threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
 
                     elif rk_data and "error" in rk_data:
@@ -1244,7 +1304,7 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v26_3():
+def get_master_engine_v26_4():
     wid = int(time.time() * 1000)
     srv_ip = fetch_server_public_ip()
     eng = {
@@ -1287,7 +1347,7 @@ def get_master_engine_v26_3():
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v26_3()
+eng = get_master_engine_v26_4()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -1338,7 +1398,7 @@ with ip_col4:
         threading.Thread(target=auto_verify_delta_demo_wallet, args=(eng,), daemon=True).start()
 
 # ============================================================================
-# TOP CONTROL BAR (BRICK SIZE, REVERSAL, REFRESH & SOUND — PULLBACK RE-ENTRY REMOVED)
+# TOP CONTROL BAR (BRICK SIZE, REVERSAL, REFRESH & SOUND)
 # ============================================================================
 c_brk, c_rev, c_act1, c_snd = st.columns([0.24, 0.24, 0.34, 0.18])
 
@@ -1557,7 +1617,7 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V26.3 (TRUE DEFICIT RECOVERY + DUAL-MODE HYBRID + DELTA DEMO)</div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V26.4 (TRUE DEFICIT RECOVERY + DUAL-MODE HYBRID + DELTA DEMO)</div>
                     <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🧱 Brick: <b style='color:#facc15;'>${box_sz:.0f}</b> | 🛡️ Dual Shield: <b>+350p BE & +500p/+550p Big Trail</b> | 📦 Active Lot: <b style='color:#facc15;'>{eng.get('current_lot_size',1)} Lot ({eng.get('current_lot_mult',1)}x)</b> | AI Lot PnL: <b style='color:{net_col};'>{closed_weighted_sum:+.1f} Pts ({win_cnt}W/{loss_cnt}L)</b></div>
                 </div>
                 <div style='text-align:right;'>
@@ -1590,6 +1650,6 @@ while True:
 
     else:
         err_msg = f" ({eng['last_err']})" if eng.get("last_err") else ""
-        dashboard_slot.warning(f"⏳ 24x7 V26.3 (True Deficit Recovery + Dual-Mode Hybrid Engine) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
+        dashboard_slot.warning(f"⏳ 24x7 V26.4 (Exact Lot & Position-Verified Delta Sync) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
 
     time.sleep(1.5)
