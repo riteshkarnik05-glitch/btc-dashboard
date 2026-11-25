@@ -14,7 +14,7 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V26.5 - Trend-First AI Manager + Max 2x Lot + Delta Demo", layout="wide")
+st.set_page_config(page_title="Pro Quant V26.6 - Trend-First + Big Profit Lock + Delta Demo", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML/SVG inside a single slot without ghost boxes"""
@@ -120,7 +120,7 @@ def _delta_signed_headers(api_key: str, api_secret: str, method: str, path: str,
         "signature": sig,
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "pro-quant-v26-5-ai-bot"
+        "User-Agent": "pro-quant-v26-6-ai-bot"
     }
 
 def _get_live_delta_btc_position_size(base_url: str, prod_id: int, api_key: str, api_secret: str):
@@ -356,11 +356,6 @@ def parse_ai_json_safely(raw_text: str):
     return None
 
 def quant_fallback_lot_sizer(new_dir: str, loss_streak: int, deficit_pts: float, last_closed_pts: float, rsi14: float, buy_dom_pct: float, ema_dist_bricks: float) -> tuple:
-    """
-    Safe Trend-Recovery Lot Sizer (Capped at 2x Base Lot):
-    - Never skips a Renko signal (minimum 1x Base Lot).
-    - Maximum multiplier is strictly capped at 2x (prevents heavy 3x drawdowns in choppy ranges).
-    """
     if deficit_pts <= 0.0:
         return 1, "✅ पिछला सारा लॉस रिकवर हो चुका है (Deficit: 0p) — स्टैंडर्ड 1x Base Lot से ट्रेड लिया गया।"
 
@@ -434,8 +429,33 @@ Return ONLY valid JSON:
     return quant_fallback_lot_sizer(new_dir, loss_streak, deficit_pts, last_closed_pts, rsi14, buy_dom, ema_bricks)
 
 # ============================================================================
-# TREND-FIRST AI RENKO TRADE MANAGER (LONG TREND HOLD + BIG PROFIT LOCK)
+# BIG PROFIT LOCK CALCULATOR + TREND-FIRST AI MANAGER
 # ============================================================================
+def compute_big_trend_lock_sl(entry_px: float, peak_pts: float, trade_type: str, current_sl: float = 0.0) -> float:
+    """
+    Protects substantial trend profits once a trade reaches +450p / +650p / +900p+ peak,
+    while allowing normal sub-450p Renko trends to breathe freely.
+    Never moves SL backward.
+    """
+    locked_gain = 0.0
+    if peak_pts >= 900.0:
+        locked_gain = max(720.0, peak_pts - 150.0)
+    elif peak_pts >= 650.0:
+        locked_gain = max(440.0, peak_pts - 180.0)
+    elif peak_pts >= 450.0:
+        locked_gain = max(250.0, peak_pts - 190.0)
+    else:
+        return round(float(current_sl or 0.0), 1)
+
+    target_sl = round(entry_px + locked_gain, 1) if trade_type == "BUY" else round(entry_px - locked_gain, 1)
+    prev_sl = float(current_sl or 0.0)
+    if prev_sl > 0:
+        if trade_type == "BUY":
+            return round(max(prev_sl, target_sl), 1)
+        else:
+            return round(min(prev_sl, target_sl), 1)
+    return target_sl
+
 def _sanitize_ai_sl(current_sl: float, proposed_sl: float, live_px: float, trade_type: str) -> float:
     try:
         p_sl = float(proposed_sl)
@@ -458,12 +478,6 @@ def _sanitize_ai_sl(current_sl: float, proposed_sl: float, live_px: float, trade
         return round(p_sl, 1)
 
 def ai_trend_first_fallback_decision(active_tr: dict, rk: dict, live_px: float) -> dict:
-    """
-    Trend-First Discretionary Evaluation:
-    1. Allows long Renko trends to breathe through normal 150p-300p pullbacks without premature exit.
-    2. Locks/protects big profits once the trade reaches strong trend territory (+500p+ / +700p+).
-    3. Exits early only if Renko trend flipped against the trade or a large profit (+500p+) shows clear reversal exhaustion.
-    """
     t_type = active_tr["type"]
     entry_px = active_tr["entry"]
     live_pts = active_tr["live_pts"]
@@ -481,11 +495,11 @@ def ai_trend_first_fallback_decision(active_tr: dict, rk: dict, live_px: float) 
 
     trend_against = (t_type == "BUY" and st_trend == -1) or (t_type == "SELL" and st_trend == 1)
     big_trend_reversal = (
-        peak_pts >= 500.0
-        and live_pts >= 250.0
-        and (streak >= 5 or ema_bricks >= 2.5)
+        peak_pts >= 450.0
+        and live_pts >= 220.0
+        and (streak >= 4 or ema_bricks >= 2.4)
         and fav_dom < 42.0
-        and ((t_type == "BUY" and rsi14 >= 74.0) or (t_type == "SELL" and rsi14 <= 26.0))
+        and ((t_type == "BUY" and rsi14 >= 72.0) or (t_type == "SELL" and rsi14 <= 28.0))
     )
 
     if trend_against or big_trend_reversal:
@@ -495,28 +509,14 @@ def ai_trend_first_fallback_decision(active_tr: dict, rk: dict, live_px: float) 
             "reason": f"AI ट्रेंड फैसला (EXIT): बड़े मूव/रैंकों स्थिति (Peak +{peak_pts:.0f}p, Streak #{streak}, Power {fav_dom:.0f}%) में पलटाव के संकेत पर {live_pts:+.1f}p सुरक्षित किया गया।"
         }
 
-    # Big Trend Lock: Only tighten protective SL once trade reaches big trend profit (+500p+ / +700p+)
-    new_sl = curr_sl
-    if peak_pts >= 700.0 and live_pts >= 350.0 and dist_to_st > 180.0:
-        if t_type == "BUY":
-            suggested = max(entry_px + 320.0, live_px - 220.0)
-            new_sl = _sanitize_ai_sl(curr_sl, suggested, live_px, "BUY")
-        else:
-            suggested = min(entry_px - 320.0, live_px + 220.0)
-            new_sl = _sanitize_ai_sl(curr_sl, suggested, live_px, "SELL")
-    elif peak_pts >= 500.0 and live_pts >= 220.0 and dist_to_st > 200.0:
-        if t_type == "BUY":
-            suggested = max(entry_px + 180.0, live_px - 260.0)
-            new_sl = _sanitize_ai_sl(curr_sl, suggested, live_px, "BUY")
-        else:
-            suggested = min(entry_px - 180.0, live_px + 260.0)
-            new_sl = _sanitize_ai_sl(curr_sl, suggested, live_px, "SELL")
+    auto_lock_sl = compute_big_trend_lock_sl(entry_px, peak_pts, t_type, curr_sl)
+    new_sl = _sanitize_ai_sl(curr_sl, auto_lock_sl, live_px, t_type) if auto_lock_sl > 0 else curr_sl
 
-    sl_note = f" | Big Trend Lock SL: ${new_sl:,.1f}" if new_sl > 0 else " (लंबे ट्रेंड के लिए Reversal ST खुला है)"
+    sl_note = f" | Lock SL: ${new_sl:,.1f}" if new_sl > 0 else " (लंबे ट्रेंड के लिए खुला है)"
     return {
         "decision": "HOLD",
         "new_sl": new_sl,
-        "reason": f"AI ट्रेंड होल्ड (HOLD): रैंकों ट्रेंड को सांस लेने की जगह दी जा रही है — Reversal ST (${st_line:,.0f}) {dist_to_st:.0f}p दूर है, Power {fav_dom:.0f}%{sl_note}।"
+        "reason": f"AI ट्रेंड होल्ड (HOLD): रैंकों ट्रेंड जारी है (Peak +{peak_pts:.0f}p, ST ${st_line:,.0f} से {dist_to_st:.0f}p दूर, Power {fav_dom:.0f}%){sl_note}।"
     }
 
 def call_gemini_trend_first_manager(eng: dict, api_key: str, active_tr: dict, rk: dict, live_px: float) -> tuple:
@@ -527,7 +527,7 @@ def call_gemini_trend_first_manager(eng: dict, api_key: str, active_tr: dict, rk
         return {
             "decision": "HOLD",
             "new_sl": 0.0,
-            "reason": "अगले Core Renko ST सिग्नल की प्रतीक्षा — नया ट्रेंड खुलते ही AI लंबे ट्रेंड और प्रॉफिट लॉक को संभालेगा।"
+            "reason": "अगले Core Renko ST सिग्नल की प्रतीक्षा — नया ट्रेंड खुलते ही AI लंबे ट्रेंड और बड़े प्रॉफिट लॉक को संभालेगा।"
         }, f"🟢 {top_mod} (Standby)"
 
     t_type = active_tr["type"]
@@ -541,12 +541,12 @@ def call_gemini_trend_first_manager(eng: dict, api_key: str, active_tr: dict, rk
     prompt = f"""
 You are a Trend-Following Renko Price-Action Trade Manager managing an ACTIVE BTCUSDT trade.
 The trade was entered on a Core Renko Supertrend signal, and lot multiplier is capped safely at 2x maximum.
-Your goal is to capture BIG, LONG RENKO TRENDS while protecting large profits once earned.
+Your goal is to capture BIG, LONG RENKO TRENDS while locking in substantial profits once earned.
 
 TREND-FIRST JUDGMENT PRINCIPLES:
-1. LET LONG TRENDS BREATHE: Normal Renko trends have 150-300 pt pullbacks before extending +600p, +1000p, or +1500p+. Do NOT exit a trend early on small noise/pullbacks while `stLevel` (${st_line:,.1f}) holds and trend structure is intact.
-2. BIG TREND LOCK: Once the trade achieves substantial profit (e.g. +500p to +700p+ peak/live move), set or advance `new_sl` to lock in a meaningful portion of the big trend profit while leaving room for further extension.
-3. EXIT WITH PURPOSE: Choose `"EXIT"` if the Renko trend has flipped against the trade, or if a big trend (+500p+) shows clear exhaustion and reversal pressure. Otherwise choose `"HOLD"`.
+1. LET LONG TRENDS BREATHE: Allow normal Renko pullbacks to breathe while `stLevel` (${st_line:,.1f}) holds and trend structure is intact, rather than exiting early on minor noise.
+2. BIG TREND PROFIT LOCK: Once a trade reaches strong profit territory (+450p, +650p, +900p+ peak/move), set or advance `new_sl` to lock in a solid portion of that profit so a big winner does not slip back into a small gain or loss.
+3. EXIT WITH PURPOSE: Choose `"EXIT"` if the Renko trend has flipped against the trade, or if a strong move shows clear reversal exhaustion. Otherwise choose `"HOLD"`.
 
 ACTIVE TRADE DETAILS:
 - Direction: {t_type} | Entry: ${entry_px:,.1f} | Current Price: ${live_px:,.1f}
@@ -580,9 +580,17 @@ Return ONLY valid JSON:
                 parsed = parse_ai_json_safely(res.json()['candidates'][0]['content']['parts'][0]['text'].strip())
                 if parsed and str(parsed.get("decision", "")).upper() in ("HOLD", "EXIT"):
                     dec = str(parsed["decision"]).upper()
-                    n_sl = _sanitize_ai_sl(curr_sl, parsed.get("new_sl", curr_sl), live_px, t_type)
+                    auto_sl = compute_big_trend_lock_sl(entry_px, peak_pts, t_type, curr_sl)
+                    ai_sl = _sanitize_ai_sl(curr_sl, parsed.get("new_sl", curr_sl), live_px, t_type)
+                    merged_sl = curr_sl
+                    if auto_sl > 0 and ai_sl > 0:
+                        merged_sl = max(auto_sl, ai_sl) if t_type == "BUY" else min(auto_sl, ai_sl)
+                    elif auto_sl > 0:
+                        merged_sl = auto_sl
+                    elif ai_sl > 0:
+                        merged_sl = ai_sl
                     rsn = str(parsed.get("reason", "")).strip() or ai_trend_first_fallback_decision(active_tr, rk, live_px)["reason"]
-                    return {"decision": dec, "new_sl": n_sl, "reason": rsn}, f"🟢 {mod}"
+                    return {"decision": dec, "new_sl": round(merged_sl, 1), "reason": rsn}, f"🟢 {mod}"
         except Exception:
             continue
 
@@ -707,7 +715,7 @@ def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
     """
 
 # ============================================================================
-# CORE ARCHITECTURE: SYNTHETIC RENKO SUPERTREND + TREND-FIRST RECOVERY
+# CORE ARCHITECTURE: SYNTHETIC RENKO SUPERTREND + BIG PROFIT LOCK
 # ============================================================================
 HYPERLIQUID_URL = "https://api.hyperliquid.xyz/info"
 
@@ -892,11 +900,33 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
             if trade_records and "ACTIVE" in trade_records[-1]["status"] and not (bar_buy_sig or bar_sell_sig):
                 cur_t = trade_records[-1]
                 t_mult = cur_t.get("lot_mult", 1)
-                fav_px = h_bar if cur_t["type"] == "BUY" else l_bar
-                cur_fav = (fav_px - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - fav_px)
-                cur_t["peak_pts"] = round(max(cur_t["peak_pts"], cur_fav), 1)
-                cur_t["live_pts"] = round((c - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - c), 1)
-                cur_t["weighted_pts"] = round(cur_t["live_pts"] * t_mult, 1)
+
+                # Check Big Trend Lock SL hit on bar high/low
+                cur_sl = float(cur_t.get("sl_px", 0.0) or 0.0)
+                if cur_sl > 0:
+                    hit_lock = (l_bar <= cur_sl) if cur_t["type"] == "BUY" else (h_bar >= cur_sl)
+                    if hit_lock:
+                        locked_pts_val = (cur_sl - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - cur_sl)
+                        cur_t["live_pts"] = round(locked_pts_val, 1)
+                        cur_t["weighted_pts"] = round(locked_pts_val * t_mult, 1)
+                        cur_t["close_time"] = b_ist_full
+                        cur_t["status"] = f"BIG PROFIT LOCK HIT @ ${cur_sl:,.1f} ({b_ist_short})"
+                        cur_t["exit_reason"] = f"🛡️ बड़े प्रॉफिट का सुरक्षित लॉक SL (${cur_sl:,.1f}) हिट होने पर +{locked_pts_val:.1f}p ({t_mult}x PnL: +{locked_pts_val*t_mult:.1f}p) बुक हुआ!"
+                        cur_t["ai_reason"] = cur_t["exit_reason"]
+                        _record_closed_trade_outcome(cur_t)
+
+                if "ACTIVE" in cur_t["status"]:
+                    fav_px = h_bar if cur_t["type"] == "BUY" else l_bar
+                    cur_fav = (fav_px - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - fav_px)
+                    cur_t["peak_pts"] = round(max(cur_t["peak_pts"], cur_fav), 1)
+                    cur_t["live_pts"] = round((c - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - c), 1)
+                    cur_t["weighted_pts"] = round(cur_t["live_pts"] * t_mult, 1)
+
+                    updated_sl = compute_big_trend_lock_sl(cur_t["entry"], cur_t["peak_pts"], cur_t["type"], cur_t.get("sl_px", 0.0))
+                    if updated_sl > 0:
+                        cur_t["sl_px"] = updated_sl
+                        l_gain = (updated_sl - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - updated_sl)
+                        cur_t["ai_reason"] = f"🛡️ बड़ा प्रॉफिट लॉक सक्रिय: Peak +{cur_t['peak_pts']:.0f}p पर SL ${updated_sl:,.1f} (+{l_gain:.0f}p सुरक्षित) सेट है।"
 
             if bar_buy_sig or bar_sell_sig:
                 last_flip_bar_ts = bar_times[i]
@@ -928,7 +958,7 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     "lot_reason": m_reason,
                     "sl_px": 0.0,
                     "ai_decision": "HOLD",
-                    "ai_reason": "Core Renko सिग्नल से एंट्री हुई — AI लंबे ट्रेंड और प्रॉफिट लॉक के हिसाब से आगे का फैसला लेगा।",
+                    "ai_reason": "ट्रेड खुल चुका है — AI लंबे ट्रेंड को होल्ड रखेगा और +450p/+650p+ पर प्रॉफिट लॉक करेगा।",
                     "live_pts": 0.0,
                     "weighted_pts": 0.0,
                     "peak_pts": 0.0,
@@ -984,7 +1014,7 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
         return {"error": str(e)}
 
 # ============================================================================
-# LIVE TRADE OPENER & CLOSER (TREND-FIRST AI MANAGEMENT + MAX 2x LOT)
+# LIVE TRADE OPENER & CLOSER (TREND-FIRST AI MANAGEMENT + BIG PROFIT LOCK)
 # ============================================================================
 def open_renko_trade_now(eng, direction: str, entry_px: float, ist_str: str, entry_source_label: str, fire_delta: bool = True, is_flip: bool = False, prev_lot_to_close: int = 0):
     rk = eng.get("renko", {})
@@ -1183,6 +1213,15 @@ def background_worker(eng, worker_id):
                     act_tr["weighted_pts"] = round(move * t_mult, 1)
                     act_tr["peak_pts"] = round(max(act_tr["peak_pts"], move), 1)
 
+                    # Continuously advance Big Trend Lock SL once peak reaches +450p/+650p/+900p+
+                    prev_sl_val = float(act_tr.get("sl_px", 0.0) or 0.0)
+                    new_lock_sl = compute_big_trend_lock_sl(act_tr["entry"], act_tr["peak_pts"], act_tr["type"], prev_sl_val)
+                    if new_lock_sl > 0 and new_lock_sl != prev_sl_val:
+                        act_tr["sl_px"] = new_lock_sl
+                        l_gain = (new_lock_sl - act_tr["entry"]) if act_tr["type"] == "BUY" else (act_tr["entry"] - new_lock_sl)
+                        act_tr["ai_reason"] = f"🛡️ बड़ा प्रॉफिट लॉक सक्रिय: Peak +{act_tr['peak_pts']:.0f}p पर SL ${new_lock_sl:,.1f} (+{l_gain:.0f}p सुरक्षित) सेट है।"
+                        eng["sound_event"] = {"id": now_ts, "type": "TRAIL"}
+
                     ai_sl = float(act_tr.get("sl_px", 0.0) or 0.0)
                     sl_hit = False
                     if ai_sl > 0:
@@ -1194,7 +1233,7 @@ def background_worker(eng, worker_id):
                             act_tr,
                             px,
                             ist_str,
-                            "BIG TREND LOCK HIT",
+                            "BIG PROFIT LOCK HIT",
                             f"🛡️ बड़े प्रॉफिट का सुरक्षित लॉक SL (${ai_sl:,.1f}) हिट होने पर ${px:,.1f} पर मुनाफा बुक हुआ ({move:+.1f}p)",
                             fire_delta=True,
                             defer_delta_for_flip=False
@@ -1279,7 +1318,7 @@ def background_worker(eng, worker_id):
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v26_5():
+def get_master_engine_v26_6():
     wid = int(time.time() * 1000)
     srv_ip = fetch_server_public_ip()
     eng = {
@@ -1318,7 +1357,7 @@ def get_master_engine_v26_5():
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v26_5()
+eng = get_master_engine_v26_6()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -1430,7 +1469,7 @@ while True:
             t_mult = act_tr.get("lot_mult", 1)
             t_lots = act_tr.get("lot_size", 1)
             ai_sl_val = float(act_tr.get("sl_px", 0.0) or 0.0)
-            sl_txt = f"${ai_sl_val:,.1f}" if ai_sl_val > 0 else "Trend Open / ST"
+            sl_txt = f"${ai_sl_val:,.1f}" if ai_sl_val > 0 else "Trend Open (+450p Lock)"
             banner_cls = "lock-buy" if act_tr["type"] == "BUY" else "lock-sell"
             banner_title = f"{'🟢' if act_tr['type']=='BUY' else '🔴'} ट्रेंड-फर्स्ट {act_tr['type']} चालू [📦 {t_lots} Lot ({t_mult}x Max-2x)] — AI: {act_tr.get('ai_decision', 'HOLD')}"
             banner_sub = (
@@ -1495,8 +1534,8 @@ while True:
             <span style='color:#cbd5e1;'>रैंकों के बड़े मूव में आने वाले सामान्य पुलबैक्स पर ट्रेड को जल्दी नहीं काटा जाएगा, ताकि बड़ा ट्रेंड पूरा पकड़ा जा सके।</span>
         </div>
         <div class='item-card ic-warn'>
-            <b>2. बड़ा प्रॉफिट आने पर लॉक (Big Trend Lock)</b><br>
-            <span style='color:#cbd5e1;'>जब ट्रेड बड़ा प्रॉफिट (+500p / +700p+) बना लेता है, तब AI सुरक्षा के लिए प्रोटेक्टेड SL आगे बढ़ाता है ताकि कमाया हुआ मुनाफा सुरक्षित रहे।</span>
+            <b>2. बड़ा प्रॉफिट आने पर लॉक (+450p / +650p / +900p+)</b><br>
+            <span style='color:#cbd5e1;'>जैसे ही ट्रेड +450p या उससे ऊपर जाता है, लॉक SL अपने-आप आगे बढ़ता है ताकि बड़ा मुनाफा वापस नुकसान में न बदले।</span>
         </div>
         <div class='item-card ic-ai'>
             <b>3. अधिकतम 2x सुरक्षित लॉट सीमा (Max 2x Cap)</b><br>
@@ -1511,7 +1550,7 @@ while True:
         net_col = "#4ade80" if closed_weighted_sum >= 0 else "#f87171"
         def_pts = eng.get("deficit_pts", 0.0)
         l_streak = eng.get("loss_streak", 0)
-        act_sl_display = f"${float(act_tr.get('sl_px', 0.0)):,.1f}" if (act_tr and float(act_tr.get("sl_px", 0.0) or 0.0) > 0) else "Trend Open / ST"
+        act_sl_display = f"${float(act_tr.get('sl_px', 0.0)):,.1f}" if (act_tr and float(act_tr.get("sl_px", 0.0) or 0.0) > 0) else "Trend Open (+450p Lock)"
 
         left_body = f"""
         <div class='lock-banner {banner_cls}'>
@@ -1569,8 +1608,8 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V26.5 (TREND-FIRST AI MANAGER + MAX 2X LOT + DELTA DEMO)</div>
-                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🧱 Brick: <b style='color:#facc15;'>${box_sz:.0f}</b> | 🧠 AI Mode: <b style='color:#c084fc;'>Long-Trend Hold & Big Profit Lock (Max 2x)</b> | 📦 Active Lot: <b style='color:#facc15;'>{eng.get('current_lot_size',1)} Lot ({eng.get('current_lot_mult',1)}x)</b> | AI Lot PnL: <b style='color:{net_col};'>{closed_weighted_sum:+.1f} Pts ({win_cnt}W/{loss_cnt}L)</b></div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V26.6 (TREND-FIRST AI MANAGER + BIG PROFIT LOCK + DELTA DEMO)</div>
+                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🧱 Brick: <b style='color:#facc15;'>${box_sz:.0f}</b> | 🧠 AI Mode: <b style='color:#c084fc;'>Long-Trend Hold & +450p+ Profit Lock (Max 2x)</b> | 📦 Active Lot: <b style='color:#facc15;'>{eng.get('current_lot_size',1)} Lot ({eng.get('current_lot_mult',1)}x)</b> | AI Lot PnL: <b style='color:{net_col};'>{closed_weighted_sum:+.1f} Pts ({win_cnt}W/{loss_cnt}L)</b></div>
                 </div>
                 <div style='text-align:right;'>
                     <div style='font-size:21px; font-weight:900; color:#f8fafc;'>BTC: ${eng['px']:,.1f}</div>
@@ -1602,6 +1641,6 @@ while True:
 
     else:
         err_msg = f" ({eng['last_err']})" if eng.get("last_err") else ""
-        dashboard_slot.warning(f"⏳ 24x7 V26.5 (Trend-First AI Manager + Max 2x Lot) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
+        dashboard_slot.warning(f"⏳ 24x7 V26.6 (Trend-First AI Manager + Big Profit Lock) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
 
     time.sleep(1.5)
