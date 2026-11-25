@@ -14,7 +14,7 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Pro Quant V26.4 - Exact Lot & Position-Verified Delta Sync", layout="wide")
+st.set_page_config(page_title="Pro Quant V26.4 - AI Renko Trade Manager + Delta Demo", layout="wide")
 
 def clean_html(raw_html: str) -> str:
     """Strips leading spaces so Streamlit renders pure HTML/SVG inside a single slot without ghost boxes"""
@@ -48,12 +48,12 @@ st.markdown(clean_html("""
 .stat-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-bottom: 1px dashed #1f2937; }
 .chart-box { background: #0c1220; border: 1px solid #334155; border-top: 3px solid #38bdf8; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
 .history-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #22c55e; border-radius: 10px; padding: 12px 14px; height: 360px; overflow-y: auto; }
-.brick-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #facc15; border-radius: 10px; padding: 12px 14px; height: auto; }
+.brick-panel { background: #111827; border: 1px solid #334155; border-top: 3px solid #c084fc; border-radius: 10px; padding: 12px 14px; height: auto; }
 .item-card { background: #090d16; border: 1px solid #1f2937; padding: 10px 12px; border-radius: 7px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.5; }
 .ic-bull { border-left: 4px solid #22c55e; }
 .ic-bear { border-left: 4px solid #ef4444; }
 .ic-warn { border-left: 4px solid #facc15; }
-.ic-active-stage { background: #172554; border: 1px solid #38bdf8; border-left: 5px solid #facc15; }
+.ic-ai { border-left: 4px solid #c084fc; }
 div.stButton > button { background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #38bdf8 !important; border-radius: 7px !important; font-weight: 700 !important; width: 100%; margin-top: 2px; }
 div.stButton > button:hover { background-color: #38bdf8 !important; color: #090d16 !important; }
 div[data-baseweb="input"] > div { background-color: #1e293b !important; color: #facc15 !important; border: 1px solid #facc15 !important; border-radius: 7px !important; font-weight: 800 !important; }
@@ -75,7 +75,6 @@ DELTA_TESTNET_CANDIDATES = [
 delta_order_lock = threading.Lock()
 
 def fetch_server_public_ip() -> str:
-    """Fetches the server's public outbound IPv4 address for Delta API whitelisting"""
     endpoints = [
         "https://api.ipify.org",
         "https://checkip.amazonaws.com",
@@ -121,14 +120,10 @@ def _delta_signed_headers(api_key: str, api_secret: str, method: str, path: str,
         "signature": sig,
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "pro-quant-v26-4-bot"
+        "User-Agent": "pro-quant-v26-4-ai-bot"
     }
 
 def _get_live_delta_btc_position_size(base_url: str, prod_id: int, api_key: str, api_secret: str):
-    """
-    Fetches exact live open position size for BTC product on Delta Demo.
-    Positive int => Long size; Negative int => Short size; 0 => No open position; None => Query failed.
-    """
     path = "/v2/positions"
     query_string = f"?product_id={int(prod_id)}"
     try:
@@ -161,11 +156,9 @@ def _submit_delta_market_order_sync(base_url: str, prod_id: int, api_key: str, a
 
     payload_str = json.dumps(body_dict, separators=(",", ":"))
     headers = _delta_signed_headers(api_key, api_secret, "POST", path, "", payload_str)
-    res = requests.post(f"{base_url}{path}", data=payload_str, headers=headers, timeout=6.0)
-    return res
+    return requests.post(f"{base_url}{path}", data=payload_str, headers=headers, timeout=6.0)
 
 def auto_verify_delta_demo_wallet(eng: dict):
-    """Automatically detects the matching Delta Testnet endpoint (India or Global) and verifies wallet balance & live position"""
     api_key = eng.get("delta_api_key", HARDCODED_DELTA_API_KEY).strip()
     api_secret = eng.get("delta_api_secret", HARDCODED_DELTA_API_SECRET).strip()
     path = "/v2/wallet/balances"
@@ -196,12 +189,6 @@ def auto_verify_delta_demo_wallet(eng: dict):
     eng["delta_last_status"] = last_err
 
 def execute_delta_entry_and_exit(eng: dict, action_kind: str, direction: str, target_lot: int, close_prev_lot: int = 0, note: str = ""):
-    """
-    Thread-safe, serialized Delta Exchange Demo order executor:
-    - action_kind == 'CLOSE_ONLY': Closes existing live Delta position completely and verifies size == 0.
-    - action_kind == 'FLIP': Closes any existing live Delta position completely, verifies closed, then opens exact `target_lot` on `direction`.
-    - action_kind == 'OPEN': Opens exact `target_lot` on `direction` matching dashboard lot size.
-    """
     if not eng.get("delta_enabled", True):
         return
     api_key = eng.get("delta_api_key", HARDCODED_DELTA_API_KEY).strip()
@@ -225,7 +212,6 @@ def execute_delta_entry_and_exit(eng: dict, action_kind: str, direction: str, ta
 
             ist_now = get_ist_time_str()
 
-            # Step 1: If closing or flipping, inspect actual live Delta position size and close it completely
             if action_kind in ("CLOSE_ONLY", "FLIP"):
                 live_pos = _get_live_delta_btc_position_size(active_url, prod_id, api_key, api_secret)
                 if live_pos is not None and live_pos != 0:
@@ -233,12 +219,8 @@ def execute_delta_entry_and_exit(eng: dict, action_kind: str, direction: str, ta
                     close_qty = abs(live_pos)
                     res_c = _submit_delta_market_order_sync(active_url, prod_id, api_key, api_secret, close_side, close_qty, reduce_only=True)
                     if res_c.status_code != 200 or not res_c.json().get("success"):
-                        # Retry without reduce_only flag in case testnet rejects reduce_only on specific contract
                         res_c = _submit_delta_market_order_sync(active_url, prod_id, api_key, api_secret, close_side, close_qty, reduce_only=False)
                     time.sleep(0.5)
-                    rem_pos = _get_live_delta_btc_position_size(active_url, prod_id, api_key, api_secret)
-                    if rem_pos is not None and rem_pos != 0:
-                        eng["delta_last_status"] = f"⚠️ Delta Close Pending (Rem:{rem_pos:+d}) @ {ist_now}"
                 elif close_prev_lot > 0 and live_pos is None:
                     prev_side = "sell" if direction == "BUY" else "buy"
                     _submit_delta_market_order_sync(active_url, prod_id, api_key, api_secret, prev_side, close_prev_lot, reduce_only=True)
@@ -250,7 +232,6 @@ def execute_delta_entry_and_exit(eng: dict, action_kind: str, direction: str, ta
                 eng["delta_last_status"] = f"🟢 Delta EXIT OK ({pos_lbl}) @ {ist_now} [{note}]"
                 return
 
-            # Step 2: Open new position with exact dashboard lot size
             open_side = "buy" if direction == "BUY" else "sell"
             req_size = int(max(1, target_lot))
             res_o = _submit_delta_market_order_sync(active_url, prod_id, api_key, api_secret, open_side, req_size, reduce_only=False)
@@ -258,7 +239,7 @@ def execute_delta_entry_and_exit(eng: dict, action_kind: str, direction: str, ta
                 ord_id = res_o.json().get("result", {}).get("id", "OK")
                 time.sleep(0.4)
                 actual_pos = _get_live_delta_btc_position_size(active_url, prod_id, api_key, api_secret)
-                pos_str = f"Actual Pos:{actual_pos:+d}" if actual_pos is not None else f"Req:{req_size}"
+                pos_str = f"Pos:{actual_pos:+d}" if actual_pos is not None else f"Req:{req_size}"
                 eng["delta_last_status"] = f"🟢 {open_side.upper()} {req_size}L ({pos_str}) [#{ord_id}] @ {ist_now}"
             else:
                 err_txt = res_o.text[:75]
@@ -451,64 +432,157 @@ Return ONLY valid JSON:
     return quant_fallback_lot_sizer(new_dir, loss_streak, deficit_pts, last_closed_pts, rsi14, buy_dom, ema_bricks)
 
 # ============================================================================
-# DUAL-MODE SMART HYBRID PROTECTION (+350p BREAKEVEN & +500p/+550p BIG TRAIL)
+# AI DISCRETIONARY RENKO TRADE MANAGER (NO FIXED POINT SHIELD RULES)
 # ============================================================================
-def compute_hybrid_protection(entry_px: float, peak_pts: float, trade_type: str, st_line: float, lot_mult: int = 1) -> dict:
-    is_recovery = (lot_mult > 1)
-    p3_trigger = 550.0 if is_recovery else 500.0
-    be_floor = 25.0 if is_recovery else 35.0
-    be_breathing_gap = 325.0 if is_recovery else 315.0
-    mode_tag = f"Recovery {lot_mult}x" if is_recovery else "Normal 1x"
+def _sanitize_ai_sl(current_sl: float, proposed_sl: float, live_px: float, trade_type: str) -> float:
+    """Ensures AI's new SL stays on the protective side of live price and never weakens prior protection"""
+    try:
+        p_sl = float(proposed_sl)
+    except Exception:
+        return current_sl
+    if p_sl <= 0:
+        return current_sl
 
-    if peak_pts < 350.0:
-        return {
-            "phase": 1,
-            "phase_name": f"PHASE 1: PURE SIGNAL ({mode_tag} | < +350p)",
-            "shield_active": False,
-            "locked_pts": 0.0,
-            "protect_sl": st_line,
-            "gap_from_peak": 0.0,
-            "rule_hi": f"Peak (+{peak_pts:.0f}p) अभी +350p से कम है — कोई बीच का SL नहीं, केवल Reversal ST (${st_line:,.1f}) पर ही ट्रेड पलटेगा।"
-        }
-    elif peak_pts < p3_trigger:
-        locked_pts = round(max(be_floor, peak_pts - be_breathing_gap), 1)
-        prot_sl = round(entry_px + locked_pts, 1) if trade_type == "BUY" else round(entry_px - locked_pts, 1)
-        return {
-            "phase": 2,
-            "phase_name": f"PHASE 2: BREAKEVEN SHIELD ({mode_tag} | +350p–{p3_trigger:.0f}p)",
-            "shield_active": True,
-            "locked_pts": locked_pts,
-            "protect_sl": prot_sl,
-            "gap_from_peak": round(peak_pts - locked_pts, 1),
-            "rule_hi": f"🛡️ +350p ब्रेक-ईवन शील्ड ऑन ({mode_tag})! रिस्क 0 हो गया है (+{locked_pts:.1f}p कॉस्ट+ लॉक), और बड़े रन के लिए +{p3_trigger:.0f}p तक खुला स्पेस दिया गया है।"
-        }
-    elif peak_pts < 900.0:
-        gap = 150.0
-        min_p3_lock = 400.0 if is_recovery else 350.0
-        locked_pts = round(max(min_p3_lock, peak_pts - gap), 1)
-        prot_sl = round(entry_px + locked_pts, 1) if trade_type == "BUY" else round(entry_px - locked_pts, 1)
-        return {
-            "phase": 3,
-            "phase_name": f"PHASE 3: BIG PROFIT TRAIL ({mode_tag} | +{p3_trigger:.0f}p–900p)",
-            "shield_active": True,
-            "locked_pts": locked_pts,
-            "protect_sl": prot_sl,
-            "gap_from_peak": gap,
-            "rule_hi": f"🚀 +{p3_trigger:.0f}p बिग प्रॉफिट ट्रेल सक्रिय ({mode_tag})! Peak (+{peak_pts:.0f}p) से 150p पीछे +{locked_pts:.1f}p (Weighted: +{locked_pts*lot_mult:.0f}p) पक्का लॉक!"
-        }
+    if trade_type == "BUY":
+        if p_sl >= live_px * 0.9985:
+            return current_sl
+        if current_sl > 0 and p_sl < current_sl:
+            return current_sl
+        return round(p_sl, 1)
     else:
-        gap = 110.0
-        locked_pts = round(max(790.0, peak_pts - gap), 1)
-        prot_sl = round(entry_px + locked_pts, 1) if trade_type == "BUY" else round(entry_px - locked_pts, 1)
+        if p_sl <= live_px * 1.0015:
+            return current_sl
+        if current_sl > 0 and p_sl > current_sl:
+            return current_sl
+        return round(p_sl, 1)
+
+def ai_discretionary_fallback_decision(active_tr: dict, rk: dict, live_px: float) -> dict:
+    """
+    Context-aware Renko & momentum evaluation when external LLM isn't invoked or is busy.
+    Evaluates Renko structure, distance to Reversal Level (stLevel), brick streak, 21-EMA, and 14-RSI.
+    """
+    t_type = active_tr["type"]
+    entry_px = active_tr["entry"]
+    live_pts = active_tr["live_pts"]
+    peak_pts = active_tr["peak_pts"]
+    curr_sl = float(active_tr.get("sl_px", 0.0) or 0.0)
+
+    st_line = float(rk.get("st_line", live_px))
+    st_trend = int(rk.get("st_trend", 1 if t_type == "BUY" else -1))
+    streak = int(rk.get("brick_streak", 1))
+    ema_bricks = float(rk.get("ema_dist_bricks", 0.5))
+    rsi14 = float(rk.get("rsi14", 50.0))
+    buy_dom = float(rk.get("buy_dom_pct", 50.0))
+    fav_dom = buy_dom if t_type == "BUY" else (100.0 - buy_dom)
+    dist_to_st = abs(live_px - st_line)
+
+    # Check if Renko trend flipped against the trade or price is dangerously close to stLevel with fading momentum
+    trend_against = (t_type == "BUY" and st_trend == -1) or (t_type == "SELL" and st_trend == 1)
+    exhausted_reversal_risk = (
+        live_pts >= 250.0
+        and (streak >= 4 or ema_bricks >= 2.3)
+        and fav_dom < 45.0
+        and ((t_type == "BUY" and rsi14 >= 72.0) or (t_type == "SELL" and rsi14 <= 28.0))
+    )
+
+    if trend_against or exhausted_reversal_risk:
         return {
-            "phase": 4,
-            "phase_name": f"PHASE 4: PARABOLIC TIGHT LOCK ({mode_tag} | +900p+)",
-            "shield_active": True,
-            "locked_pts": locked_pts,
-            "protect_sl": prot_sl,
-            "gap_from_peak": gap,
-            "rule_hi": f"🔥 +900p+ पैराबोलिक लॉक ({mode_tag})! Peak (+{peak_pts:.0f}p) से 110p टाइट गैप पर +{locked_pts:.1f}p (Weighted: +{locked_pts*lot_mult:.0f}p) पक्का लॉक!"
+            "decision": "EXIT",
+            "new_sl": curr_sl,
+            "reason": f"AI विवेक (EXIT): रैंकों स्ट्रक्चर (Streak #{streak}, EMA {ema_bricks:.1f}x, Power {fav_dom:.0f}%) में थकावट/पलटाव के संकेत देखकर {live_pts:+.1f}p पर ट्रेड एग्जिट चुना गया।"
         }
+
+    # If trade is in solid profit and away from stLevel, AI may optionally tighten protective SL smartly
+    new_sl = curr_sl
+    if live_pts >= 280.0 and dist_to_st > 160.0:
+        if t_type == "BUY":
+            suggested = max(entry_px + (live_pts * 0.45), live_px - max(160.0, rk.get("box_size", 270.0) * 0.65))
+            new_sl = _sanitize_ai_sl(curr_sl, suggested, live_px, "BUY")
+        else:
+            suggested = min(entry_px - (live_pts * 0.45), live_px + max(160.0, rk.get("box_size", 270.0) * 0.65))
+            new_sl = _sanitize_ai_sl(curr_sl, suggested, live_px, "SELL")
+
+    sl_note = f" | AI SL: ${new_sl:,.1f}" if new_sl > 0 else " (Reversal ST ही मुख्य आधार)"
+    return {
+        "decision": "HOLD",
+        "new_sl": new_sl,
+        "reason": f"AI विवेक (HOLD): Reversal Level (${st_line:,.0f}) {dist_to_st:.0f}p दूर है और ब्रिक/मोमेंटम ({fav_dom:.0f}% Power, RSI {rsi14:.0f}) ट्रेड के साथ हैं{sl_note}।"
+    }
+
+def call_gemini_discretionary_manager(eng: dict, api_key: str, active_tr: dict, rk: dict, live_px: float) -> tuple:
+    avail = eng.get("available_models", [])
+    top_mod = avail[0] if avail else "gemini-2.5-pro"
+
+    if active_tr is None:
+        return {
+            "decision": "HOLD",
+            "new_sl": 0.0,
+            "reason": f"अगले Core Renko ST फ्लिप की प्रतीक्षा — नया ट्रेड खुलते ही AI अपने विवेक से HOLD / SL / EXIT संभालेगा।"
+        }, f"🟢 {top_mod} (Standby)"
+
+    t_type = active_tr["type"]
+    entry_px = active_tr["entry"]
+    live_pts = active_tr["live_pts"]
+    peak_pts = active_tr["peak_pts"]
+    curr_sl = float(active_tr.get("sl_px", 0.0) or 0.0)
+    st_line = float(rk.get("st_line", live_px))
+    dist_to_st = abs(live_px - st_line)
+
+    prompt = f"""
+You are an Experienced Renko Price-Action Trade Manager managing an ACTIVE BTCUSDT trade.
+The trade was entered on a Core Renko Supertrend signal.
+Do NOT follow any rigid point thresholds or fixed shield rules. Decide purely on your own judgment using Renko structure, reversal proximity, brick streak, EMA extension, and momentum whether to `HOLD`, update `new_sl`, or `EXIT`.
+
+ACTIVE TRADE DETAILS:
+- Direction: {t_type}
+- Entry Price: ${entry_px:,.1f}
+- Current Live Price: ${live_px:,.1f}
+- Current Live PnL (Points): {live_pts:+.1f}
+- Peak Profit Achieved (Points): +{peak_pts:.1f}
+- Current Active SL: ${curr_sl:,.1f} (0.0 means none set yet)
+- Lot Size: {active_tr.get('lot_size', 1)} ({active_tr.get('lot_mult', 1)}x)
+
+CURRENT RENKO & MARKET STRUCTURE:
+- Fixed Brick Size: ${rk.get('box_size', 270.0):.1f} pts | Reversal Factor: {rk.get('rev_bricks', 2.0):.1f} Bricks
+- Current Brick Box: ${rk.get('brick_bot', 0.0):,.1f} to ${rk.get('brick_top', 0.0):,.1f} | Consecutive Brick Streak: #{rk.get('brick_streak', 1)}
+- Core Trend: {'BULLISH (1)' if rk.get('st_trend', 1) == 1 else 'BEARISH (-1)'} | Reversal Level (`stLevel`): ${st_line:,.1f} (Distance from live price: {dist_to_st:.1f} pts)
+- 21-EMA: ${rk.get('ema21', 0.0):,.1f} | Distance from 21-EMA: {rk.get('ema_dist_bricks', 0.0):.2f} Bricks
+- 14-RSI: {rk.get('rsi14', 50.0):.1f} | 3-Bar Dominance: {rk.get('buy_dom_pct', 50.0):.1f}% Buy
+
+JUDGMENT GUIDELINES:
+1. Evaluate Renko structure: Is price approaching `stLevel` (${st_line:,.1f}) with reversal pressure, or building strong bricks in trend direction?
+2. Evaluate momentum & exhaustion: Are brick streak, 21-EMA stretch, and RSI showing strength or fading momentum?
+3. Output `"decision": "HOLD"` to keep running, or `"decision": "EXIT"` if you judge it best to close the trade now.
+4. If `"decision"` is `"HOLD"` and you want to set or tighten a protective stop-loss price based on Renko structure, provide `"new_sl"` (a numeric price on the protective side of ${live_px:,.1f}), otherwise keep `"new_sl"` as {curr_sl}.
+
+Return ONLY valid JSON:
+{{
+  "decision": "HOLD" or "EXIT",
+  "new_sl": 0.0,
+  "reason": "Concise, clear explanation in Hindi of why you chose HOLD, new_sl, or EXIT based on Renko and market conditions"
+}}
+"""
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.25, "maxOutputTokens": 260}
+    }
+
+    models_queue = build_auto_model_queue(eng)
+    for mod in models_queue:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
+            res = requests.post(url, json=payload, timeout=8.5)
+            if res.status_code == 200:
+                parsed = parse_ai_json_safely(res.json()['candidates'][0]['content']['parts'][0]['text'].strip())
+                if parsed and str(parsed.get("decision", "")).upper() in ("HOLD", "EXIT"):
+                    dec = str(parsed["decision"]).upper()
+                    n_sl = _sanitize_ai_sl(curr_sl, parsed.get("new_sl", curr_sl), live_px, t_type)
+                    rsn = str(parsed.get("reason", "")).strip() or ai_discretionary_fallback_decision(active_tr, rk, live_px)["reason"]
+                    return {"decision": dec, "new_sl": n_sl, "reason": rsn}, f"🟢 {mod}"
+        except Exception:
+            continue
+
+    return ai_discretionary_fallback_decision(active_tr, rk, live_px), f"⚡ {top_mod} (Quant Judgment)"
 
 # ============================================================================
 # PURE SVG LIVE CHART GENERATOR
@@ -527,8 +601,8 @@ def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
     for p in pts:
         all_y.extend([p["close"], p["st"]])
     all_y.extend([live_px, rk.get("brick_top", live_px), rk.get("brick_bot", live_px), rk.get("st_line", live_px)])
-    if active_tr and active_tr.get("shield_active") and active_tr.get("protect_sl", 0) > 0:
-        all_y.append(active_tr["protect_sl"])
+    if active_tr and float(active_tr.get("sl_px", 0.0) or 0.0) > 0:
+        all_y.append(float(active_tr["sl_px"]))
 
     min_y = min(all_y)
     max_y = max(all_y)
@@ -565,13 +639,14 @@ def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
         f"<line x1='{pad_l}' y1='{y_bbot:.1f}' x2='{w - pad_r}' y2='{y_bbot:.1f}' stroke='#f97316' stroke-dasharray='4,4' stroke-width='1' opacity='0.6'/>"
     )
 
-    shield_svg = ""
-    if active_tr and active_tr.get("shield_active") and active_tr.get("protect_sl", 0) > 0:
-        y_sh = to_y(active_tr["protect_sl"])
-        shield_svg = (
-            f"<line x1='{pad_l}' y1='{y_sh:.1f}' x2='{w - pad_r}' y2='{y_sh:.1f}' stroke='#facc15' stroke-dasharray='6,3' stroke-width='2.0'/>"
-            f"<rect x='{w - pad_r + 2}' y='{y_sh - 9:.1f}' width='80' height='18' rx='4' fill='#facc15'/>"
-            f"<text x='{w - pad_r + 42}' y='{y_sh + 4:.1f}' fill='#090d16' font-size='10' font-weight='bold' text-anchor='middle'>Lock ${active_tr['protect_sl']:,.0f}</text>"
+    ai_sl_svg = ""
+    if active_tr and float(active_tr.get("sl_px", 0.0) or 0.0) > 0:
+        ai_sl_val = float(active_tr["sl_px"])
+        y_sl = to_y(ai_sl_val)
+        ai_sl_svg = (
+            f"<line x1='{pad_l}' y1='{y_sl:.1f}' x2='{w - pad_r}' y2='{y_sl:.1f}' stroke='#c084fc' stroke-dasharray='6,3' stroke-width='2.0'/>"
+            f"<rect x='{w - pad_r + 2}' y='{y_sl - 9:.1f}' width='80' height='18' rx='4' fill='#c084fc'/>"
+            f"<text x='{w - pad_r + 42}' y='{y_sl + 4:.1f}' fill='#090d16' font-size='10' font-weight='bold' text-anchor='middle'>AI SL ${ai_sl_val:,.0f}</text>"
         )
 
     price_coords = []
@@ -620,7 +695,7 @@ def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
         {grid_svg}
         {brick_guides}
         {st_segments}
-        {shield_svg}
+        {ai_sl_svg}
         {price_poly}
         {markers_svg}
         {live_tags}
@@ -628,7 +703,7 @@ def build_renko_svg_chart(rk: dict, live_px: float, active_tr: dict) -> str:
     """
 
 # ============================================================================
-# CORE ARCHITECTURE: SYNTHETIC RENKO SUPERTREND + TRUE DEFICIT CARRY-FORWARD
+# CORE ARCHITECTURE: SYNTHETIC RENKO SUPERTREND + AI TRADE MANAGEMENT
 # ============================================================================
 HYPERLIQUID_URL = "https://api.hyperliquid.xyz/info"
 
@@ -658,6 +733,10 @@ def fetch_live_btc_price():
     return None
 
 def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: float = 2.0, base_lot: int = 1):
+    """
+    Runs Core Renko Supertrend on confirmed 1m candles and tracks signal-to-signal trades
+    with True Deficit Carry-Forward.
+    """
     try:
         brick_size = max(10.0, float(fixed_brick_size))
         rev_mult = max(0.5, float(rev_bricks))
@@ -738,7 +817,7 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
         last_flip_price = closes[0]
         last_flip_time_str = (datetime.utcfromtimestamp(bar_times[0] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
-        hybrid_trades = []
+        trade_records = []
         chart_points = []
 
         sim_loss_streak = 0
@@ -810,45 +889,14 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
             b_ist_short = (datetime.utcfromtimestamp(bar_times[i] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M %p')
             b_ist_full = (datetime.utcfromtimestamp(bar_times[i] / 1000.0) + timedelta(hours=5, minutes=30)).strftime('%I:%M:%S %p')
 
-            if hybrid_trades and "ACTIVE" in hybrid_trades[-1]["status"] and not (bar_buy_sig or bar_sell_sig):
-                cur_t = hybrid_trades[-1]
+            if trade_records and "ACTIVE" in trade_records[-1]["status"] and not (bar_buy_sig or bar_sell_sig):
+                cur_t = trade_records[-1]
                 t_mult = cur_t.get("lot_mult", 1)
-
-                if cur_t.get("shield_active"):
-                    prot_sl = cur_t["protect_sl"]
-                    hit_shield = (l_bar <= prot_sl) if cur_t["type"] == "BUY" else (h_bar >= prot_sl)
-                    if hit_shield:
-                        booked_pts = cur_t["locked_pts"]
-                        cur_t["live_pts"] = round(booked_pts, 1)
-                        cur_t["close_time"] = b_ist_full
-                        cur_t["status"] = f"HYBRID PHASE {cur_t['phase']} LOCK @ ${prot_sl:,.1f} ({b_ist_short})"
-                        cur_t["exit_reason"] = (
-                            f"🛡️ डुअल-मोड हाइब्रिड लॉक हिट! Peak +{cur_t['peak_pts']:.1f}p से पलटने पर "
-                            f"${prot_sl:,.1f} पर +{booked_pts:.1f}p ({t_mult}x PnL: +{booked_pts*t_mult:.1f}p) सुरक्षित बुक!"
-                        )
-                        _record_closed_trade_outcome(cur_t)
-
-                if "ACTIVE" in cur_t["status"]:
-                    fav_px = h_bar if cur_t["type"] == "BUY" else l_bar
-                    cur_fav = (fav_px - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - fav_px)
-                    cur_t["peak_pts"] = round(max(cur_t["peak_pts"], cur_fav), 1)
-                    cur_t["live_pts"] = round((c - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - c), 1)
-                    cur_t["weighted_pts"] = round(cur_t["live_pts"] * t_mult, 1)
-
-                    hyb = compute_hybrid_protection(cur_t["entry"], cur_t["peak_pts"], cur_t["type"], st_level, t_mult)
-                    cur_t["phase"] = hyb["phase"]
-                    cur_t["phase_name"] = hyb["phase_name"]
-                    if hyb["shield_active"]:
-                        cur_t["shield_active"] = True
-                        if cur_t["type"] == "BUY":
-                            cur_t["protect_sl"] = max(cur_t.get("protect_sl", 0.0), hyb["protect_sl"])
-                            cur_t["locked_pts"] = round(cur_t["protect_sl"] - cur_t["entry"], 1)
-                        else:
-                            old_psl = cur_t.get("protect_sl", 999999.0)
-                            cur_t["protect_sl"] = min(old_psl if old_psl > 0 else 999999.0, hyb["protect_sl"])
-                            cur_t["locked_pts"] = round(cur_t["entry"] - cur_t["protect_sl"], 1)
-                    else:
-                        cur_t["protect_sl"] = st_level
+                fav_px = h_bar if cur_t["type"] == "BUY" else l_bar
+                cur_fav = (fav_px - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - fav_px)
+                cur_t["peak_pts"] = round(max(cur_t["peak_pts"], cur_fav), 1)
+                cur_t["live_pts"] = round((c - cur_t["entry"]) if cur_t["type"] == "BUY" else (cur_t["entry"] - c), 1)
+                cur_t["weighted_pts"] = round(cur_t["live_pts"] * t_mult, 1)
 
             if bar_buy_sig or bar_sell_sig:
                 last_flip_bar_ts = bar_times[i]
@@ -856,8 +904,8 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                 last_flip_time_str = b_ist_full
                 sig_dir = "BUY" if bar_buy_sig else "SELL"
 
-                if hybrid_trades and "ACTIVE" in hybrid_trades[-1]["status"]:
-                    prev_tr = hybrid_trades[-1]
+                if trade_records and "ACTIVE" in trade_records[-1]["status"]:
+                    prev_tr = trade_records[-1]
                     move_pts = (c - prev_tr["entry"]) if prev_tr["type"] == "BUY" else (prev_tr["entry"] - c)
                     prev_tr["live_pts"] = round(move_pts, 1)
                     prev_tr["peak_pts"] = round(max(prev_tr["peak_pts"], move_pts), 1)
@@ -868,9 +916,8 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
 
                 eb_now = abs(c - ema_arr[i]) / max(1.0, brick_size)
                 m_mult, m_reason = quant_fallback_lot_sizer(sig_dir, sim_loss_streak, sim_deficit_pts, sim_last_closed_pts, rsi_arr[i], dom_arr[i], eb_now)
-                p3_trig = 550 if m_mult > 1 else 500
 
-                hybrid_trades.append({
+                trade_records.append({
                     "open_ts": bar_times[i] / 1000.0,
                     "open_time": b_ist_full,
                     "close_time": "",
@@ -879,17 +926,15 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
                     "lot_mult": m_mult,
                     "lot_size": base_lot_int * m_mult,
                     "lot_reason": m_reason,
+                    "sl_px": 0.0,
+                    "ai_decision": "HOLD",
+                    "ai_reason": "Core Renko सिग्नल से एंट्री हुई — AI रैंकों व मोमेंटम के हिसाब से आगे का फैसला लेगा।",
                     "live_pts": 0.0,
                     "weighted_pts": 0.0,
                     "peak_pts": 0.0,
-                    "phase": 1,
-                    "phase_name": f"PHASE 1: PURE SIGNAL ({'Recovery '+str(m_mult)+'x' if m_mult>1 else 'Normal 1x'})",
-                    "shield_active": False,
-                    "locked_pts": 0.0,
-                    "protect_sl": round(st_level, 1),
-                    "status": "ACTIVE (DUAL-MODE HYBRID)",
+                    "status": "ACTIVE (AI MANAGED)",
                     "entry_reason": f"🔥 Core Renko ST {sig_dir} Signal (Brick: ${brick_size:.0f} | ST: ${st_level:,.1f})",
-                    "exit_reason": f"चालू है — +350p पर Breakeven Shield और +{p3_trig}p पर Big Profit Trail ऑन होगा"
+                    "exit_reason": f"चालू है — AI अपने विवेक से HOLD / SL / EXIT तय करेगा (Renko ST: ${st_level:,.1f})"
                 })
 
             if i >= len(closes) - 240 or bar_buy_sig or bar_sell_sig:
@@ -932,16 +977,16 @@ def fetch_core_renko_supertrend(fixed_brick_size: float = 270.0, rev_bricks: flo
             "sim_loss_streak": sim_loss_streak,
             "sim_deficit_pts": sim_deficit_pts,
             "sim_last_closed_pts": sim_last_closed_pts,
-            "hybrid_trades": list(reversed(hybrid_trades[-20:])),
+            "trade_records": list(reversed(trade_records[-20:])),
             "chart_points": chart_points[-180:]
         }
     except Exception as e:
         return {"error": str(e)}
 
 # ============================================================================
-# LIVE HYBRID TRADE OPENER & CLOSER (WITH EXACT DELTA POSITION VERIFICATION)
+# LIVE TRADE OPENER & CLOSER (AI DISCRETIONARY MANAGEMENT)
 # ============================================================================
-def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, entry_source_label: str, fire_delta: bool = True, is_flip: bool = False, prev_lot_to_close: int = 0):
+def open_renko_trade_now(eng, direction: str, entry_px: float, ist_str: str, entry_source_label: str, fire_delta: bool = True, is_flip: bool = False, prev_lot_to_close: int = 0):
     rk = eng.get("renko", {})
     st_line_val = rk.get("st_line", entry_px)
     box_sz = rk.get("box_size", 270.0)
@@ -953,7 +998,6 @@ def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, en
 
     lot_mult, lot_reason = decide_next_lot_multiplier_with_ai(eng, direction, loss_streak, deficit_pts, last_closed_pts)
     final_lot_size = base_lot * lot_mult
-    p3_trig = 550 if lot_mult > 1 else 500
 
     eng["current_lot_mult"] = lot_mult
     eng["current_lot_size"] = final_lot_size
@@ -968,17 +1012,15 @@ def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, en
         "lot_mult": lot_mult,
         "lot_size": final_lot_size,
         "lot_reason": lot_reason,
+        "sl_px": 0.0,
+        "ai_decision": "HOLD",
+        "ai_reason": "ट्रेड खुल चुका है — AI रैंकों स्ट्रक्चर और मोमेंटम के आधार पर आगे का फैसला लेगा।",
         "live_pts": 0.0,
         "weighted_pts": 0.0,
         "peak_pts": 0.0,
-        "phase": 1,
-        "phase_name": f"PHASE 1: PURE SIGNAL ({'Recovery '+str(lot_mult)+'x' if lot_mult>1 else 'Normal 1x'})",
-        "shield_active": False,
-        "locked_pts": 0.0,
-        "protect_sl": round(st_line_val, 1),
-        "status": "ACTIVE (DUAL-MODE HYBRID)",
+        "status": "ACTIVE (AI MANAGED)",
         "entry_reason": f"{entry_source_label} (Brick: ${box_sz:.0f} | Reversal ST: ${st_line_val:,.1f})",
-        "exit_reason": f"चालू है — +350p पर Breakeven Shield और +{p3_trig}p पर Big Profit Trail ऑन होगा"
+        "exit_reason": f"चालू है — AI अपने विवेक से HOLD / SL / EXIT तय करेगा (Renko ST: ${st_line_val:,.1f})"
     }
     eng["active_trade"] = new_trade
     eng["signal_history"].insert(0, new_trade)
@@ -996,7 +1038,7 @@ def open_hybrid_trade_now(eng, direction: str, entry_px: float, ist_str: str, en
             note=f"{direction} {final_lot_size}L"
         )
 
-def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, reason_title: str, detailed_reason: str, fire_delta: bool = True, defer_delta_for_flip: bool = False):
+def close_renko_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, reason_title: str, detailed_reason: str, fire_delta: bool = True, defer_delta_for_flip: bool = False):
     move = (exit_px - active_tr["entry"]) if active_tr["type"] == "BUY" else (active_tr["entry"] - exit_px)
     mult_used = int(active_tr.get("lot_mult", 1))
     lot_used = int(active_tr.get("lot_size", max(1, int(eng.get("delta_base_lot", 1)))))
@@ -1023,8 +1065,6 @@ def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, re
     eng["active_trade"] = None
     eng["sound_event"] = {"id": time.time(), "type": "EXIT"}
 
-    # Close real Delta position immediately when exiting without an immediate flip;
-    # if flipping, `open_hybrid_trade_now(is_flip=True)` closes exact live Delta pos and opens exact new lot in sequence.
     if fire_delta and not defer_delta_for_flip:
         execute_delta_entry_and_exit(
             eng,
@@ -1035,121 +1075,78 @@ def close_hybrid_trade_at_price(eng, active_tr, exit_px: float, ist_str: str, re
             note=f"Close {active_tr['type']}"
         )
 
-# ============================================================================
-# AI SMART HYBRID COMMENTARY & AUTO-MODEL SELECTION ENGINE
-# ============================================================================
-def hybrid_commentary_backup_brain(ctx, active_trade):
-    px = ctx["px"]
-    rk = ctx["renko"]
-    st_line = rk.get("st_line", px)
-    box_sz = rk.get("box_size", 270.0)
-    rev_b = rk.get("rev_bricks", 2.0)
-    dist_to_flip = abs(px - st_line)
-    next_brick_px = (rk.get("brick_top", px) + box_sz) if rk.get("st_trend", 1) == 1 else (rk.get("brick_bot", px) - box_sz)
-
-    if active_trade is None:
-        return {
-            "headline": f"हाइब्रिड प्रॉफिट बुक हो चुका है — अगला मुख्य Renko ST फ्लिप आते ही 100% अनिवार्य एंट्री ली जाएगी (Reversal Level: ${st_line:,.0f} | {dist_to_flip:.0f} Pts दूर)।",
-            "renko_structure": f"Fixed Brick: ${box_sz:.0f} (Rev: {rev_b:.1f}x = ${box_sz*rev_b:.0f}p) | अगली ब्रिक स्टेप: ${next_brick_px:,.0f} पर।",
-            "extension_check": f"21-EMA: ${rk.get('ema21', 0):,.0f} | 14-RSI: {rk.get('rsi14', 50):.1f} | 3-Bar Power: {rk.get('buy_dom_pct', 50):.0f}% Buy।"
-        }
-
-    hyb = compute_hybrid_protection(active_trade["entry"], active_trade["peak_pts"], active_trade["type"], st_line, active_trade.get("lot_mult", 1))
-    return {
-        "headline": hyb["rule_hi"],
-        "renko_structure": f"Brick Box: ${rk.get('brick_bot', 0):,.0f}–${rk.get('brick_top', 0):,.0f} (Streak #{rk.get('brick_streak', 1)}) | ST Reversal Level: ${st_line:,.1f} ({dist_to_flip:.0f}p दूर)।",
-        "extension_check": f"Active Phase: {hyb['phase_name']} | Lot: {active_trade.get('lot_size', 1)} ({active_trade.get('lot_mult', 1)}x) | RSI: {rk.get('rsi14', 50):.1f}"
-    }
-
-def call_gemini_hybrid_engine(eng, api_key, ctx, active_trade):
-    if active_trade is None:
-        avail = eng.get("available_models", [])
-        top_mod = avail[0] if avail else "gemini-2.5-pro"
-        return hybrid_commentary_backup_brain(ctx, None), f"🟢 {top_mod} (Standby)"
-
-    px = ctx["px"]
-    rk = ctx["renko"]
-    t_type = active_trade["type"]
-    t_mult = active_trade.get("lot_mult", 1)
-    live_pts = active_trade["live_pts"]
-    peak_pts = active_trade["peak_pts"]
-    st_line = rk.get("st_line", px)
-    hyb = compute_hybrid_protection(active_trade["entry"], peak_pts, t_type, st_line, t_mult)
-
-    prompt = f"""
-You are a Quantitative Dual-Mode Smart-Hybrid Renko Trade Manager monitoring an ACTIVE BTCUSDT trade ('AI Renko Supertrend [Core Architecture]').
-Mandatory V26.4 Rules:
-- Pullback Re-Entries are OFF. Every main Renko Supertrend flip signal is taken unconditionally.
-- Current Trade Lot Size: {active_trade.get('lot_size', 1)} Lots ({t_mult}x Recovery Multiplier).
-- Phase 1 (Peak < +350p): Pure Signal-to-Signal (only exit if candle closes beyond Reversal Level `stLevel` = ${st_line:,.1f}).
-- Phase 2 (Peak +350p to +{'549p' if t_mult>1 else '499p'}): Wide-Breathing Breakeven Shield active at ${hyb['protect_sl']:,.1f} (+{hyb['locked_pts']:.1f}p locked).
-- Phase 3 (Peak >= +{'550p' if t_mult>1 else '500p'}): Big Profit Trail active at ${hyb['protect_sl']:,.1f} (150p gap from Peak).
-- Phase 4 (Peak >= +900p): Parabolic Tight Lock active at ${hyb['protect_sl']:,.1f} (110p gap from Peak).
-
-ACTIVE TRADE STATUS:
-- Direction: {t_type} | Entry: ${active_trade['entry']:,.1f} | Current Price: ${px:,.1f}
-- Live PnL: {live_pts:+.1f} pts (Weighted {t_mult}x: {live_pts*t_mult:+.1f} pts) | Peak Profit: +{peak_pts:.1f} pts | Phase: {hyb['phase_name']}
-- Protected Hybrid SL: ${active_trade.get('protect_sl', st_line):,.1f} | Renko Reversal Level (`stLevel`): ${st_line:,.1f}
-- 14-RSI: {rk.get('rsi14', 50):.1f} | 21-EMA Stretch: {rk.get('ema_dist_bricks', 0):.2f} bricks
-
-Return ONLY valid JSON with sharp Hindi explanations:
-{{
-  "headline": "Sharp 1-line Hindi status explaining the current Dual-Mode Hybrid Phase, Peak Profit, and Protected SL level",
-  "renko_structure": "Sharp 1-line Hindi analysis of Brick Box and distance to stLevel (${st_line:,.0f})",
-  "extension_check": "Sharp 1-line Hindi momentum check (RSI, EMA stretch, and recovery outlook)"
-}}
-"""
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 300}
-    }
-
-    models_queue = build_auto_model_queue(eng)
-    for mod in models_queue:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
-            res = requests.post(url, json=payload, timeout=9.0)
-            if res.status_code == 200:
-                parsed = parse_ai_json_safely(res.json()['candidates'][0]['content']['parts'][0]['text'].strip())
-                if parsed:
-                    return parsed, f"🟢 {mod}"
-        except Exception:
-            continue
-
-    return hybrid_commentary_backup_brain(ctx, active_trade), "⚡ In-Built Quant Brain (API Busy)"
-
-def execute_ai_cycle_thread(eng, now_ts, ist_str):
+def execute_ai_management_cycle(eng: dict, ist_str: str):
+    """Evaluates active trade via AI discretionary judgment without fixed point rules"""
     if eng.get("ai_busy"):
         return
     eng["ai_busy"] = True
     try:
-        px = eng["px"]
+        px = float(eng.get("px", 0.0))
         if px <= 0:
             return
         rk = eng.get("renko", {})
-        ctx = {"time": ist_str, "px": px, "renko": rk}
+        act_tr = eng.get("active_trade")
         api_key = eng.get("api_key", "").strip()
 
+        if act_tr is None:
+            avail = eng.get("available_models", [])
+            top_mod = avail[0] if avail else "gemini-2.5-pro"
+            eng["active_ai_model"] = f"🟢 {top_mod} (Standby)"
+            eng["last_ai_decision"] = "WAIT"
+            eng["last_ai_reason"] = f"अगले Core Renko ST सिग्नल की प्रतीक्षा — Reversal Level (${rk.get('st_line', px):,.1f}) पर नज़र है।"
+            eng["last_report_ts"] = time.time()
+            return
+
+        t_mult = int(act_tr.get("lot_mult", 1))
+        move = (px - act_tr["entry"]) if act_tr["type"] == "BUY" else (act_tr["entry"] - px)
+        act_tr["live_pts"] = round(move, 1)
+        act_tr["weighted_pts"] = round(move * t_mult, 1)
+        act_tr["peak_pts"] = round(max(act_tr["peak_pts"], move), 1)
+
         if api_key:
-            ai_json, active_mod_str = call_gemini_hybrid_engine(eng, api_key, ctx, eng.get("active_trade"))
+            dec_obj, mod_label = call_gemini_discretionary_manager(eng, api_key, act_tr, rk, px)
         else:
             avail = eng.get("available_models", [])
-            fallback_label = f"⚡ Quant Engine ({avail[0]})" if avail else "⚡ In-Built Quant Brain"
-            ai_json, active_mod_str = hybrid_commentary_backup_brain(ctx, eng.get("active_trade")), fallback_label
+            top_mod = avail[0] if avail else "Quant Brain"
+            dec_obj = ai_discretionary_fallback_decision(act_tr, rk, px)
+            mod_label = f"⚡ {top_mod} (Discretionary)"
 
-        eng["active_ai_model"] = active_mod_str
-        eng["ai_status"] = active_mod_str
+        eng["active_ai_model"] = mod_label
         eng["last_report_ts"] = time.time()
-        eng["ai_json_view"].update({
-            "headline": ai_json.get("headline", ""),
-            "renko_structure": ai_json.get("renko_structure", ""),
-            "extension_check": ai_json.get("extension_check", "")
-        })
+
+        # Re-check active_trade snapshot in case a flip closed it concurrently
+        cur_live = eng.get("active_trade")
+        if cur_live is None or cur_live["open_ts"] != act_tr["open_ts"]:
+            return
+
+        decision = dec_obj.get("decision", "HOLD")
+        new_sl = float(dec_obj.get("new_sl", cur_live.get("sl_px", 0.0)) or 0.0)
+        reason = dec_obj.get("reason", "")
+
+        cur_live["ai_decision"] = decision
+        cur_live["ai_reason"] = reason
+        if new_sl > 0:
+            cur_live["sl_px"] = new_sl
+
+        eng["last_ai_decision"] = decision
+        eng["last_ai_reason"] = reason
+
+        if decision == "EXIT":
+            close_renko_trade_at_price(
+                eng,
+                cur_live,
+                px,
+                ist_str,
+                "AI DISCRETIONARY EXIT",
+                f"🧠 {reason} (Exit @ ${px:,.1f} | {move:+.1f}p)",
+                fire_delta=True,
+                defer_delta_for_flip=False
+            )
     finally:
         eng["ai_busy"] = False
 
 # ============================================================================
-# 24x7 1-SECOND BACKGROUND WORKER (UNTOUCHED TRADING LOGIC + VERIFIED DELTA)
+# 24x7 1-SECOND BACKGROUND WORKER
 # ============================================================================
 def background_worker(eng, worker_id):
     last_used_brick_size = eng.get("fixed_brick_size", 270.0)
@@ -1180,55 +1177,33 @@ def background_worker(eng, worker_id):
                     or (user_base_lot != last_used_base_lot)
                 )
 
-                # 1. 1-SECOND DUAL-MODE HYBRID SHIELD (+350p Breakeven & +500p/+550p Big Trail)
+                # 1. 1-SECOND LIVE PNL & AI-SET SL CHECK
                 act_tr = eng.get("active_trade")
-                rk_now = eng.get("renko", {})
-                st_line_now = rk_now.get("st_line", px)
-
                 if act_tr is not None:
-                    t_mult = act_tr.get("lot_mult", 1)
+                    t_mult = int(act_tr.get("lot_mult", 1))
                     move = (px - act_tr["entry"]) if act_tr["type"] == "BUY" else (act_tr["entry"] - px)
                     act_tr["live_pts"] = round(move, 1)
                     act_tr["weighted_pts"] = round(move * t_mult, 1)
                     act_tr["peak_pts"] = round(max(act_tr["peak_pts"], move), 1)
 
-                    hyb = compute_hybrid_protection(act_tr["entry"], act_tr["peak_pts"], act_tr["type"], st_line_now, t_mult)
-                    prev_phase = act_tr.get("phase", 1)
-                    act_tr["phase"] = hyb["phase"]
-                    act_tr["phase_name"] = hyb["phase_name"]
+                    ai_sl = float(act_tr.get("sl_px", 0.0) or 0.0)
+                    sl_hit = False
+                    if ai_sl > 0:
+                        sl_hit = (px <= ai_sl) if act_tr["type"] == "BUY" else (px >= ai_sl)
 
-                    if hyb["shield_active"]:
-                        act_tr["shield_active"] = True
-                        if act_tr["type"] == "BUY":
-                            new_psl = max(act_tr.get("protect_sl", 0.0), hyb["protect_sl"])
-                            act_tr["protect_sl"] = round(new_psl, 1)
-                            act_tr["locked_pts"] = round(act_tr["protect_sl"] - act_tr["entry"], 1)
-                            shield_hit = px <= act_tr["protect_sl"]
-                        else:
-                            old_psl = act_tr.get("protect_sl", 0.0)
-                            new_psl = min(old_psl if old_psl > 0 else 999999.0, hyb["protect_sl"])
-                            act_tr["protect_sl"] = round(new_psl, 1)
-                            act_tr["locked_pts"] = round(act_tr["entry"] - act_tr["protect_sl"], 1)
-                            shield_hit = px >= act_tr["protect_sl"]
+                    if sl_hit:
+                        close_renko_trade_at_price(
+                            eng,
+                            act_tr,
+                            px,
+                            ist_str,
+                            "AI SL HIT",
+                            f"🛡️ AI द्वारा तय स्टॉप-लॉस ${ai_sl:,.1f} हिट होने पर ${px:,.1f} पर ट्रेड बंद हुआ ({move:+.1f}p)",
+                            fire_delta=True,
+                            defer_delta_for_flip=False
+                        )
 
-                        if hyb["phase"] > prev_phase:
-                            eng["sound_event"] = {"id": now_ts, "type": "TRAIL"}
-
-                        if shield_hit:
-                            booked = act_tr["locked_pts"]
-                            close_hybrid_trade_at_price(
-                                eng, act_tr, px, ist_str,
-                                f"HYBRID PHASE {hyb['phase']} LOCK",
-                                f"🛡️ डुअल-मोड हाइब्रिड लॉक हिट! Peak +{act_tr['peak_pts']:.1f}p से पलटने पर ${act_tr['protect_sl']:,.1f} पर +{booked:.1f}p ({t_mult}x PnL: +{booked*t_mult:.1f}p) सुरक्षित बुक!",
-                                fire_delta=True,
-                                defer_delta_for_flip=False
-                            )
-                    else:
-                        act_tr["protect_sl"] = round(st_line_now, 1)
-                        dist_now = abs(px - st_line_now)
-                        act_tr["exit_reason"] = f"फेज 1 (Pure Signal): अभी Peak (+{act_tr['peak_pts']:.0f}p) < +350p है — केवल ST Flip (${st_line_now:,.1f} | {dist_now:.0f}p दूर) पर कटेगा"
-
-                # 2. UPDATE CORE RENKO SUPERTREND & MANDATORY FLIP EXECUTION
+                # 2. UPDATE CORE RENKO SUPERTREND & MANDATORY SIGNAL-TO-SIGNAL FLIP
                 if settings_changed or (now_ts - eng["last_kline_ts"] > 6):
                     rk_data = fetch_core_renko_supertrend(
                         fixed_brick_size=user_brick_sz,
@@ -1248,8 +1223,8 @@ def background_worker(eng, worker_id):
                             eng["deficit_pts"] = rk_data.get("sim_deficit_pts", 0.0)
                             eng["last_closed_pts"] = rk_data.get("sim_last_closed_pts", 0.0)
 
-                            if rk_data.get("hybrid_trades"):
-                                eng["signal_history"] = rk_data["hybrid_trades"]
+                            if rk_data.get("trade_records"):
+                                eng["signal_history"] = rk_data["trade_records"]
                                 latest_tr = eng["signal_history"][0]
                                 eng["active_trade"] = latest_tr if "ACTIVE" in latest_tr["status"] else None
                                 if eng["active_trade"]:
@@ -1258,8 +1233,9 @@ def background_worker(eng, worker_id):
                                     eng["last_lot_reason"] = eng["active_trade"].get("lot_reason", "")
                             else:
                                 cur_dir = "BUY" if rk_data["st_trend"] == 1 else "SELL"
-                                open_hybrid_trade_now(eng, cur_dir, rk_data["last_flip_price"], rk_data["last_flip_time_str"], f"🔥 Chart Sync {cur_dir}", fire_delta=False)
-                            threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
+                                open_renko_trade_now(eng, cur_dir, rk_data["last_flip_price"], rk_data["last_flip_time_str"], f"🔥 Chart Sync {cur_dir}", fire_delta=False)
+
+                            threading.Thread(target=execute_ai_management_cycle, args=(eng, ist_str), daemon=True).start()
                         else:
                             if rk_data["st_trend"] != prev_rk_trend and rk_data["last_flip_bar_ts"] != eng.get("last_handled_flip_ts"):
                                 eng["last_handled_flip_ts"] = rk_data["last_flip_bar_ts"]
@@ -1271,15 +1247,18 @@ def background_worker(eng, worker_id):
                                     old_tr = eng["active_trade"]
                                     prev_lot_cnt = int(old_tr.get("lot_size", user_base_lot))
                                     raw_m = (flip_px - old_tr["entry"]) if old_tr["type"] == "BUY" else (old_tr["entry"] - flip_px)
-                                    close_hybrid_trade_at_price(
-                                        eng, old_tr, flip_px, ist_str,
+                                    close_renko_trade_at_price(
+                                        eng,
+                                        old_tr,
+                                        flip_px,
+                                        ist_str,
                                         f"FLIPPED TO {new_dir}",
                                         f"विपरीत {new_dir} सिग्नल आने पर ${flip_px:,.1f} पर बंद हुआ (Raw: {raw_m:+.1f}p | {old_tr.get('lot_mult',1)}x Lot PnL: {raw_m*old_tr.get('lot_mult',1):+.1f}p)",
                                         fire_delta=True,
                                         defer_delta_for_flip=True
                                     )
 
-                                open_hybrid_trade_now(
+                                open_renko_trade_now(
                                     eng,
                                     new_dir,
                                     flip_px,
@@ -1289,22 +1268,23 @@ def background_worker(eng, worker_id):
                                     is_flip=True,
                                     prev_lot_to_close=prev_lot_cnt
                                 )
-                                threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
+                                threading.Thread(target=execute_ai_management_cycle, args=(eng, ist_str), daemon=True).start()
 
                     elif rk_data and "error" in rk_data:
                         eng["last_err"] = rk_data["error"]
 
                     eng["last_kline_ts"] = now_ts
 
-                if now_ts - eng["last_report_ts"] >= 180 and not eng.get("ai_busy"):
-                    threading.Thread(target=execute_ai_cycle_thread, args=(eng, now_ts, ist_str), daemon=True).start()
+                # 3. PERIODIC AI DISCRETIONARY REVIEW FOR ACTIVE TRADE (EVERY 45s)
+                if eng.get("active_trade") is not None and (now_ts - eng["last_report_ts"] >= 45) and not eng.get("ai_busy"):
+                    threading.Thread(target=execute_ai_management_cycle, args=(eng, ist_str), daemon=True).start()
 
         except Exception as e:
             eng["last_err"] = str(e)
         time.sleep(1)
 
 @st.cache_resource
-def get_master_engine_v26_4():
+def get_master_engine_v26_4_ai():
     wid = int(time.time() * 1000)
     srv_ip = fetch_server_public_ip()
     eng = {
@@ -1320,6 +1300,8 @@ def get_master_engine_v26_4():
         "deficit_pts": 0.0,
         "last_closed_pts": 0.0,
         "last_lot_reason": "✅ हर मुख्य रैंकों सिग्नल पर ट्रेड अनिवार्य है — शुरुआती 1x Base Lot सक्रिय।",
+        "last_ai_decision": "HOLD",
+        "last_ai_reason": "AI रैंकों स्ट्रक्चर और मोमेंटम के आधार पर सक्रिय ट्रेड को मैनेज कर रहा है।",
         "delta_enabled": True,
         "delta_product_id": None,
         "delta_last_status": "⏳ Delta Demo Connecting...",
@@ -1335,19 +1317,13 @@ def get_master_engine_v26_4():
         },
         "available_models": [], "models_fetched": False,
         "active_ai_model": "🔍 Auto-Scanning Models...",
-        "ai_json_view": {
-            "headline": "⏳ Dual-Mode Hybrid (+350p Breakeven & +500p/+550p Trail) + True Deficit Engine सिंक हो रहा है...",
-            "renko_structure": "फिक्स ब्रिक बॉक्स और Reversal Level लोड हो रहा है...",
-            "extension_check": "21-EMA और RSI की गणना हो रही है..."
-        },
-        "ai_status": "🟢 Auto-AI Active",
         "sound_event": {"id": 0.0, "type": "BULL"},
         "api_key": "", "last_err": None
     }
     threading.Thread(target=background_worker, args=(eng, wid), daemon=True).start()
     return eng
 
-eng = get_master_engine_v26_4()
+eng = get_master_engine_v26_4_ai()
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -1398,7 +1374,7 @@ with ip_col4:
         threading.Thread(target=auto_verify_delta_demo_wallet, args=(eng,), daemon=True).start()
 
 # ============================================================================
-# TOP CONTROL BAR (BRICK SIZE, REVERSAL, REFRESH & SOUND)
+# TOP CONTROL BAR (BRICK SIZE, REVERSAL, AI REVIEW & SOUND)
 # ============================================================================
 c_brk, c_rev, c_act1, c_snd = st.columns([0.24, 0.24, 0.34, 0.18])
 
@@ -1423,9 +1399,9 @@ with c_rev:
     ))
 
 with c_act1:
-    if st.button("🤖 हाइब्रिड स्टेटस / चार्ट रिफ्रेश"):
+    if st.button("🧠 अभी AI से ट्रेड रिव्यू / चार्ट रिफ्रेश करें"):
         eng["last_kline_ts"] = 0.0
-        threading.Thread(target=execute_ai_cycle_thread, args=(eng, time.time(), get_ist_time_str()), daemon=True).start()
+        threading.Thread(target=execute_ai_management_cycle, args=(eng, get_ist_time_str()), daemon=True).start()
 
 with c_snd:
     sound_enabled = st.checkbox("🔊 साउंड अलर्ट", value=True)
@@ -1455,43 +1431,26 @@ while True:
         st_trend_col = "#4ade80" if rk.get("st_trend", 1) == 1 else "#f87171"
         st_trend_txt = "BULLISH (BUY ▲) 🟢" if rk.get("st_trend", 1) == 1 else "BEARISH (SELL ▼) 🔴"
 
-        cur_hyb = compute_hybrid_protection(
-            act_tr["entry"] if act_tr else eng["px"],
-            act_tr["peak_pts"] if act_tr else 0.0,
-            act_tr["type"] if act_tr else ("BUY" if rk.get("st_trend", 1) == 1 else "SELL"),
-            st_line_px,
-            act_tr.get("lot_mult", 1) if act_tr else eng.get("current_lot_mult", 1)
-        )
-
         if act_tr:
             t_mult = act_tr.get("lot_mult", 1)
             t_lots = act_tr.get("lot_size", 1)
-            p3_trig = 550 if t_mult > 1 else 500
+            ai_sl_val = float(act_tr.get("sl_px", 0.0) or 0.0)
+            sl_txt = f"${ai_sl_val:,.1f}" if ai_sl_val > 0 else "AI विवेक / ST"
             banner_cls = "lock-buy" if act_tr["type"] == "BUY" else "lock-sell"
-            if act_tr.get("shield_active"):
-                prot_px = act_tr.get("protect_sl", st_line_px)
-                lck_pts = act_tr.get("locked_pts", 0.0)
-                banner_title = f"🛡️ हाइब्रिड {act_tr['type']} चालू [{t_lots} Lot / {t_mult}x] ({cur_hyb['phase_name']}) — +{lck_pts:.1f}p लॉक!"
-                banner_sub = (
-                    f"एंट्री: ${act_tr['entry']:,.1f} | Peak: <b>+{act_tr['peak_pts']:.1f}p</b> | "
-                    f"प्रोटेक्टेड SL: <b style='color:#facc15;'>${prot_px:,.1f} (+{lck_pts:.1f}p | {t_mult}x = +{lck_pts*t_mult:.0f}p)</b> | "
-                    f"Big Trail Trigger: +{p3_trig}p"
-                )
-            else:
-                pts_to_shield = max(0.0, 350.0 - act_tr["peak_pts"])
-                banner_title = f"{'🟢' if act_tr['type']=='BUY' else '🔴'} डुअल-मोड हाइब्रिड {act_tr['type']} चालू [📦 {t_lots} Lot ({t_mult}x)]"
-                banner_sub = (
-                    f"एंट्री: ${act_tr['entry']:,.1f} | Peak: +{act_tr['peak_pts']:.1f}p (+350p Breakeven में {pts_to_shield:.0f}p बाकी, Big Trail +{p3_trig}p पर) | "
-                    f"Reversal ST: <b>${st_line_px:,.1f} ({st_dist_pts:.0f}p दूर)</b>"
-                )
+            banner_title = f"{'🟢' if act_tr['type']=='BUY' else '🔴'} AI-मैनेज्ड {act_tr['type']} चालू [📦 {t_lots} Lot ({t_mult}x)] — AI: {act_tr.get('ai_decision', 'HOLD')}"
+            banner_sub = (
+                f"एंट्री: ${act_tr['entry']:,.1f} | Peak: <b>+{act_tr['peak_pts']:.1f}p</b> | "
+                f"AI SL: <b style='color:#c084fc;'>{sl_txt}</b> | "
+                f"Reversal ST: <b>${st_line_px:,.1f} ({st_dist_pts:.0f}p दूर)</b>"
+            )
             right_stat_label = f"LIVE PNL ({t_mult}x = {act_tr.get('weighted_pts', act_tr['live_pts']):+.0f}p)"
             right_stat_val = f"{act_tr['live_pts']:+.1f} Pts"
             right_stat_col = "#4ade80" if act_tr["live_pts"] >= 0 else "#f87171"
         else:
             banner_cls = "lock-wait"
-            banner_title = f"🏁 हाइब्रिड प्रॉफिट बुक — अगले मुख्य Renko ST फ्लिप पर 100% अनिवार्य एंट्री होगी ({st_trend_txt})"
+            banner_title = f"⚪ अगले Core Renko ST सिग्नल की प्रतीक्षा ({st_trend_txt})"
             banner_sub = f"Reversal Level (stLevel): ${st_line_px:,.1f} (प्राइस से {st_dist_pts:.0f} Pts दूर) | कैरी-फॉरवर्ड लॉस डेफिसिट: {-eng.get('deficit_pts', 0.0):+.1f} Pts"
-            right_stat_label = "DISTANCE TO FLIP"
+            right_stat_label = "DISTANCE TO ST"
             right_stat_val = f"{st_dist_pts:.0f} Pts"
             right_stat_col = "#facc15"
 
@@ -1508,26 +1467,24 @@ while True:
             h_col = "#4ade80" if h["type"] == "BUY" else "#f87171"
             p_col = "#4ade80" if h["live_pts"] >= 0 else "#f87171"
             is_act = "ACTIVE" in h["status"]
-            sts_badge = f"🟢 {h.get('phase_name', 'ACTIVE')}" if is_act else f"🏁 {h['status']}"
+            sts_badge = f"🟢 {h.get('ai_decision', 'HOLD')} (ACTIVE)" if is_act else f"🏁 {h['status']}"
             h_mult = h.get("lot_mult", 1)
             h_lots = h.get("lot_size", 1)
             w_pts = h.get("weighted_pts", h["live_pts"] * h_mult)
             lot_pill_col = "#facc15" if h_mult > 1 else "#38bdf8"
             lot_tag = f"<span style='background:#1e1b4b; border:1px solid {lot_pill_col}; color:{lot_pill_col}; padding:1px 7px; border-radius:5px; font-size:11px; font-weight:800; margin-left:6px;'>📦 {h_lots} Lot ({h_mult}x)</span>"
-            shield_tag = (
-                f" | <b style='color:#facc15;'>🛡️ Locked: +{h.get('locked_pts', 0):.1f}p (@ ${h.get('protect_sl', 0):,.1f})</b>"
-                if h.get("shield_active") else ""
-            )
+            h_sl_val = float(h.get("sl_px", 0.0) or 0.0)
+            sl_tag = f" | <b style='color:#c084fc;'>🎯 AI SL: ${h_sl_val:,.1f}</b>" if h_sl_val > 0 else ""
 
             hist_cards += f"""
             <div class='item-card {h_cls}' style='display:flex; justify-content:space-between; align-items:center;'>
                 <div>
                     <b style='color:{h_col}; font-size:13.5px;'>{h['open_time']} — {h['type']} @ ${h['entry']:,.1f}</b>
                     {lot_tag}
-                    <span style='font-size:11.5px; color:#facc15; margin-left:6px;'>[{sts_badge}]</span>{shield_tag}<br>
+                    <span style='font-size:11.5px; color:#facc15; margin-left:6px;'>[{sts_badge}]</span>{sl_tag}<br>
                     <span style='color:#cbd5e1; font-size:12px;'>{h['entry_reason']}</span><br>
                     <span style='color:#e9d5ff; font-size:11.6px;'>🧠 {h.get('lot_reason', '1x Base Lot')}</span><br>
-                    <span style='color:#38bdf8; font-size:11.8px;'>{h['exit_reason']}</span>
+                    <span style='color:#c084fc; font-size:11.8px;'>🤖 {h.get('ai_reason', h['exit_reason'])}</span>
                 </div>
                 <div style='text-align:right; min-width:125px;'>
                     <div style='font-size:15.5px; font-weight:900; color:{p_col};'>{h['live_pts']:+.1f}p</div>
@@ -1537,29 +1494,29 @@ while True:
             </div>
             """
 
-        cur_ph = cur_hyb["phase"] if act_tr else 0
-        hybrid_roadmap_html = f"""
-        <div class='item-card {"ic-active-stage" if cur_ph == 1 else "ic-warn"}'>
-            <b>⚡ PHASE 1: प्योर सिग्नल-टू-सिग्नल (Peak: 0 से +349 Pts)</b><br>
-            <span style='color:#cbd5e1;'>नियम: Pullback Re-Entry बंद है। हर मुख्य रैंकों फ्लिप पर 100% ट्रेड खुलेगा और +350p से पहले केवल Reversal Level (<b>${st_line_px:,.0f}</b>) पर पलटेगा।</span>
+        ai_guide_html = f"""
+        <div class='item-card ic-ai'>
+            <b>1. एंट्री रैंकों सिग्नल से (Core Renko Entry)</b><br>
+            <span style='color:#cbd5e1;'>हर मुख्य Renko ST फ्लिप (Brick: <b>${box_sz:.0f}</b>, Rev: <b>{rev_b:.1f}x</b>) पर ट्रेड खुलेगा।</span>
         </div>
-        <div class='item-card {"ic-active-stage" if cur_ph == 2 else "ic-bull"}'>
-            <b>🛡️ PHASE 2: वाइड ब्रेक-ईवन शील्ड (Peak: +350p से +500p [1x] / +550p [2x/3x])</b><br>
-            <span style='color:#cbd5e1;'>नियम: +350p पार होते ही रिस्क ज़ीरो (<b>+25p/+35p कॉस्ट+ लॉक</b>), लेकिन 1 ब्रिक के पुलबैक को झेलने के लिए <b>315p–325p का चौड़ा ब्रीदिंग स्पेस</b> रहेगा ताकि ट्रेड +122p पर जल्दी न कटे!</span>
+        <div class='item-card ic-bull'>
+            <b>2. ट्रेड खुलने के बाद फैसला AI के विवेक से</b><br>
+            <span style='color:#cbd5e1;'>कोई फिक्स्ड पॉइंट शील्ड नियम लागू नहीं है। AI खुद रैंकों स्ट्रक्चर, ब्रिक स्ट्रीक, 21-EMA और RSI देखकर <b>HOLD</b>, <b>new_sl</b>, या <b>EXIT</b> तय करेगा।</span>
         </div>
-        <div class='item-card {"ic-active-stage" if cur_ph == 3 else "ic-bull"}'>
-            <b>🚀 PHASE 3: डुअल-मोड बिग प्रॉफिट ट्रेल (1x: +500p+ | 2x/3x Recovery: +550p+)</b><br>
-            <span style='color:#cbd5e1;'>नियम: बड़ा मूव बनते ही Peak से सिर्फ <b>150 Pts पीछे</b> प्रॉफिट लॉक! रिकवरी ट्रेड में कम से कम <b>+400p Raw (+800p/+1200p Weighted)</b> पक्का बुक।</span>
+        <div class='item-card ic-warn'>
+            <b>3. रैंकों के आधार पर संरचना की जांच</b><br>
+            <span style='color:#cbd5e1;'>AI देखता है कि प्राइस Reversal Level (<b>${st_line_px:,.0f}</b>) के कितने करीब है, ब्रिक बॉक्स (<b>${rk.get('brick_bot',0):,.0f}–${rk.get('brick_top',0):,.0f}</b>) कैसे बन रहे हैं, और मोमेंटम थक रहा है या जारी है।</span>
         </div>
-        <div class='item-card {"ic-active-stage" if cur_ph == 4 else "ic-bull"}'>
-            <b>🔥 PHASE 4: पैराबोलिक टाइट लॉक (Peak: +900 Pts से ऊपर)</b><br>
-            <span style='color:#cbd5e1;'>नियम: +900p+ की बड़ी रैली में Peak से सिर्फ <b>110 Pts पीछे</b> टाइट लॉक (कम से कम <b>+790p+ Raw</b> पक्का बुक)!</span>
+        <div class='item-card ic-ai'>
+            <b>4. ताज़ा AI ट्रेड फैसला</b><br>
+            <span style='color:#e9d5ff;'>{eng.get("last_ai_reason", "")}</span>
         </div>
         """
 
         net_col = "#4ade80" if closed_weighted_sum >= 0 else "#f87171"
         def_pts = eng.get("deficit_pts", 0.0)
         l_streak = eng.get("loss_streak", 0)
+        act_sl_display = f"${float(act_tr.get('sl_px', 0.0)):,.1f}" if (act_tr and float(act_tr.get("sl_px", 0.0) or 0.0) > 0) else "AI विवेक / ST"
 
         left_body = f"""
         <div class='lock-banner {banner_cls}'>
@@ -1577,12 +1534,12 @@ while True:
         <div class='chart-box'>
             <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;'>
                 <span style='font-size:14px; font-weight:900; color:#38bdf8;'>
-                    📈 DUAL-MODE SMART HYBRID RENKO CHART (Brick: ${box_sz:.0f} | Rev: {rev_b:.1f}x = ${box_sz*rev_b:.0f}p)
+                    📈 AI-MANAGED RENKO CHART (Brick: ${box_sz:.0f} | Rev: {rev_b:.1f}x = ${box_sz*rev_b:.0f}p)
                 </span>
                 <span style='font-size:12px; color:#cbd5e1;'>
                     <b style='color:#38bdf8;'>━ Price (${eng['px']:,.0f})</b> &nbsp;|&nbsp;
                     <b style='color:{st_trend_col};'>━ Reversal ST (${st_line_px:,.0f})</b> &nbsp;|&nbsp;
-                    <b style='color:#facc15;'>-- Dual-Mode Lock SL</b>
+                    <b style='color:#c084fc;'>-- AI SL</b>
                 </span>
             </div>
             {svg_chart_html}
@@ -1591,24 +1548,24 @@ while True:
         <div class='sub-grid'>
             <div class='card-box'>
                 <div class='card-title'>
-                    <span>🧱 1. लाइव रैंकों एवं डुअल-मोड शील्ड ट्रेस</span>
+                    <span>🧱 1. लाइव रैंकों स्ट्रक्चर ट्रेस</span>
                     <span style='color:{st_trend_col};'>{st_trend_txt}</span>
                 </div>
                 <div class='stat-row'><span>विपरीत सिग्नल लेवल (Reversal stLevel):</span><b><span style='color:{st_trend_col};'>${st_line_px:,.1f}</span> (प्राइस से {st_dist_pts:.0f} Pts दूर)</b></div>
-                <div class='stat-row'><span>हाइब्रिड प्रोटेक्टेड SL (+350p BE / +500p+ Trail):</span><b style='color:#facc15;'>{f"${act_tr['protect_sl']:,.1f} (+{act_tr['locked_pts']:.1f}p Locked)" if (act_tr and act_tr.get("shield_active")) else "Waiting for +350p Peak"}</b></div>
+                <div class='stat-row'><span>वर्तमान AI स्टॉप-लॉस (SL):</span><b style='color:#c084fc;'>{act_sl_display}</b></div>
                 <div class='stat-row'><span>चालू ब्रिक बॉक्स (Bot – Top):</span><b>${rk.get("brick_bot", 0.0):,.1f} — ${rk.get("brick_top", 0.0):,.1f} (Streak #{rk.get("brick_streak", 1)})</b></div>
                 <div class='stat-row' style='border:none;'><span>अगली ब्रिक बनने का लेवल:</span><b style='color:#38bdf8;'>${next_step_px:,.1f} ({pts_to_next_brick:.0f} Pts दूर)</b></div>
             </div>
 
             <div class='card-box'>
                 <div class='card-title'>
-                    <span>📦 2. कैरी-फॉरवर्ड डेफिसिट एवं AI लॉट ब्रेन</span>
+                    <span>🧠 2. AI विवेक एवं लॉट रिकवरी ब्रेन</span>
                     <span style='color:#facc15;'>Active: {eng.get("current_lot_size", 1)} Lot ({eng.get("current_lot_mult", 1)}x)</span>
                 </div>
-                <div class='stat-row'><span>चालू AI मॉडल (Auto-Selected):</span><b style='color:#4ade80;'>{eng.get("active_ai_model", "Auto")}</b></div>
-                <div class='stat-row'><span>कैरी-फॉरवर्ड लॉस डेफिसिट (Streak #{l_streak}):</span><b style='color:{"#f87171" if def_pts > 0 else "#4ade80"};'>{f"-{def_pts:.1f} Pts (Full Recovery Active)" if def_pts > 0 else "0.0 Pts (100% Recovered ✅)"}</b></div>
+                <div class='stat-row'><span>चालू AI मॉडल:</span><b style='color:#4ade80;'>{eng.get("active_ai_model", "Auto")}</b></div>
+                <div class='stat-row'><span>कैरी-फॉरवर्ड लॉस डेफिसिट (Streak #{l_streak}):</span><b style='color:{"#f87171" if def_pts > 0 else "#4ade80"};'>{f"-{def_pts:.1f} Pts (Recovery Active)" if def_pts > 0 else "0.0 Pts (Recovered ✅)"}</b></div>
                 <div class='stat-row'><span>24h PnL (1x Raw vs AI Weighted):</span><b>Raw: {closed_raw_sum:+.0f}p | <span style='color:{net_col};'>AI Lot PnL: {closed_weighted_sum:+.0f}p</span></b></div>
-                <div style='font-size:12px; color:#e9d5ff; margin-top:5px; line-height:1.4;'>🧠 <b>AI निर्णय:</b> {eng.get("last_lot_reason", "")}</div>
+                <div style='font-size:12px; color:#e9d5ff; margin-top:5px; line-height:1.4;'>🤖 <b>AI विवेक:</b> {eng.get("last_ai_reason", "")}</div>
             </div>
         </div>
         """
@@ -1617,8 +1574,8 @@ while True:
         <div>
             <div class='top-bar'>
                 <div>
-                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V26.4 (TRUE DEFICIT RECOVERY + DUAL-MODE HYBRID + DELTA DEMO)</div>
-                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🧱 Brick: <b style='color:#facc15;'>${box_sz:.0f}</b> | 🛡️ Dual Shield: <b>+350p BE & +500p/+550p Big Trail</b> | 📦 Active Lot: <b style='color:#facc15;'>{eng.get('current_lot_size',1)} Lot ({eng.get('current_lot_mult',1)}x)</b> | AI Lot PnL: <b style='color:{net_col};'>{closed_weighted_sum:+.1f} Pts ({win_cnt}W/{loss_cnt}L)</b></div>
+                    <div style='font-size:19px; font-weight:900; color:#38bdf8;'>⚡ PRO QUANT V26.4 (RENKO ENTRY + AI DISCRETIONARY TRADE MANAGER + DELTA DEMO)</div>
+                    <div style='font-size:12.5px; color:#94a3b8; margin-top:2px;'>🧱 Brick: <b style='color:#facc15;'>${box_sz:.0f}</b> | 🧠 AI Mode: <b style='color:#c084fc;'>Discretionary (No Fixed Shield Rules)</b> | 📦 Active Lot: <b style='color:#facc15;'>{eng.get('current_lot_size',1)} Lot ({eng.get('current_lot_mult',1)}x)</b> | AI Lot PnL: <b style='color:{net_col};'>{closed_weighted_sum:+.1f} Pts ({win_cnt}W/{loss_cnt}L)</b></div>
                 </div>
                 <div style='text-align:right;'>
                     <div style='font-size:21px; font-weight:900; color:#f8fafc;'>BTC: ${eng['px']:,.1f}</div>
@@ -1631,7 +1588,7 @@ while True:
                     {left_body}
                     <div class='history-panel'>
                         <div style='font-size:14px; font-weight:900; color:#4ade80; margin-bottom:8px; border-bottom:1px solid #334155; padding-bottom:6px; display:flex; justify-content:space-between; flex-wrap:wrap;'>
-                            <span>📜 डुअल-मोड हाइब्रिड + ट्रू कैरी-फॉरवर्ड रिकवरी हिस्ट्री (No Pullback Re-Entries)</span>
+                            <span>📜 Renko Entry + AI विवेक ट्रेड मैनेजमेंट हिस्ट्री</span>
                             <span style='color:{net_col};'>1x Raw: {closed_raw_sum:+.0f}p | AI Lot Weighted: {closed_weighted_sum:+.1f} Pts ({win_cnt}W / {loss_cnt}L)</span>
                         </div>
                         {hist_cards}
@@ -1639,10 +1596,10 @@ while True:
                 </div>
 
                 <div class='brick-panel'>
-                    <div style='font-size:14.5px; font-weight:900; color:#facc15; margin-bottom:10px; border-bottom:1px solid #334155; padding-bottom:6px;'>
-                        🛡️ 4-फेज डुअल-मोड प्रॉफिट प्रोटेक्शन रोडमैप (+350p BE / +500p–550p Trail)
+                    <div style='font-size:14.5px; font-weight:900; color:#c084fc; margin-bottom:10px; border-bottom:1px solid #334155; padding-bottom:6px;'>
+                        🧠 AI विवेक ट्रेड मैनेजमेंट कैसे काम करता है
                     </div>
-                    {hybrid_roadmap_html}
+                    {ai_guide_html}
                 </div>
             </div>
         </div>
@@ -1650,6 +1607,6 @@ while True:
 
     else:
         err_msg = f" ({eng['last_err']})" if eng.get("last_err") else ""
-        dashboard_slot.warning(f"⏳ 24x7 V26.4 (Exact Lot & Position-Verified Delta Sync) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
+        dashboard_slot.warning(f"⏳ 24x7 V26.4 (AI Renko Trade Manager) डेटा सिंक कर रहा है... कृपया 2 सेकंड प्रतीक्षा करें।{err_msg}")
 
     time.sleep(1.5)
